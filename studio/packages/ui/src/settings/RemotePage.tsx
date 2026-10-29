@@ -15,6 +15,7 @@ const CONNECTION_LABEL: Record<RemoteConnection["state"], string> = {
   "no-account": "没有登录",
   connecting: "正在连接…",
   online: "已连接",
+  disabled: "已关闭",
   offline: "没连上，稍后自动重试",
   unauthorized: "登录已失效",
   "server-old": "服务器不支持",
@@ -108,7 +109,7 @@ export function RemotePage({ link, tasks = [], profiles = [], workspaces = [], t
             </span>
           ) : (
             <span className="settings-hint" data-testid="remote-account">
-              {connection.state === "off" ? "这个 Studio 没有开远程功能" : "没有登录：在 AMO 平台里登录后才能用远程功能"}
+              {connection.state === "off" ? "这个 Studio 没有开远程功能" : connection.state === "disabled" ? "已关闭远程功能" : "没有登录：在 AMO 平台里登录后才能用远程功能"}
             </span>
           )}
         </div>
@@ -117,7 +118,12 @@ export function RemotePage({ link, tasks = [], profiles = [], workspaces = [], t
             <span className="settings-label">服务器</span>
             <span className={`remote-conn remote-conn-${connection.state}`}>{CONNECTION_LABEL[connection.state]}</span>
             {connection.state === "online" && connection.since && <span className="settings-hint">自 {fmtTime(connection.since)}</span>}
-            {connection.state !== "online" && connection.state !== "connecting" && (
+            {connection.state === "disabled" && (
+              <button type="button" className="btn-ghost small" disabled={busy} onClick={() => void run(() => call(link, "POST /api/remote/enable"), "已开启远程功能")} data-testid="remote-enable">
+                开启远程
+              </button>
+            )}
+            {connection.state !== "disabled" && connection.state !== "off" && connection.state !== "online" && connection.state !== "connecting" && (
               <button type="button" className="btn-ghost small" disabled={busy} onClick={() => void run(() => call(link, "POST /api/remote/reconnect"))} data-testid="remote-reconnect">
                 重新连接
               </button>
@@ -125,7 +131,16 @@ export function RemotePage({ link, tasks = [], profiles = [], workspaces = [], t
           </div>
         )}
         {remote.account && connection.message && connection.state !== "online" && <span className="settings-hint">{connection.message}</span>}
-        {!remote.account && connection.state !== "off" && (
+        {connection.state === "online" && (
+          <div className="settings-row">
+            <span className="settings-label"></span>
+            <button type="button" className="btn-ghost small" disabled={busy} onClick={() => void run(() => call(link, "POST /api/remote/disable"), "已关闭远程功能")} data-testid="remote-disable">
+              关闭远程
+            </button>
+            <span className="settings-hint">关闭后，其他电脑不能连接这台、也不能发消息。重启后仍然保持关闭。</span>
+          </div>
+        )}
+        {!remote.account && connection.state !== "off" && connection.state !== "disabled" && (
           <span className="settings-hint" data-testid="remote-login-hint">
             远程功能用的是团队服务器的账号，登录只在 AMO 平台里做（Studio 不另做登录）。登录后这一页会自动连上，不用重启 Studio。Studio 的其他功能不受影响。
           </span>

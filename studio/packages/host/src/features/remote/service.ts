@@ -64,6 +64,10 @@ export class RemoteFeature extends Feature {
   /** Commands being answered: the same id again waits for that answer instead of running twice. */
   private readonly inflight = new Map<string, Promise<Answer>>();
   private reading: Promise<void> | null = null;
+
+  private get disabled(): boolean {
+    return this.store.getKv(DISABLED_KEY)?.value === "1";
+  }
   private readonly context: RemoteContext = {
     host: this.host,
     link: () => this.link,
@@ -560,6 +564,22 @@ export class RemoteFeature extends Feature {
     else if (this.link && this.link.state !== "online" && this.link.state !== "connecting") {
       this.link.retryNow();
     }
+    return this.state();
+  }
+
+  /** 关闭远程 / 开启远程: off means no connection to the server at all, so no other computer reaches this one. Kept across restarts. */
+  setDisabled(val: boolean): RemoteState {
+    this.requireStarted();
+    if (val === this.disabled) return this.state();
+    this.store.setKv(DISABLED_KEY, val ? "1" : "0");
+    if (val) {
+      this.link?.stop();
+      this.link = null;
+      this.presence.clear();
+    } else {
+      this.connect();
+    }
+    this.changed();
     return this.state();
   }
 

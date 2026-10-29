@@ -161,6 +161,22 @@ describe("remote between two Hosts", () => {
   it("pairs B with A, tests the connection both ways, and an unpairing on A reaches B", async () => {
     const { url, keys } = await relayService();
     const a = await host("A-PC", url, "台式机的我", keys["台式机的我"]);
+    await until(a.state, online, "online");
+    // 关闭远程: off the server, and it stays off when the Host starts remote again.
+    expect(a.remote.setDisabled(true).connection.state).toBe("disabled");
+    await new Promise((r) => setTimeout(r, 200));
+    expect(a.state().connection.state).toBe("disabled");
+    a.remote.stop();
+    a.remote.start({ env: a.env, protector: fake, watchMs: 30, backoff: new Backoff({ baseMs: 30, maxMs: 120 }) });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(a.state().connection.state).toBe("disabled");
+    expect(a.remote.setDisabled(false).connection.state).not.toBe("disabled");
+    await until(a.state, online, "online after 开启远程");
+  });
+
+  it("pairs B with A, tests the connection both ways, and an unpairing on A reaches B", async () => {
+    const { url, keys } = await relayService();
+    const a = await host("A-PC", url, "台式机的我", keys["台式机的我"]);
     const b = await host("B-PC", url, "笔记本的我", keys["笔记本的我"]);
     await until(a.state, online, "A online");
     await until(b.state, online, "B online");
