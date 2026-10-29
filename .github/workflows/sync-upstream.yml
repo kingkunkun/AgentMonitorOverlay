@@ -1,0 +1,22 @@
+name: Sync upstream
+on:
+  schedule:
+    - cron: '0 1 * * *'   # UTC 01:00 = 北京时间 09:00
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Merge upstream (fast-forward only)
+        run: |
+          git config user.name 'github-actions'
+          git config user.email 'actions@users.noreply.github.com'
+          git remote add upstream https://github.com/kadhygh/AgentMonitorOverlay.git
+          git fetch upstream master
+          git merge --ff-only upstream/master || { echo '::error::fork 与上游已分叉或有冲突，需要手动处理'; exit 1; }
+          git push origin HEAD:master
