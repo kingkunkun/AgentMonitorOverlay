@@ -927,6 +927,8 @@ export interface HostRoutes {
   "POST /api/remote/ping": { req: { account: string; device: string }; res: import("./remote.js").RemotePingResult };
   /** Tries to connect now (after a failure, without waiting for the next attempt). */
   "POST /api/remote/reconnect": { req: void; res: import("./remote.js").RemoteState };
+  "POST /api/remote/disable": { req: void; res: import("./remote.js").RemoteState };
+  "POST /api/remote/enable": { req: void; res: import("./remote.js").RemoteState };
   /** Step 2: grants a task (and every session in it) to a device this computer allowed to pair. */
   "POST /api/remote/grants": { req: { taskId: Id; account: string; device: string }; res: import("./remote.js").RemoteState };
   /** Step 2: takes a grant back (the device keeps what it has, readable, and reaches the task no more). */

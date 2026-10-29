@@ -21,6 +21,8 @@ import { TaskAsks, TaskRequests } from "./requests.js";
 const PAIRS_KEY = "remote.pairs";
 /** Unpairings the server has not heard of yet (it was not reachable): sent first thing after the next connect. */
 const UNPAIRS_KEY = "remote.unpairs";
+/** 关闭远程 (2026-10-29): "1" while the person switched remote off — no connection to the server at all; kept across restarts. */
+const DISABLED_KEY = "remote.disabled";
 
 interface StoredPair {
   account: string;
@@ -184,6 +186,7 @@ export class RemoteFeature extends Feature {
     this.link?.stop();
     this.link = null;
     this.presence.clear();
+    if (this.disabled) return;
     const a = this.account;
     const d = this.device;
     if (!a || !d || !this.opts) return;
@@ -427,7 +430,9 @@ export class RemoteFeature extends Feature {
     const link = this.link;
     const connection: RemoteConnection = !started
       ? { state: "off", message: null, retryAt: null, since: null }
-      : !this.account
+      : this.disabled
+        ? { state: "disabled", message: null, retryAt: null, since: null }
+        : !this.account
         ? { state: "no-account", message: null, retryAt: null, since: null }
         : link
           ? { state: link.state, message: link.message, retryAt: link.retryAt ? iso(link.retryAt) : null, since: link.since ? iso(link.since) : null }

@@ -11,7 +11,7 @@ import type { QuestionReply } from "./questions.js";
  * connecting / online / offline (retrying at retryAt); unauthorized: the server no longer takes the login;
  * server-old: the team server has no devices channel yet; replaced: another program connected as this device.
  */
-export type RemoteConnectionState = "off" | "no-account" | "connecting" | "online" | "offline" | "unauthorized" | "server-old" | "replaced";
+export type RemoteConnectionState = "off" | "disabled" | "no-account" | "connecting" | "online" | "offline" | "unauthorized" | "server-old" | "replaced";
 
 export interface RemoteConnection {
   state: RemoteConnectionState;
