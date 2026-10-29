@@ -17,7 +17,7 @@ let server: FakePlatformServer;
 let root = "";
 beforeAll(async () => {
   server = await startFakePlatformServer({ users: { 小王: "secret" } });
-  server.publish("studio", "0.9.0", { "AMO Studio.exe": "studio 0.9.0", "resources/app.asar": "a" }, { name: "AMO Studio", exe: "AMO Studio.exe", notes: "- 第一版" });
+  server.publish("studio", "0.9.0", { "AMO Studio.exe": "studio 0.9.0", "resources/app.asar": "a" }, { name: "WorkStudio", exe: "AMO Studio.exe", notes: "- 第一版" });
   server.publish("reviewer", "0.9.0", { "AMO Reviewer.exe": "reviewer" }, { name: "AMO Reviewer", exe: "AMO Reviewer.exe" });
   server.publish("platform", "0.9.0", { "AMO Platform.exe": "p" }, { exe: "AMO Platform.exe" });
 });
@@ -65,7 +65,7 @@ describe("Platform", () => {
     await platform.install("studio");
     expect(platform.view().tools[0]).toMatchObject({ installed: "0.9.0", task: null, result: { tone: "ok", text: "已装好 0.9.0" } });
     expect(platform.view().tools[1]!.hint).toContain("Studio 里已经带了");
-    expect(platform.installedTools()).toEqual([{ id: "studio", name: "AMO Studio" }]);
+    expect(platform.installedTools()).toEqual([{ id: "studio", name: "WorkStudio" }]);
 
     // No data dir yet: not started, and the page is told to go to 目录.
     expect(await platform.open("studio")).toMatchObject({ ok: false, reason: "need-studio-dir" });
@@ -164,7 +164,7 @@ describe("Platform", () => {
     await platform.init();
     await platform.login(server.url, "小王", "secret");
     expect(platform.view().tools.map((t) => [t.id, t.name])).toEqual([
-      ["studio", "AMO Studio"],
+      ["studio", "WorkStudio"],
       ["relay", "AMO 中转"],
       ["reviewer", "AMO Reviewer（独立版）"],
     ]);

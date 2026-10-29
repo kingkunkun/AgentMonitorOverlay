@@ -14,7 +14,7 @@ export const studio = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  * version and CHANGELOG.md the tool takes, description: the exe's FileDescription, platform: published to the platform }
  */
 export const TOOLS = {
-  studio: { name: "AMO Studio", zip: "AMO-Studio", pkg: "app", description: "AMO Studio", platform: true },
+  studio: { name: "WorkStudio", zip: "AMO-Studio", pkg: "app", description: "WorkStudio", platform: true },
   reviewer: { name: "AMO Reviewer", zip: "AMO-Reviewer", pkg: "reviewer", description: "AMO Reviewer", platform: true },
   notes: { name: "AMO Notes", zip: "AMO-Notes", pkg: "notes", description: "AMO 便签", platform: true },
   // The platform publishes itself the same way (2026-10-28); its first download is the zip on the service's page.

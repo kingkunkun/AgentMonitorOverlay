@@ -919,7 +919,7 @@ function takeQueue(live: Live): { text: string; images: ImageBlock[] } | null {
 /** The DSH patch that starts its ACP agent on `provider`/`model` (names JSON-quoted, which YAML reads as strings). */
 export function modelPatchYaml(provider: string, model: string): string {
   return [
-    "# Written by AMO Studio: the session's model as the ACP agent's default, so DSH says whether it takes images.",
+    "# Written by WorkStudio: the session's model as the ACP agent's default, so DSH says whether it takes images.",
     "- id: acp",
     "  config:",
     `    provider: ${JSON.stringify(provider)}`,
@@ -934,7 +934,7 @@ export function modelPatchYaml(provider: string, model: string): string {
  */
 export function catalogPatchYaml(label: string, models: readonly string[], first: string): string {
   return [
-    `# Written by AMO Studio for the channel ${JSON.stringify(label)}: the site's own model names. Rewritten on every start.`,
+    `# Written by WorkStudio for the channel ${JSON.stringify(label)}: the site's own model names. Rewritten on every start.`,
     "- id: llm-deepseek",
     "  config:",
     "    models:",

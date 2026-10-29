@@ -1,12 +1,12 @@
-// AMO Studio's full usage for agents (stage 16): amo_guide returns one section, or the overview with the list.
+// WorkStudio's full usage for agents (stage 16): amo_guide returns one section, or the overview with the list.
 
 export const GUIDE_SECTIONS = ["overview", "tasks", "topics", "canvas", "collab", "lead", "files"] as const;
 export type GuideSection = (typeof GUIDE_SECTIONS)[number];
 
 const GUIDE: Record<GuideSection, string> = {
-  overview: `# AMO Studio 是什么
+  overview: `# WorkStudio 是什么
 
-人在 AMO Studio 里管理和 AI 一起做的工作。你是其中一个会话。
+人在 WorkStudio 里管理和 AI 一起做的工作。你是其中一个会话。
 
 - **项目**（workspace）：一个文件夹，通常是一个 git 工程。
 - **任务**：一件要做的事，属于一个项目，可以放进一个专题。每个任务有自己的会话（你可能就是其中之一）、看板上的状态（todo / doing / review / done）、说明、进度记录和交接摘要。

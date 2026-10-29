@@ -133,7 +133,7 @@ function createWindow(): BrowserWindow {
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#111316" : "#efede8",
     show: false,
     autoHideMenuBar: true,
-    // No system title bar (as AMO Studio): the page's top bar is the title bar and draws the window buttons; on a Mac
+    // No system title bar (as WorkStudio): the page's top bar is the title bar and draws the window buttons; on a Mac
     // the traffic lights stay, inset into it.
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "hidden",
     ...(testMode ? { x: -4000, y: 0, skipTaskbar: true } : {}),

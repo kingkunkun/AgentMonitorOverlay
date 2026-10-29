@@ -8,7 +8,7 @@ import { _electron, expect, test, type ElectronApplication, type Page } from "@p
 import { removeTempDir } from "@amo-studio/testkit";
 import { screenshot, studioRoot } from "../support/studio.js";
 
-// AMO Reviewer on its own (2026-10-23): Git Review and the viewer for any tool, without AMO Studio. Started with a
+// AMO Reviewer on its own (2026-10-23): Git Review and the viewer for any tool, without WorkStudio. Started with a
 // folder it opens its changes; amo-review --reviewer opens a file in it; comments are copied (复制注释); no bookmarks.
 
 const require = createRequire(import.meta.url);

@@ -19,7 +19,7 @@ import type { Channel, OpenResult, PlatformCalls, PlatformView, ProfilePatch, Pr
 
 /** The tools the platform knows by id; others a server lists are shown under their manifest's name. */
 const KNOWN: Record<string, { name: string; desc: string }> = {
-  studio: { name: "AMO Studio", desc: "工作台：看板、任务、和模型的会话。自带 AMO 便签和 Reviewer。" },
+  studio: { name: "WorkStudio", desc: "工作台：看板、任务、和模型的会话。自带 AMO 便签和 Reviewer。" },
   reviewer: { name: "AMO Reviewer（独立版）", desc: "Git Review 和查看器，可以单独用。" },
   notes: { name: "AMO 便签（独立版）", desc: "随手记，托盘常驻，可以单独用。" },
   // Since 2026-10-28 (the user): its desktop program comes from here too; what it shows still updates from the service.

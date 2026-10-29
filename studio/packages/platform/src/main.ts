@@ -146,7 +146,7 @@ function createWindow(): BrowserWindow {
     minHeight: 480,
     title: "AMO 平台",
     ...(ICON ? { icon: ICON } : {}),
-    // The page's top bar is the title bar and draws the window buttons (as AMO Studio and 中转).
+    // The page's top bar is the title bar and draws the window buttons (as WorkStudio and 中转).
     frame: false,
     backgroundColor: "#fbfaf7",
     show: false,

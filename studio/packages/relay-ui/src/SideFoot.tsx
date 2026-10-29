@@ -6,7 +6,7 @@ import type { RelayFile } from "./shared.js";
 import type { ShellUpdate } from "./ShellUpdate.js";
 import { spanText, useSecondTick, type Updates } from "./update.js";
 
-// The bottom of the left column (the layout redesign, 2026-10-27, as AMO Studio's): what wants me first — offline,
+// The bottom of the left column (the layout redesign, 2026-10-27, as WorkStudio's): what wants me first — offline,
 // what waits on me (or that nothing does), a newer version — as strips to click; then the shortcuts (团队流程,
 // 流程速查, 复制用法); then me, how the service is, and 设置. 团队流程 and 流程速查 only with flowShortcuts (hidden since the
 // tightening, features.ts).

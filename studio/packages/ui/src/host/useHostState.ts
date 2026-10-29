@@ -54,7 +54,7 @@ export function useHostState() {
   const connect = useCallback(async () => {
     try {
       const link = await discoverHost();
-      if (!link) throw new Error("没有找到 Host（请从 AMO Studio 应用打开）");
+      if (!link) throw new Error("没有找到 Host（请从 WorkStudio 应用打开）");
       const state = await loadState(link);
       setHost({ kind: "ready", link, state, live: false });
 

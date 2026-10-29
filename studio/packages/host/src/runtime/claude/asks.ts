@@ -9,12 +9,12 @@ import { askedQuestions } from "./tool-use.js";
 // What waits for the person in canUseTool (stage 16 split out of claude-runtime.ts): approval cards, and AskUserQuestion
 // and ExitPlanMode as question items; their answers; and the session's status while they wait.
 
-export const DECLINED = "The person declined this in AMO Studio.";
+export const DECLINED = "The person declined this in WorkStudio.";
 const QUESTIONS_DISMISSED =
-  "The user closed these questions in AMO Studio without answering them. Do not ask them again right away: carry on with what you know, stating any assumptions you make, or stop and say what you need from the user.";
-const PLAN_DISMISSED = "The user closed the plan review in AMO Studio without approving the plan. Stay in plan mode: do not edit files or run commands; wait for the user's next message.";
+  "The user closed these questions in WorkStudio without answering them. Do not ask them again right away: carry on with what you know, stating any assumptions you make, or stop and say what you need from the user.";
+const PLAN_DISMISSED = "The user closed the plan review in WorkStudio without approving the plan. Stay in plan mode: do not edit files or run commands; wait for the user's next message.";
 const planRevision = (feedback: string) =>
-  `The user reviewed the plan in AMO Studio and wants changes before you start:\n\n${feedback}\n\nRevise the plan accordingly and present it again with ExitPlanMode. Stay in plan mode until the user approves.`;
+  `The user reviewed the plan in WorkStudio and wants changes before you start:\n\n${feedback}\n\nRevise the plan accordingly and present it again with ExitPlanMode. Stay in plan mode until the user approves.`;
 
 export class ClaudeAsks {
   constructor(private readonly core: ClaudeCore) {}

@@ -196,7 +196,7 @@ function oldPlatform() {
     mkdirSync(dirname(objectPath(platform, name)), { recursive: true });
     writeFileSync(objectPath(platform, name), data);
   };
-  const text = "AMO Studio ".repeat(30_000);
+  const text = "WorkStudio ".repeat(30_000);
   const packed = randomBytes(32 * 1024);
   const half = "half done ".repeat(5_000);
   const tiny = "x";
@@ -301,7 +301,7 @@ describe("platform publish", () => {
     await expect(publish(target, { id: "notes", dir, version: "0.9", notes: "x" })).rejects.toThrow(/版本号不对/);
     await expect(publish(target, { id: "notes", dir, version: "0.9.0", notes: "x", channel: "beta" })).rejects.toThrow(/通道/);
     await expect(publish(target, { id: "notes", dir, version: "0.9.0", notes: " " })).rejects.toThrow(/没有改动说明/);
-    await expect(publish(target, { id: "studio", dir, version: "0.9.0", notes: "x" })).rejects.toThrow(/没有 AMO Studio.exe/);
+    await expect(publish(target, { id: "studio", dir, version: "0.9.0", notes: "x" })).rejects.toThrow(/没有 WorkStudio.exe/);
   });
 
   it("publishes only folders built for the platform: a portable one (or one from before the mark) is refused", async () => {

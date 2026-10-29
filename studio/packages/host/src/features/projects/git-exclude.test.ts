@@ -28,7 +28,7 @@ describe("git exclude of .amo/", () => {
     const after = await addGitExclude(repo);
     expect(after).toMatchObject({ excluded: true, entry: "/.amo/" });
     expect(after.source).toMatch(/info[\\/]exclude:\d+$/);
-    expect(exclude(repo)).toMatch(/# AMO Studio[^\n]*\n\/\.amo\/\n$/);
+    expect(exclude(repo)).toMatch(/# WorkStudio[^\n]*\n\/\.amo\/\n$/);
 
     await addGitExclude(repo);
     expect(exclude(repo).match(/\/\.amo\//g)).toHaveLength(1);

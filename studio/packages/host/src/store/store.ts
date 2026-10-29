@@ -13,12 +13,12 @@ export type HostEventInput = HostEvent extends infer E ? (E extends HostEvent ? 
 export type SessionItemInput = SessionItem extends infer I ? (I extends SessionItem ? Omit<I, "seq"> : never) : never;
 
 /**
- * The database was migrated by a newer AMO Studio than this one. Its message is for the person as it is: the shell
+ * The database was migrated by a newer WorkStudio than this one. Its message is for the person as it is: the shell
  * shows it in a dialog when the Host cannot start (host-link.ts).
  */
 export class StoreTooNewError extends Error {
   constructor(readonly dbPath: string, readonly dbVersion: number, readonly knownVersion: number) {
-    super(`这份数据（${dirname(dbPath)}）被更新版本的 AMO Studio 用过（数据库版本 ${dbVersion}，这个版本只认识到 ${knownVersion}）。请先把 Studio 更新到新版本再打开。`);
+    super(`这份数据（${dirname(dbPath)}）被更新版本的 WorkStudio 用过（数据库版本 ${dbVersion}，这个版本只认识到 ${knownVersion}）。请先把 Studio 更新到新版本再打开。`);
     this.name = "StoreTooNewError";
   }
 }

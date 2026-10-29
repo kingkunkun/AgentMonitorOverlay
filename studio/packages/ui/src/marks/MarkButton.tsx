@@ -16,7 +16,7 @@ import { inAmo } from "../lib/where.js";
  */
 type MarkButtonProps = { link: HostLink; file: FileRef; line?: number | null; sessionId?: string | null; className?: string };
 
-/** Bookmarks are AMO Studio's: the AMO Reviewer program on its own shows none (2026-10-23). */
+/** Bookmarks are WorkStudio's: the AMO Reviewer program on its own shows none (2026-10-23). */
 export function MarkButton(props: MarkButtonProps) {
   return inAmo() ? <AmoMarkButton {...props} /> : null;
 }

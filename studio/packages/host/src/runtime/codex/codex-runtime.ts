@@ -409,7 +409,7 @@ export class CodexRuntime extends RuntimeBase {
       } catch (err) {
         this.events.handlerFailed(r.method, (r.params as { threadId?: string } | undefined)?.threadId, err);
         // Unanswered, the turn would wait for ever.
-        handle.client.respondError(r.id, -32603, `AMO Studio could not handle ${r.method}`);
+        handle.client.respondError(r.id, -32603, `WorkStudio could not handle ${r.method}`);
       }
     });
     handle.client.once("close", () => this.asks.onConnectionLost(handle.profileId));

@@ -1,6 +1,6 @@
 ---
 name: amo-review
-description: Open AMO Studio's file reviewer or Git Review for a person to inspect a specified file, saved edits, or a commit range, with comments directed back to the AMO conversation. Use when asked to open or show work in AMO's reviewer.
+description: Open WorkStudio's file reviewer or Git Review for a person to inspect a specified file, saved edits, or a commit range, with comments directed back to the AMO conversation. Use when asked to open or show work in AMO's reviewer.
 ---
 
 # Open the AMO reviewer

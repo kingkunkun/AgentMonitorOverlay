@@ -61,7 +61,7 @@ describe("Store", () => {
     }
     expect(caught).toBeInstanceOf(StoreTooNewError);
     expect((caught as StoreTooNewError).message).toBe(
-      `这份数据（${dirname(path)}）被更新版本的 AMO Studio 用过（数据库版本 ${MIGRATIONS.length + 3}，这个版本只认识到 ${MIGRATIONS.length}）。请先把 Studio 更新到新版本再打开。`,
+      `这份数据（${dirname(path)}）被更新版本的 WorkStudio 用过（数据库版本 ${MIGRATIONS.length + 3}，这个版本只认识到 ${MIGRATIONS.length}）。请先把 Studio 更新到新版本再打开。`,
     );
     // Closed again (the temp dir can be removed) and unchanged: nothing was migrated or written.
     const db = new DatabaseSync(path);

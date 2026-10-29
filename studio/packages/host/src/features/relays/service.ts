@@ -62,7 +62,7 @@ export class RelaysFeature extends Feature {
       `【主控「${lead?.title || "主控"}」传话】`,
       relay.text,
       "",
-      `（这是主控通过 AMO Studio 传来的。要回复主控，用 mailbox_send 给${relay.fromTaskId ? `任务 ${relay.fromTaskId}` : `会话 ${relay.fromSessionId}`}。）`,
+      `（这是主控通过 WorkStudio 传来的。要回复主控，用 mailbox_send 给${relay.fromTaskId ? `任务 ${relay.fromTaskId}` : `会话 ${relay.fromSessionId}`}。）`,
     ].join("\n");
     try {
       if (!target || target.archivedAt) throw new HostError("bad_request", "the task is gone or archived");

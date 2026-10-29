@@ -117,7 +117,7 @@ export class GitReviewFeature extends Feature {
    * where 发回 sends the comments. The main window opens the review window when it receives the event.
    */
   async openReview(input: Partial<ReviewOpenRequest>): Promise<ReviewOpenResult> {
-    if (!this.host.liveWindows) throw new HostError("conflict", "AMO Studio 的窗口没有打开：先启动 AMO Studio，再打开 Review");
+    if (!this.host.liveWindows) throw new HostError("conflict", "WorkStudio 的窗口没有打开：先启动 WorkStudio，再打开 Review");
     const text = (v: unknown, name: string): string | undefined => {
       if (v === undefined || v === null || v === "") return undefined;
       if (typeof v !== "string" || !v.trim() || v.length > 1000 || /[\0\r\n]/.test(v)) throw new HostError("bad_request", `${name} must be a non-empty string without control characters`);

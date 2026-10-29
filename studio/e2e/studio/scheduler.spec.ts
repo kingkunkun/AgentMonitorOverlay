@@ -130,7 +130,7 @@ test("stage 7 acceptance: a scheduler round by hand, a proposal, approval, work 
   await todos.getByRole("button", { name: "让调度看一次" }).click();
   await expect(page.locator(".page-head")).toContainText("调度");
   await expect(page.getByTestId("msg-user").first()).toContainText(`todoId=${todo.id}：统一掉落表格式（适合：alpha）`);
-  await expect(page.getByTestId("msg-agent").last()).toContainText("MOCK: 你是 AMO Studio 的调度 agent", { timeout: 60_000 });
+  await expect(page.getByTestId("msg-agent").last()).toContainText("MOCK: 你是 WorkStudio 的调度 agent", { timeout: 60_000 });
 
   // The mock model proposes only when told to: the person asks it to, the way the real model would on its own.
   const composer = page.getByLabel("输入消息");

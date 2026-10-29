@@ -2,7 +2,7 @@
 
 局域网里的小工具：人和人互相发消息；人或 AI 也能给某个人发一个「会话」，请他处理一件事，对方逐条回答后返回。聊天记录都存在中转服务上。计划见 `plans/relay.md`（阶段 1）和 `plans/relay-tasks.md`（阶段 2：会话、团队任务、文件和批注）。
 
-界面用的是 AMO Studio 的设计：主题变量直接引用 `packages/ui/src/styles/base.css`（支持浅色和深色），顶栏、左栏、会话列表和弹窗的做法也照 Studio 来。
+界面用的是 WorkStudio 的设计：主题变量直接引用 `packages/ui/src/styles/base.css`（支持浅色和深色），顶栏、左栏、会话列表和弹窗的做法也照 Studio 来。
 
 由四个包组成：
 

@@ -17,7 +17,7 @@ const info = JSON.parse(readFileSync(infoFile, "utf8"));
 const script = `(Get-CimInstance Win32_Process -Filter "ProcessId=${Number(info.pid)}").CommandLine`;
 const commandLine = execFileSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8" }).trim();
 if (!commandLine.replaceAll("\\", "/").includes("packages/host/dist/bin.js")) {
-  console.log(`pid ${info.pid} is not an AMO Studio Host any more; clearing stale files.`);
+  console.log(`pid ${info.pid} is not a WorkStudio Host any more; clearing stale files.`);
   rmSync(infoFile, { force: true });
   rmSync(join(dataDir, "host.lock"), { force: true });
   process.exit(0);
@@ -44,4 +44,4 @@ if (running) {
 }
 rmSync(infoFile, { force: true });
 rmSync(join(dataDir, "host.lock"), { force: true });
-console.log(`Stopped AMO Studio Host (pid ${info.pid}) and its app-servers.${failed ? ` (Some of its processes could not be ended: ${failed.split("\n")[0]})` : ""}`);
+console.log(`Stopped WorkStudio Host (pid ${info.pid}) and its app-servers.${failed ? ` (Some of its processes could not be ended: ${failed.split("\n")[0]})` : ""}`);

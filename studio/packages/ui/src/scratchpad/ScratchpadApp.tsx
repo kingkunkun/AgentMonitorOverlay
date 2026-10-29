@@ -211,7 +211,7 @@ function ScratchpadWindow({ link }: { link: HostLink }) {
       <div className="pad-rule" aria-hidden="true" />
       {imported && (
         <div className="pad-notice" role="status" data-testid="pad-imported">
-          <span>已从 AMO Studio 搬过来原来的便签内容和图片，Studio 里的旧数据还留着。</span>
+          <span>已从 WorkStudio 搬过来原来的便签内容和图片，Studio 里的旧数据还留着。</span>
           <button type="button" className="pad-icon" aria-label="知道了" title="知道了" onClick={closeImported}>
             ×
           </button>

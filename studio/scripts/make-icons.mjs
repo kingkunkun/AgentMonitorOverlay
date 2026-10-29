@@ -89,7 +89,7 @@ if (relayOnly) {
   process.exit(0);
 }
 
-// AMO Studio.
+// WorkStudio.
 const studioIcon = tool("studio");
 writeFileSync(join(studio, "design", "icon", "viewfinder-512.png"), await studioIcon.png(512));
 writeFileSync(join(assets("app"), "icon.png"), await studioIcon.png(256));

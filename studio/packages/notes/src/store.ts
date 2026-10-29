@@ -41,7 +41,7 @@ export interface NotesSettings {
   safeNewlines: boolean;
   /** Start with Windows, in the tray only. */
   openAtLogin: boolean;
-  /** When the pages were brought over from AMO Studio (once); null before. */
+  /** When the pages were brought over from WorkStudio (once); null before. */
   importedAt: string | null;
   /** The notice about that import was closed. */
   importNoticeSeen: boolean;
@@ -310,7 +310,7 @@ export class NotesStore {
     return this.scratchpad();
   }
 
-  // ---- bringing pages over from AMO Studio -----------------------------------------------------------------------
+  // ---- bringing pages over from WorkStudio -----------------------------------------------------------------------
 
   /**
    * Takes Studio's pages (once): only into an empty folder. Images come as their files; each keeps its id.

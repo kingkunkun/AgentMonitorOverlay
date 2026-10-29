@@ -1,7 +1,7 @@
 // S8-03 smoke of the portable zips, the way a person would meet them: unzip each into a sandbox folder and run it.
-//   AMO Studio: first run (setup, keep the default data dir), start again; it ships no Claude Code and finds the
+//   WorkStudio: first run (setup, keep the default data dir), start again; it ships no Claude Code and finds the
 //     person's own (with none here, the SDK's copy of the source checkout stands in); create a task, chat with the mock model,
-//     bring up its 便签 (AMO Studio.exe --amo-app=notes), quit; nothing written outside the sandbox folder (no Electron
+//     bring up its 便签 (WorkStudio.exe --amo-app=notes), quit; nothing written outside the sandbox folder (no Electron
 //     profile in %APPDATA%, no studio/.data).
 //   AMO Reviewer: started with a git folder it reviews its changes.
 //   AMO Notes: starts and answers.
@@ -61,10 +61,10 @@ const mock = await startMockModel();
 const claudeMock = await startMockAnthropic();
 let app;
 try {
-  // —— AMO Studio ——
+  // —— WorkStudio ——
   const t0 = Date.now();
   unzip(archives.Studio);
-  const exe = join(root, "AMO Studio", "AMO Studio.exe");
+  const exe = join(root, "WorkStudio", "WorkStudio.exe");
   step("studio unzipped", { seconds: Math.round((Date.now() - t0) / 1000), exe: existsSync(exe) });
 
   // First run: setup with the default data dir.
@@ -75,11 +75,11 @@ try {
   await page.getByRole("button", { name: "开始使用" }).click();
   await closed;
   app = null;
-  const config = JSON.parse(readFileSync(join(root, "AMO Studio", "amo-studio.json"), "utf8"));
-  step("studio setup", { defaultIsNextToExe: defaultDir === join(root, "AMO Studio", "data"), saved: config });
+  const config = JSON.parse(readFileSync(join(root, "WorkStudio", "amo-studio.json"), "utf8"));
+  step("studio setup", { defaultIsNextToExe: defaultDir === join(root, "WorkStudio", "data"), saved: config });
 
   // Second run: the workbench, a task with the mock model, one reply.
-  const shipped = existsSync(join(root, "AMO Studio", "resources", "app", "node_modules", "@anthropic-ai", "claude-agent-sdk-win32-x64"));
+  const shipped = existsSync(join(root, "WorkStudio", "resources", "app", "node_modules", "@anthropic-ai", "claude-agent-sdk-win32-x64"));
   const home = process.env.USERPROFILE ?? "";
   const ownClaude = [...(process.env.PATH ?? "").split(";").filter(Boolean).map((d) => join(d, "claude.exe")), join(home, ".local", "bin", "claude.exe")].some((p) => existsSync(p));
   const sdkClaude = join(studio, "node_modules", "@anthropic-ai", "claude-agent-sdk-win32-x64", "claude.exe");
@@ -90,7 +90,7 @@ try {
   app = await _electron.launch({ executablePath: exe, args: [], env: env(mockEnv) });
   page = await app.firstWindow();
   await page.getByRole("button", { name: "+ 新任务" }).waitFor({ timeout: 60_000 });
-  const dataDir = join(root, "AMO Studio", "data");
+  const dataDir = join(root, "WorkStudio", "data");
   const info = JSON.parse(readFileSync(join(dataDir, "host.json"), "utf8"));
   const token = readFileSync(join(dataDir, "host-token"), "utf8").trim();
   const api = async (method, path, body) => {
@@ -114,7 +114,7 @@ try {
 
   // Its 便签: the same exe, told which program to run.
   await page.getByTestId("open-scratchpad").click();
-  const notesInStudio = await until("the 便签 of AMO Studio", async () => {
+  const notesInStudio = await until("the 便签 of WorkStudio", async () => {
     const r = readJson(join(dataDir, "notes-home", "running.json"));
     if (!r) return null;
     const res = await fetch(`${r.url}/api/notes`, { headers: { authorization: `Bearer ${r.token}` } }).catch(() => null);

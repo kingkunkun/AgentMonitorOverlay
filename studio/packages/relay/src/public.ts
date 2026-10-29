@@ -110,12 +110,12 @@ h1{font-size:22px;margin:0 0 4px;font-family:"Noto Serif SC","Songti SC",SimSun,
 .btn.alt{background:transparent;color:var(--accent);border:1px solid var(--accent)}
 small{font-weight:400;opacity:.85}ol{padding-left:20px}code{background:var(--bg);padding:1px 6px;border-radius:4px;user-select:all}
 </style></head><body><main><div class="card">
-<h1>${escapeHtml(service)}</h1><p class="muted">团队的 AMO 工具（AMO Studio、AMO Reviewer、AMO 便签等）都从 AMO 平台安装和更新。</p>
+<h1>${escapeHtml(service)}</h1><p class="muted">团队的 AMO 工具（WorkStudio、AMO Reviewer、AMO 便签等）都从 AMO 平台安装和更新。</p>
 ${platformLink}
 <ol class="muted">
 <li>下载后解压到任意文件夹，双击 <code>AMO Platform.exe</code>。</li>
 <li>登录时服务器地址填 <code id="addr"></code>，用团队服务器的账号登录。</li>
-<li>在「工具」里安装要用的工具；第一次打开 AMO Studio 前，先在「目录」里设好 Studio 数据目录。</li>
+<li>在「工具」里安装要用的工具；第一次打开 WorkStudio 前，先在「目录」里设好 Studio 数据目录。</li>
 <li>平台会待在托盘里，有新版时在这里更新，正在用的工具不会被打断。</li>
 </ol>
 </div></main><script>document.getElementById("addr").textContent=location.origin</script></body></html>`;

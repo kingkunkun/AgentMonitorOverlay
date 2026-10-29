@@ -29,7 +29,7 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   override componentDidCatch(error: Error, info: ErrorInfo): void {
-    console.error("AMO Studio: a view failed to render", error, info.componentStack);
+    console.error("WorkStudio: a view failed to render", error, info.componentStack);
   }
 
   override render(): ReactNode {

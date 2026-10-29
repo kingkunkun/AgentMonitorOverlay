@@ -49,7 +49,7 @@ export async function setupChecks(testMode: boolean): Promise<SetupChecks> {
   return { codex, claude, credentials, skipped: false };
 }
 
-const PAGE = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>AMO Studio · 首次设置</title>
+const PAGE = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>WorkStudio · 首次设置</title>
 <style>
 body{margin:0;font:14px/1.6 "Segoe UI","Microsoft YaHei",sans-serif;background:#111316;color:#e6e8eb}
 main{max-width:620px;margin:40px auto;padding:0 24px;display:flex;flex-direction:column;gap:18px}
@@ -60,7 +60,7 @@ button.primary{background:#7fb2ff;color:#0b1626;border-color:#7fb2ff;font-weight
 ul{margin:0;padding-left:20px} .ok{color:#8fddb0} .bad{color:#f2b544} #error{color:#ff8a8a}
 @media (prefers-color-scheme: light){body{background:#f5f6f8;color:#1b2027}.dim{color:#5a6572}input{background:#fff;color:#1b2027;border-color:#dbe0e6}button{background:#f2f4f7;color:#1b2027;border-color:#dbe0e6}button.primary{background:#2f6fd6;color:#fff;border-color:#2f6fd6}.ok{color:#1d7645}.bad{color:#b06f08}#error{color:#c22f35}}
 </style></head><body><main>
-<h1>欢迎使用 AMO Studio</h1>
+<h1>欢迎使用 WorkStudio</h1>
 <div class="dim">这是 Portable 版：程序和数据都可以放在同一个文件夹里，拷走即可带走。</div>
 <section><b>数据放在哪里</b><div class="dim">任务、会话记录、设置都存在这里。默认是程序旁边的 data 文件夹。</div>
 <div class="row"><input id="dir" aria-label="数据目录"><button id="pick">选择…</button></div></section>
@@ -99,7 +99,7 @@ export function runSetup(options: { portableDir: string; configPath: string; def
     const win = new BrowserWindow({
       width: 720,
       height: 620,
-      title: "AMO Studio · 首次设置",
+      title: "WorkStudio · 首次设置",
       icon: options.icon,
       backgroundColor: "#111316",
       show: false,

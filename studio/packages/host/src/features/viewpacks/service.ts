@@ -29,7 +29,7 @@ export class ViewPacksFeature extends Feature {
    * `sessionId` is the caller's identity when an agent sends it; over HTTP it may be given in the body.
    */
   async open(input: unknown, from: { sessionId?: Id | null } = {}): Promise<ViewOpenResult> {
-    if (!this.host.liveWindows) throw new HostError("conflict", "AMO Studio 的窗口没有打开：先启动 AMO Studio，再给人看");
+    if (!this.host.liveWindows) throw new HostError("conflict", "WorkStudio 的窗口没有打开：先启动 WorkStudio，再给人看");
     const body = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
     const sessionId = from.sessionId ?? (typeof body.sessionId === "string" && body.sessionId ? body.sessionId : null);
     const session = sessionId ? this.store.getSession(sessionId) : undefined;

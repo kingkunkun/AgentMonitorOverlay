@@ -16,7 +16,7 @@ export function schedulerBrief(input: SchedulerBriefInput): string {
   const ws = (id: string | null) => (id ? (input.workspaces.find((w) => w.id === id)?.name ?? "?") : "未指定");
   const open = input.todos.filter((t) => !t.done && !t.taskId);
   const lines: string[] = [
-    "你是 AMO Studio 的调度 agent。请看下面的整体待办和各工程是否空闲，挑出现在适合开工的待办，用 amo MCP 的 schedule_propose 工具为每一条提出提案。",
+    "你是 WorkStudio 的调度 agent。请看下面的整体待办和各工程是否空闲，挑出现在适合开工的待办，用 amo MCP 的 schedule_propose 工具为每一条提出提案。",
     "",
     "规则：",
     `- 只提案，不要自己开会话、不要修改文件、不要运行命令；提案要等人批准后才会开工。`,

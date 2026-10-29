@@ -94,7 +94,7 @@ export class CodexRpcClient extends EventEmitter<CodexRpcClientEvents> {
       // 'close' follows and does the cleanup.
     });
     await this.request("initialize", {
-      clientInfo: { name: options.clientName ?? "amo-studio", title: "AMO Studio", version: options.clientVersion ?? "0.0.0" },
+      clientInfo: { name: options.clientName ?? "amo-studio", title: "WorkStudio", version: options.clientVersion ?? "0.0.0" },
     } as ParamsOf<"initialize">);
     this.notify("initialized");
   }

@@ -19,7 +19,7 @@ export const WAKE_MIN_GAP_MS = 10 * 60_000;
 export const LIMIT_KEEP_MS = 15 * 60_000;
 
 /** The message Studio sends after a usage limit outside a loop. */
-export const LIMIT_CONTINUE_TEXT = "额度已恢复（AMO Studio 自动发送）。请检查中断时的现场（包括被中断的子 agent），从中断的地方继续。";
+export const LIMIT_CONTINUE_TEXT = "额度已恢复（WorkStudio 自动发送）。请检查中断时的现场（包括被中断的子 agent），从中断的地方继续。";
 
 /** The CLI's text for a turn stopped at a usage limit ("You've hit your session limit · resets 12:30am …"). */
 export function isUsageLimitText(text: string): boolean {

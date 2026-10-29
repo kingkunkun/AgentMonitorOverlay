@@ -38,7 +38,7 @@ test("resize trace: each drag of a window is summarised in logs/resize-trace.log
   const { app, page, dataDir } = studio;
   await expect(page.getByTestId("host-status")).toBeVisible();
   await app.evaluate(async ({ BrowserWindow }) => {
-    const win = BrowserWindow.getAllWindows().find((w) => w.getTitle() === "AMO Studio")!;
+    const win = BrowserWindow.getAllWindows().find((w) => w.getTitle() === "WorkStudio")!;
     const b = win.getBounds();
     for (let i = 1; i <= 12; i++) {
       win.setBounds({ ...b, width: b.width + i * 8, height: b.height + i * 5 });

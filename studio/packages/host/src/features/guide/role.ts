@@ -80,7 +80,7 @@ export function roleCardFor(service: HostService, subject: RoleSubject): string 
 
 function cardOf(service: HostService, f: RoleFacts): string {
   const ws = service.store.getWorkspace(f.session.workspaceId);
-  const lines: string[] = [`## 你在 AMO Studio 里的角色：${ROLE_NAME[f.role]}`, "", ROLE_DUTY[f.role], ""];
+  const lines: string[] = [`## 你在 WorkStudio 里的角色：${ROLE_NAME[f.role]}`, "", ROLE_DUTY[f.role], ""];
   lines.push(`- 会话：${f.session.title || "（未命名）"}（${f.sessionId ?? "新会话"}，${f.session.runtime}）`);
   if (f.task) {
     lines.push(`- 任务：${taskName(f.task)}（${f.task.id}）· 状态 ${f.task.column}${f.task.lead ? " · 主控" : ""}`);

@@ -9,7 +9,7 @@ import { PACKS_DIR } from "@amo-studio/protocol";
 // exclude file (`git rev-parse --git-path`); a project inside a larger repository gets a line with its own sub path.
 
 const AMO_DIR = PACKS_DIR.split("/")[0]!;
-const COMMENT = "# AMO Studio: the project's .amo/ (extension packs)";
+const COMMENT = "# WorkStudio: the project's .amo/ (extension packs)";
 
 /** git's exit code and stdout; no shell, a timeout, prompts off. */
 function run(cwd: string, args: readonly string[]): Promise<{ code: number; out: string }> {

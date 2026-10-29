@@ -187,7 +187,7 @@ export class SessionsFeature extends Feature {
         command,
         cwd: ws?.path ?? process.cwd(),
         env: { [TERMINAL_TOKEN_ENV]: info.token },
-        title: `AMO Studio · ${s.title || "会话"}`,
+        title: `WorkStudio · ${s.title || "会话"}`,
       });
       this.runtime.setWriter(sessionId, "terminal-shared");
     }
@@ -208,7 +208,7 @@ export class SessionsFeature extends Feature {
     let handle: TerminalHandle | undefined;
     try {
       // The complete environment: nothing Claude-related from the Host's own environment leaks into the terminal.
-      handle = launcher.launch({ command: plan.command, cwd: plan.cwd, env: plan.env, envMode: "replace", track: true, title: `AMO Studio · ${s.title || "Claude 会话"}` });
+      handle = launcher.launch({ command: plan.command, cwd: plan.cwd, env: plan.env, envMode: "replace", track: true, title: `WorkStudio · ${s.title || "Claude 会话"}` });
     } catch (err) {
       await this.reclaim(s.id).catch(() => undefined);
       throw err;
@@ -299,10 +299,10 @@ export class SessionsFeature extends Feature {
       text,
       "",
       forPerson
-        ? `（这个会话是同一任务里的另一个会话（${from.id}）替人通过 AMO Studio 开的，之后听人的。要告诉那个会话什么，用 mailbox_send 给会话 ${from.id}。）`
+        ? `（这个会话是同一任务里的另一个会话（${from.id}）替人通过 WorkStudio 开的，之后听人的。要告诉那个会话什么，用 mailbox_send 给会话 ${from.id}。）`
         : report
-          ? `（这个会话是同一任务里的另一个会话（${from.id}）通过 AMO Studio 开的。每一轮做完后，你最后的回复会自动转给它（被人停下或出错时也会告诉它）；中途要告诉它什么，用 mailbox_send 给会话 ${from.id}。）`
-          : `（这个会话是同一任务里的另一个会话（${from.id}）通过 AMO Studio 开的。要告诉它什么，用 mailbox_send 给会话 ${from.id}。）`,
+          ? `（这个会话是同一任务里的另一个会话（${from.id}）通过 WorkStudio 开的。每一轮做完后，你最后的回复会自动转给它（被人停下或出错时也会告诉它）；中途要告诉它什么，用 mailbox_send 给会话 ${from.id}。）`
+          : `（这个会话是同一任务里的另一个会话（${from.id}）通过 WorkStudio 开的。要告诉它什么，用 mailbox_send 给会话 ${from.id}。）`,
     ].join("\n");
     const started = await this.f.tasks.startSession({ taskId: task.id, topicId: null }, workspace, { profileId, text: message, ...(options ? { options } : {}) });
     // 委派 (10-22): the session list shows it under the caller; otherwise it is a main session like any other. One for

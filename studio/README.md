@@ -1,4 +1,4 @@
-# AMO Studio
+# WorkStudio
 
 由人主导、agent 也能参与的项目推进工作台。看板管任务，画布看全局，每个任务下面是若干个和模型的会话（Codex、Claude、DeepSeek），你在工作台里对话、审阅、批注，需要时一键交给原版终端。
 
@@ -56,7 +56,7 @@ Studio 的首次启动：
 
 **左栏排序**：项目和专题的条目可以拖到目标行上方或下方；选中一行后也可用 `Alt + ↑/↓` 调整。置顶项仍在前面，置顶组和普通组分别排序。拖动「项目」「专题」的标题还可以交换两个模块的上下位置。顺序保存在本机，刷新或重新打开同一 Studio 实例后沿用，改名后位置不变。
 
-**从其他工具打开 Review**：AMO Studio 开着时，别的 harness 或脚本可以让它打开某个文件夹的 Git Review（文件夹还不是项目时自动登记）。
+**从其他工具打开 Review**：WorkStudio 开着时，别的 harness 或脚本可以让它打开某个文件夹的 Git Review（文件夹还不是项目时自动登记）。
 
 ```
 studio\amo-review.cmd G:\PROJECT\game                          未提交的改动
@@ -91,7 +91,7 @@ studio\amo-review.cmd G:\PROJECT\game --mode file --file src\Drop.cs --line 24 -
 ## 常见问题
 
 - **数据在哪里？** Portable 版在首次设置选的目录（默认 exe 旁边的 `data/`）；里面有数据库、日志、Studio 自己的 Claude/Codex 配置。Studio 不改你的 `~/.codex/config.toml` 和 `~/.claude`。
-- **换电脑**：把整个 `AMO Studio` 文件夹拷过去即可；新机器上要有 codex 和对应的凭据。
+- **换电脑**：把整个 `WorkStudio` 文件夹拷过去即可；新机器上要有 codex 和对应的凭据。
 - **Host 是什么？** 后台常驻的服务，管会话和数据；关掉窗口它还在，会话不会断。开发时用 `npm run host:stop` 停掉。
 - **密钥放哪？** Windows 凭据管理器。Studio 只读取，并且只传给模型进程，不写日志、不出现在命令行；agent 运行的命令读不到这些密钥。
 - **GPT 订阅** 用你本机 Codex 的登录和默认模型，不用另外设置。**Claude 订阅** 默认用你本机 Claude Code 的登录：在终端运行 `claude` 登录一次即可，Studio 的 Claude 会话和终端共用账号与额度。也可以在 设置 → 模型 改用长期令牌（`claude setup-token` 生成，粘贴后存进凭据管理器，是 Studio 唯一会写入那里的一项，可以随时删除）。

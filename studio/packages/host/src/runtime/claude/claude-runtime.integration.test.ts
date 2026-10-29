@@ -97,7 +97,7 @@ describe("ClaudeRuntime", () => {
     // Claude Code's own system prompt, as in a terminal; nothing of Studio's added.
     const system = JSON.stringify(last.body.system);
     expect(system.length).toBeGreaterThan(3000);
-    expect(system).not.toContain("AMO Studio");
+    expect(system).not.toContain("WorkStudio");
   }, 120_000);
 
   it("loads the project's CLAUDE.md as a terminal does, and its AGENTS.md when there is no CLAUDE.md", async () => {

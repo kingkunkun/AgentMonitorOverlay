@@ -108,7 +108,7 @@ describe("maintenance", () => {
     expect(status).toBe(200);
     expect(data).toMatchObject({ cli: "codex", command: `& '${join(bin, "codex.cmd")}'` });
     const launch = launcher.launches[0]!;
-    expect(launch).toMatchObject({ command: data.command, cwd: data.cwd, envMode: "replace", title: "AMO Studio 维护 · Codex" });
+    expect(launch).toMatchObject({ command: data.command, cwd: data.cwd, envMode: "replace", title: "WorkStudio 维护 · Codex" });
     expect(existsSync(join(launch.cwd, ".git"))).toBe(true);
     expect(Object.keys(launch.env).filter((k) => /^(CLAUDE|ANTHROPIC_|ELECTRON_RUN_AS_NODE|AMO_STUDIO_|NO_COLOR)/i.test(k))).toEqual([]);
     expect(launch.env.AMO_TEST_KEPT).toBe("kept");

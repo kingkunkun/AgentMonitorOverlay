@@ -74,7 +74,7 @@ describe("connectHost", () => {
   // that message as it is, to show it, instead of only "exited with code 4" pointing at host.log.
   it("passes on what a Host that cannot start says, as it is", async () => {
     root = mkdtempSync(join(tmpdir(), "amo-studio-test-hostlink-"));
-    const said = "这份数据（D:\\data）被更新版本的 AMO Studio 用过（数据库版本 30，这个版本只认识到 22）。请先把 Studio 更新到新版本再打开。";
+    const said = "这份数据（D:\\data）被更新版本的 WorkStudio 用过（数据库版本 30，这个版本只认识到 22）。请先把 Studio 更新到新版本再打开。";
     const bin = join(root, "refusing-host.mjs");
     writeFileSync(bin, `process.send({ type: ${JSON.stringify(HOST_START_FAILED)}, message: ${JSON.stringify(said)} }, () => process.exit(4));\n`);
     const err = await connectHost({ dataDir: join(root, "data"), hostBin: bin, attached: true, timeoutMs: 10_000 }).catch((e: unknown) => e);

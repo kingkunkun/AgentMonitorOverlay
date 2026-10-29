@@ -161,7 +161,7 @@ test("review_open on a whole project opens Review; the conversation's row opens 
   await expect(reopened.getByTestId("review-file")).toHaveCount(1);
 });
 
-test("amo-review says when AMO Studio is not running", async () => {
+test("amo-review says when WorkStudio is not running", async () => {
   const r = await promisify(execFile)(process.execPath, [SCRIPT, ".", "--data", join(HERE, "no-such-data")], { encoding: "utf8", windowsHide: true }).catch((e: { code: number; stderr: string }) => e);
   expect(r).toMatchObject({ code: 2 });
   expect((r as { stderr: string }).stderr).toContain("没有在运行");

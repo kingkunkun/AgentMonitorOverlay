@@ -98,7 +98,7 @@ function Settings({ link }: { link: HostLink }) {
             </button>
           ))}
         </div>
-        <p className="ns-hint">便签自己的文字和按钮大小，和 AMO Studio 的界面大小分开设。</p>
+        <p className="ns-hint">便签自己的文字和按钮大小，和 WorkStudio 的界面大小分开设。</p>
       </section>
 
       <section className="ns-section" aria-label="复制时的换行">

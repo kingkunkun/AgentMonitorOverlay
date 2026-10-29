@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { shell } from "./env.js";
 
-// The window's own buttons, as in AMO Studio (shell/TopBar.tsx): the desktop client has no system title bar, so the
+// The window's own buttons, as in WorkStudio (shell/TopBar.tsx): the desktop client has no system title bar, so the
 // top bar is the title bar — it drags the window — and ends with minimise, maximise / restore and close (close hides
 // it to the tray). A Mac keeps its traffic lights; a browser or an older client keeps the system's bar.
 

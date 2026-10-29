@@ -79,7 +79,7 @@ describe("Claude questions", () => {
     await until(() => status(s.id) === "awaiting-answer", "the question");
     await runtime.answerQuestion(s.id, question(s.id)!.id, { action: "dismiss" });
     await until(() => lastAgent(s.id).startsWith("MOCK-ANSWERED") && status(s.id) === "idle", "the reply");
-    expect(lastAgent(s.id)).toContain("closed these questions in AMO Studio without answering");
+    expect(lastAgent(s.id)).toContain("closed these questions in WorkStudio without answering");
     expect(question(s.id)).toMatchObject({ state: "dismissed" });
   }, 120_000);
 

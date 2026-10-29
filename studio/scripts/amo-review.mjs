@@ -1,4 +1,4 @@
-// 外部打开 Review (2026-10-18): asks the AMO Studio that is open to show a project's changes in its Git Review window.
+// 外部打开 Review (2026-10-18): asks the WorkStudio that is open to show a project's changes in its Git Review window.
 //
 //   amo-review [folder] [--base REF | --commit REF [--base REF] | --range A..B | --range A...B]
 //              [--mode file|changes] [--file PATH] [--line N [--end-line N]] [--session ID] [--data DIR] [--json]
@@ -10,7 +10,7 @@
 // data folder (default studio/.data, or AMO_STUDIO_DATA_DIR).
 // --reviewer (2026-10-23): the AMO Reviewer program instead of Studio (any tool or model can use it; its data is in
 // AMO_REVIEWER_HOME or %APPDATA%\AMO Reviewer). Started with the folder when it is not running.
-// Exit codes: 0 opened, 1 refused (the message says why), 2 AMO Studio (or the Reviewer) is not running.
+// Exit codes: 0 opened, 1 refused (the message says why), 2 WorkStudio (or the Reviewer) is not running.
 
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
@@ -59,7 +59,7 @@ const reviewerHome = resolve(process.env.AMO_REVIEWER_HOME ?? join(process.env.A
 const dataDir = resolve(opts.data ?? (reviewer ? join(reviewerHome, "data") : (process.env.AMO_STUDIO_DATA_DIR ?? join(studioRoot, ".data"))));
 delete opts.data;
 const notRunning = (why) => {
-  console.error(`${reviewer ? "AMO Reviewer" : "AMO Studio"} 没有在运行（${dataDir}）：${why}`);
+  console.error(`${reviewer ? "AMO Reviewer" : "WorkStudio"} 没有在运行（${dataDir}）：${why}`);
   process.exit(2);
 };
 
@@ -120,5 +120,5 @@ if (json) console.log(JSON.stringify(out));
 else {
   const t = out.target;
   const what = t.mode === "file" ? `文件 ${t.file}${t.line ? `:${t.line}${t.endLine ? `–${t.endLine}` : ""}` : ""}` : t.commit ? `提交 ${t.commit.slice(0, 7)}${t.base ? `（对比 ${t.base.slice(0, 7)}）` : ""}` : t.base ? `工作区对比 ${t.baseLabel ?? t.base.slice(0, 7)}` : "未提交的改动";
-  console.log(`已请求 ${reviewer ? "AMO Reviewer" : "AMO Studio"} 打开 Review：${what}${out.workspaceAdded ? "（新登记了这个项目）" : ""}`);
+  console.log(`已请求 ${reviewer ? "AMO Reviewer" : "WorkStudio"} 打开 Review：${what}${out.workspaceAdded ? "（新登记了这个项目）" : ""}`);
 }

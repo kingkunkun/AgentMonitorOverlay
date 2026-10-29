@@ -9,7 +9,7 @@ export function guideTools({ service, caller }: ToolContext): AmoTool[] {
     {
       name: "amo_whoami",
       title: "我的角色",
-      description: "Your role card in AMO Studio: who you are (主控 / 执行 / 专题会话 / 分支), your task and its description, your project and topic, the topic's 主控, its documents, and what your role should and should not do. Call it before your first other AMO tool.",
+      description: "Your role card in WorkStudio: who you are (主控 / 执行 / 专题会话 / 分支), your task and its description, your project and topic, the topic's 主控, its documents, and what your role should and should not do. Call it before your first other AMO tool.",
       inputSchema: {},
       readOnly: true,
       autoApprove: true,
@@ -18,7 +18,7 @@ export function guideTools({ service, caller }: ToolContext): AmoTool[] {
     {
       name: "amo_guide",
       title: "AMO 用法",
-      description: `How AMO Studio works and which tools to use, by section: ${GUIDE_SECTIONS.join(", ")} (overview when left out).`,
+      description: `How WorkStudio works and which tools to use, by section: ${GUIDE_SECTIONS.join(", ")} (overview when left out).`,
       inputSchema: { section: z.enum(GUIDE_SECTIONS).optional() },
       readOnly: true,
       autoApprove: true,

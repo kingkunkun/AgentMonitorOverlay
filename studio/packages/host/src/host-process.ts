@@ -85,7 +85,7 @@ export interface RunningHost {
 
 export class HostAlreadyRunningError extends Error {
   constructor(readonly info: HostInfo | null) {
-    super(`AMO Studio Host is already running${info ? ` at ${info.url} (pid ${info.pid})` : ""}`);
+    super(`WorkStudio Host is already running${info ? ` at ${info.url} (pid ${info.pid})` : ""}`);
     this.name = "HostAlreadyRunningError";
   }
 }

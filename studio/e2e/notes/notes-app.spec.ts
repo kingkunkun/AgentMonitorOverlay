@@ -205,7 +205,7 @@ test("pages from Studio come over once, with a notice in the window until it is 
   expect(r).toEqual({ pages: 1, images: 1 });
   await pad.reload();
   await expect(pad.getByLabel("便签内容")).toHaveValue("Studio 的第一页");
-  await expect(pad.getByTestId("pad-imported")).toContainText("已从 AMO Studio 搬过来");
+  await expect(pad.getByTestId("pad-imported")).toContainText("已从 WorkStudio 搬过来");
   await expect(pad.getByTestId("pad-image")).toHaveCount(1);
   await pad.getByTestId("pad-imported").getByRole("button", { name: "知道了" }).click();
   await expect(pad.getByTestId("pad-imported")).toHaveCount(0);

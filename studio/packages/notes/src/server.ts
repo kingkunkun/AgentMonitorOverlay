@@ -9,7 +9,7 @@ import { NotesError, type NotesStore } from "./store.js";
 
 // The 便签 program's own small server (2026-10-23), on 127.0.0.1 with a token. It answers the few Host routes the
 // scratchpad window uses (so that window works unchanged against it), serves the UI build, and adds its own routes
-// (/api/notes/...) for the settings window and for AMO Studio, which finds it through running.json.
+// (/api/notes/...) for the settings window and for WorkStudio, which finds it through running.json.
 
 /** What the program itself does when asked (windows, the shortcut, Windows' login items). */
 export interface NotesShell {

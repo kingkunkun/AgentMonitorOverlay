@@ -7,7 +7,7 @@ import { Session, type Identity } from "./session.js";
 import { normalizeServer, RelayClient, RelayClientError, type ShellInfo } from "./shared.js";
 import { applyFontSize, applyTheme, readFontSize, readTheme } from "./theme.js";
 import { takeResume } from "./update.js";
-// AMO Studio's fonts and theme variables, so the client looks like Studio (stage 2a).
+// WorkStudio's fonts and theme variables, so the client looks like Studio (stage 2a).
 import "@fontsource-variable/noto-serif-sc";
 import "@fontsource-variable/jetbrains-mono";
 import "../../ui/src/styles/base.css";

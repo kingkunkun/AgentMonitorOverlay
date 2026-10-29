@@ -1,6 +1,6 @@
-# AMO Studio
+# WorkStudio
 
-AMO Studio 是一个 Windows 桌面工作台，用来推进有 AI agent 参与的项目：人决定做什么、批准什么，agent 在会话里干活。看板管任务，画布看全局，每个任务下面可以开多个和模型的会话（Codex、Claude、DeepSeek）。对话、审批、看改动、写批注，都在同一个工作台里完成。
+WorkStudio 是一个 Windows 桌面工作台，用来推进有 AI agent 参与的项目：人决定做什么、批准什么，agent 在会话里干活。看板管任务，画布看全局，每个任务下面可以开多个和模型的会话（Codex、Claude、DeepSeek）。对话、审批、看改动、写批注，都在同一个工作台里完成。
 
 随它一起的还有两个可以单独使用的小程序：**AMO Reviewer**（Git Review 和查看器）和 **AMO 便签**。
 

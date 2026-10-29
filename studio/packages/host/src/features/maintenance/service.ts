@@ -55,7 +55,7 @@ export class MaintenanceFeature extends Feature {
     if (!exe) throw new HostError("bad_request", NOT_FOUND[cli]);
     const command = `& '${exe.replace(/'/g, "''")}'`;
     const env = Object.fromEntries(Object.entries(process.env).filter(([k, v]) => v !== undefined && !NOT_PASSED_ON.test(k))) as Record<string, string>;
-    launcher.launch({ command, cwd, env, envMode: "replace", title: `AMO Studio 维护 · ${CLI_NAME[cli]}` });
+    launcher.launch({ command, cwd, env, envMode: "replace", title: `WorkStudio 维护 · ${CLI_NAME[cli]}` });
     return { cli, command, cwd };
   }
 

@@ -163,7 +163,7 @@ async function ask(options: { message: string; detail: string; yes: string }): P
     (g.__amoQuitAsked ??= []).push(options);
     return g.__amoQuitAnswers?.shift() ?? false;
   }
-  const r = await dialog.showMessageBox({ type: "warning", title: "完全退出 AMO Studio", message: options.message, detail: options.detail, buttons: [options.yes, "取消"], defaultId: 1, cancelId: 1, noLink: true });
+  const r = await dialog.showMessageBox({ type: "warning", title: "完全退出 WorkStudio", message: options.message, detail: options.detail, buttons: [options.yes, "取消"], defaultId: 1, cancelId: 1, noLink: true });
   return r.response === 0;
 }
 
@@ -219,7 +219,7 @@ async function quitCompletely(): Promise<void> {
       stopKeepAlive?.();
       mainWindow?.hide();
       focusWindow?.hide();
-      tray?.setToolTip("AMO Studio · 正在退出…");
+      tray?.setToolTip("WorkStudio · 正在退出…");
       trace?.note("host", `完全退出: the Host is stopping${answer.running ? ` (${answer.running} sessions interrupted)` : ""}`);
       if (conn.pid && !(await waitForExit(conn.pid, 30_000))) trace?.note("host", "完全退出: the Host still runs after 30 s; quitting anyway");
     }
@@ -278,7 +278,7 @@ function trayImage(): Electron.NativeImage {
 
 function createTray(): void {
   tray = new Tray(trayImage());
-  tray.setToolTip("AMO Studio");
+  tray.setToolTip("WorkStudio");
   tray.on("click", showMain);
   tray.setContextMenu(Menu.buildFromTemplate(trayItems()));
 }
@@ -609,13 +609,13 @@ if (!app.requestSingleInstanceLock()) {
       }
     })
     .catch((err: unknown) => {
-      console.error("AMO Studio failed to start:", err);
+      console.error("WorkStudio failed to start:", err);
       // Said to the person, not only logged (2026-10-28): the shell runs detached, and without a window it just
       // vanished. A Host that said why in words (data of a newer Studio) is shown as it is. Tests only log.
       if (!testMode) {
         const detail = err instanceof Error ? err.message : String(err);
         const text = err instanceof HostStartError ? (err.forPerson ?? `Studio 的后台（Host）没能启动：${detail}\n\n记录在 ${join(dataDir, "host.log")}。`) : `启动时出错：${detail}`;
-        dialog.showErrorBox("AMO Studio 没能启动", text);
+        dialog.showErrorBox("WorkStudio 没能启动", text);
       }
       app.exit(1);
     });
@@ -672,7 +672,7 @@ function createMainWindow(conn: HostConnection): BrowserWindow {
     ...bounds,
     // The smallest size: kept by the resize handler below, not by the window (2026-10-15 flicker; see there).
     ...(windowMinSize ? { minWidth: MAIN_MIN.width, minHeight: MAIN_MIN.height } : {}),
-    title: "AMO Studio",
+    title: "WorkStudio",
     icon: APP_ICON,
     // Before the page paints: the light (editorial) theme is the default.
     backgroundColor: "#efede8",

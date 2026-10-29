@@ -48,7 +48,7 @@ if ($Install -or $installed -ne $lockHash) {
     npm install --no-audit --no-fund
   }
   if ($LASTEXITCODE -ne 0) {
-    Fail "Installing the dependencies failed. Close AMO Studio and its notes window started from this folder, then retry."
+    Fail "Installing the dependencies failed. Close WorkStudio and its notes window started from this folder, then retry."
   }
   if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot "node_modules\electron\dist\electron.exe"))) {
     Note "Downloading Electron..."

@@ -1,6 +1,6 @@
 // Portable builds (2026-10-24): three downloads, each Electron's own runtime with the program in resources/app, no
 // installer, no asar.
-//   AMO Studio    the whole tool: Studio, with AMO 便签 and Git Review / the viewer (AMO Reviewer's windows) in it
+//   WorkStudio    the whole tool: Studio, with AMO 便签 and Git Review / the viewer (AMO Reviewer's windows) in it
 //   AMO Reviewer  Git Review and the viewer on their own, for any tool or model
 //   AMO Notes     the 便签 on its own
 //   npm run build && node scripts/package-portable.mjs [outDir] [--zip] [--only studio,reviewer,notes]   (npm run package:portable)
@@ -14,7 +14,7 @@
 //   <out>/<Name>/<Name>.exe                          Electron, renamed, with the program's icon and version info
 //   <out>/<Name>/resources/app/package.json          main: launch.js
 //   <out>/<Name>/resources/app/launch.js             runs the program, or the one --amo-app=<id> names (Studio starts
-//                                                    its 便签 as `AMO Studio.exe --amo-app=notes`)
+//                                                    its 便签 as `WorkStudio.exe --amo-app=notes`)
 //   <out>/<Name>/resources/app/packages/<pkg>/       package.json + dist (+ assets)
 //   <out>/<Name>/resources/app/node_modules/         production dependencies, copied from studio/node_modules
 //   <out>/<Name>/使用说明.txt
@@ -54,9 +54,9 @@ const BUILDS = {
     skipDeps: /^@anthropic-ai\/claude-agent-sdk-/,
     icon: () => join(studio, "packages", "app", "assets", "icon.ico"),
     readme: [
-      "AMO Studio（完整版：工作台 + AMO 便签 + Git Review / 查看器）",
+      "WorkStudio（完整版：工作台 + AMO 便签 + Git Review / 查看器）",
       "",
-      "双击 AMO Studio.exe。第一次打开会让你选数据目录，默认是这个文件夹里的 data（整个文件夹拷走，数据就带走了）。",
+      "双击 WorkStudio.exe。第一次打开会让你选数据目录，默认是这个文件夹里的 data（整个文件夹拷走，数据就带走了）。",
       "AMO 便签会随 Studio 启动，在托盘里；全局快捷键默认 Ctrl+Shift+F12。便签的设置和页面在 %APPDATA%\\AMO Notes，",
       "和独立版 AMO Notes 共用同一份。Git Review 和查看器在 Studio 里打开（任务页的 Review、文件链接）。",
       "",
@@ -72,7 +72,7 @@ const BUILDS = {
     skipDeps: /^@anthropic-ai\/claude-agent-sdk-/,
     icon: () => join(studio, "packages", "reviewer", "assets", "icon.ico"),
     readme: [
-      "AMO Reviewer（独立版：Git Review 和查看器，不需要 AMO Studio）",
+      "AMO Reviewer（独立版：Git Review 和查看器，不需要 WorkStudio）",
       "",
       "用法（命令行，任何工具或模型都能调用；已经开着时由开着的那个打开）：",
       "  \"AMO Reviewer.exe\" <文件夹>                                     这个文件夹未提交的改动",
@@ -97,7 +97,7 @@ const BUILDS = {
       "",
       "双击 AMO Notes.exe，它会待在托盘里：左键托盘图标显示 / 隐藏，右键是菜单（设置、退出）。",
       "全局快捷键默认 Ctrl+Shift+F12，Ctrl+Enter 复制当前页并隐藏，Alt+1…9 换页。",
-      "设置和页面在 %APPDATA%\\AMO Notes（工作文件夹可以在设置里换）；和 AMO Studio 带的便签共用同一份。",
+      "设置和页面在 %APPDATA%\\AMO Notes（工作文件夹可以在设置里换）；和 WorkStudio 带的便签共用同一份。",
     ],
   },
   // AMO 平台 (2026-10-28, plans/amo-lan-platform.md): the tray app that installs and updates the others from the team server.
@@ -109,7 +109,7 @@ const BUILDS = {
       "AMO 平台",
       "",
       "这个文件夹要放在能写入的地方（比如 D:\\TOOLS\\AMO Platform；不要放进 Program Files）。双击 AMO Platform.exe，用团队服务器的账号登录（和 AMO 中转同一个账号）。之后它待在托盘里：",
-      "在「工具」里安装、打开、更新、回滚 AMO Studio、AMO Reviewer、AMO 便签；第一次打开 Studio 前先在「目录」里设好 Studio 数据目录。",
+      "在「工具」里安装、打开、更新、回滚 WorkStudio、AMO Reviewer、AMO 便签；第一次打开 Studio 前先在「目录」里设好 Studio 数据目录。",
       "工具和平台自己的新版都装在这个文件夹的 apps 里（每个版本一个文件夹），AMO Platform.exe 会跟着换成新版，以后照旧双击它。要换位置，把整个文件夹移过去。设置和登录在 %APPDATA%\\AMO。",
       "想先用测试版：设置里把更新通道换成「测试」，或者带参数 --channel test 启动。",
     ],

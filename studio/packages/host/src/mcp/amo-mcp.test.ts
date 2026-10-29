@@ -342,7 +342,7 @@ describe("AMO MCP", () => {
   it("tells a session its role; a 主控 writes the topic's documents, which every session reads (stage 16)", async () => {
     const client = await connect(MCP_TOKEN, identities.tokenFor(mainSessionId));
     const card = (await text(client, "amo_whoami")).text;
-    expect(card).toContain("你在 AMO Studio 里的角色：执行");
+    expect(card).toContain("你在 WorkStudio 里的角色：执行");
     expect(card).toContain("导入重试");
     expect(card).toContain("专题：导入专题");
     expect(card).toContain("专题的主控：还没有");

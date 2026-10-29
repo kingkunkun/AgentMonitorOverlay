@@ -70,7 +70,7 @@ describe("role card (2026-10-17)", () => {
     await start(task.id);
     const call = servers.fakes.get("p-ds")!.calls.find((c) => c.method === "thread/start")!;
     const instructions = (call.params as { developerInstructions?: string }).developerInstructions;
-    expect(instructions).toContain("你在 AMO Studio 里的角色：执行");
+    expect(instructions).toContain("你在 WorkStudio 里的角色：执行");
     expect(instructions).toContain("任务：装甲车");
     expect(instructions).toContain("新会话");
   });

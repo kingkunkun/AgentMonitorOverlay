@@ -1,4 +1,4 @@
-// 跟随系统 / 浅色 / 深色, as in AMO Studio: the theme variables (Studio's base.css) answer to data-theme on <html>,
+// 跟随系统 / 浅色 / 深色, as in WorkStudio: the theme variables (Studio's base.css) answer to data-theme on <html>,
 // and follow the system without it. Kept per viewer in this browser or client.
 
 export type Theme = "system" | "light" | "dark";

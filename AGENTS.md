@@ -8,7 +8,7 @@ AMO 是一组给「有 AI 参与的项目」用的 Windows 桌面工具。代码
 
 | 工具 | 是什么 | 主要的包 |
 |---|---|---|
-| AMO Studio | 工作台：看板、任务、和模型的会话（Codex / Claude / DeepSeek）、画布 | `app`（Electron 主进程）、`host`（常驻后台，会话都在里面）、`protocol`（共用类型和接口）、`ui`（全部界面） |
+| WorkStudio | 工作台：看板、任务、和模型的会话（Codex / Claude / DeepSeek）、画布 | `app`（Electron 主进程）、`host`（常驻后台，会话都在里面）、`protocol`（共用类型和接口）、`ui`（全部界面） |
 | AMO Reviewer | Git Review 和查看器（含 HTML 批注），可以单独用，Studio 里也带着 | `reviewer`（独立程序的入口），界面在 `ui/src/gitreview` 等，后台用 `host` |
 | AMO 便签 | 托盘常驻的随手记，可以单独用，Studio 会顺带启动它 | `notes` |
 | AMO 中转（Relay） | 局域网服务 + 桌面客户端：策划的 AI 把要确认的事发给程序，人和人聊天 | `relay`（服务、命令行、MCP）、`relay-ui`（客户端界面，从服务器热更新）、`relay-app`（客户端外壳） |

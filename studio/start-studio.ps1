@@ -1,4 +1,4 @@
-# Starts the AMO Studio development build on this machine (Windows).
+# Starts the WorkStudio development build on this machine (Windows).
 #   start-studio.cmd             install what is missing, build, open Studio
 #   start-studio.cmd -Install    reinstall dependencies first (npm ci)
 #   start-studio.cmd -Stop       stop the resident Host (ends live sessions)
@@ -14,16 +14,16 @@ Set-Location -LiteralPath $PSScriptRoot
 
 function Fail([string]$message) {
   Write-Host ""
-  Write-Host "[AMO Studio] $message" -ForegroundColor Red
+  Write-Host "[WorkStudio] $message" -ForegroundColor Red
   exit 1
 }
 
 function Note([string]$message) {
-  Write-Host "[AMO Studio] $message" -ForegroundColor Cyan
+  Write-Host "[WorkStudio] $message" -ForegroundColor Cyan
 }
 
 function Warn([string]$message) {
-  Write-Host "[AMO Studio] $message" -ForegroundColor Yellow
+  Write-Host "[WorkStudio] $message" -ForegroundColor Yellow
 }
 
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
@@ -57,7 +57,7 @@ if ($Install -or $installed -ne $lockHash) {
     npm install --no-audit --no-fund
   }
   if ($LASTEXITCODE -ne 0) {
-    Fail ("Installing the dependencies failed. Close AMO Studio and its notes window, then retry. If the Electron download timed out, use a mirror (in cmd):`n" +
+    Fail ("Installing the dependencies failed. Close WorkStudio and its notes window, then retry. If the Electron download timed out, use a mirror (in cmd):`n" +
       "    set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/`n    start-studio.cmd -Install")
   }
   # Electron's own program is downloaded by its install script; an interrupted install can leave it out.

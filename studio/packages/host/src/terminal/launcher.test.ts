@@ -6,14 +6,14 @@ import { TERMINAL_COMMAND_ENV, windowsStartLine } from "./launcher.js";
 // 10-28: the command goes in the environment, no longer as -EncodedCommand (an antivirus took that for a trojan).
 describe("windowsStartLine", () => {
   it("quotes the title once for cmd and has PowerShell run the command from its environment", () => {
-    const line = windowsStartLine({ cwd: "G:/PROJECT/repo", title: 'AMO Studio 维护 · "Claude" 50%', track: false });
-    expect(line).toBe(`/d /c start "AMO Studio 维护 · Claude 50" /D "G:/PROJECT/repo" powershell.exe -NoExit -NoLogo -Command "$c = $env:${TERMINAL_COMMAND_ENV}; Remove-Item Env:${TERMINAL_COMMAND_ENV}; Invoke-Expression $c"`);
+    const line = windowsStartLine({ cwd: "G:/PROJECT/repo", title: 'WorkStudio 维护 · "Claude" 50%', track: false });
+    expect(line).toBe(`/d /c start "WorkStudio 维护 · Claude 50" /D "G:/PROJECT/repo" powershell.exe -NoExit -NoLogo -Command "$c = $env:${TERMINAL_COMMAND_ENV}; Remove-Item Env:${TERMINAL_COMMAND_ENV}; Invoke-Expression $c"`);
     expect(line).not.toMatch(/EncodedCommand|ExecutionPolicy/);
   });
 
   it("waits on a tracked terminal and keeps no shell open after the command", () => {
     const line = windowsStartLine({ cwd: "C:/w", title: "", track: true });
-    expect(line).toMatch(/^\/d \/c start "AMO Studio" \/WAIT \/D "C:\/w" powershell\.exe -NoLogo -Command "[^"%&^]+"$/);
+    expect(line).toMatch(/^\/d \/c start "WorkStudio" \/WAIT \/D "C:\/w" powershell\.exe -NoLogo -Command "[^"%&^]+"$/);
   });
 
   // The same line minus `start` (no window opens): cmd hands it on intact, and PowerShell runs a command full of what
