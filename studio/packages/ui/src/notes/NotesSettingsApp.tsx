@@ -54,7 +54,7 @@ export function NotesSettingsApp() {
         </span>
         <span className="spacer" />
         {about && (
-          <span className="ns-version" data-testid="ns-version" title={about.viaStudio ? `没有单独安装，随 AMO Studio ${about.viaStudio} 运行` : undefined}>
+          <span className="ns-version" data-testid="ns-version" title={about.viaStudio ? `没有单独安装，随 WorkStudio ${about.viaStudio} 运行` : undefined}>
             {about.version ? `版本 ${about.version}` : "版本读不到"}
             {about.dev ? " · 开发版" : about.viaStudio ? " · 随 Studio" : ""}
           </span>
@@ -133,7 +133,7 @@ function Settings({ link }: { link: HostLink }) {
             </button>
           ))}
         </div>
-        <p className="ns-hint">便签、它的设置和托盘菜单都跟着变，和 AMO Studio 的主题分开设。</p>
+        <p className="ns-hint">便签、它的设置和托盘菜单都跟着变，和 WorkStudio 的主题分开设。</p>
       </section>
 
       <section className="ns-section" aria-label="复制时的换行">

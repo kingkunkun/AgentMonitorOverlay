@@ -41,7 +41,7 @@ describe("android-publish", () => {
     const { latest } = androidRelease({ apk, root, badging: badging(), now });
     expect(latest).toEqual({ version: "0.1.1", versionCode: 2, file: "AMO-Studio-Android-0.1.1.apk", size: "PK apk 0.1.1".length, sha256: createHash("sha256").update("PK apk 0.1.1").digest("hex"), notes: "- 能自己更新", publishedAt: now.toISOString() });
     expect(() => androidRelease({ apk, root, badging: badging("0.1.0", 1) })).toThrow("先重新 ./build.ps1");
-    expect(() => androidRelease({ apk, root, badging: badging("0.1.1", 2, "dev.other") })).toThrow("不是 AMO Studio 安卓版");
+    expect(() => androidRelease({ apk, root, badging: badging("0.1.1", 2, "dev.other") })).toThrow("不是 WorkStudio 安卓版");
     expect(() => androidRelease({ apk: join(root, "nope.apk"), root, badging: badging() })).toThrow("先在 android 目录里 ./build.ps1");
     const bare = androidRoot({ changelog: "# 改动说明\n\n## 0.1.0\n\n- 第一版\n" });
     expect(() => androidRelease({ apk: bare.apk, root: bare.root, badging: badging() })).toThrow("CHANGELOG.md 里没有 0.1.1 这一节");

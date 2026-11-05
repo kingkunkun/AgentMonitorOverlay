@@ -117,7 +117,7 @@ describe("会话里用中转", () => {
     const [thread] = await coderClient.threads();
     expect(thread?.request).toMatchObject({ from: "策划小王", to: "程序老李", byAi: true, handler: "ai" });
     expect(thread?.request?.conv).toMatch(new RegExp(`^studio:d_[0-9a-f]{24}:${asking.id}$`));
-    expect(thread?.last?.via).toMatchObject({ kind: "ai", client: "AMO Studio" });
+    expect(thread?.last?.via).toMatchObject({ kind: "ai", client: "WorkStudio" });
     expect((await coderClient.files({ threadId: thread!.id })).map((f) => f.name)).toEqual(["bag.md"]);
     expect(service.teamRelay.threads()).toEqual([expect.objectContaining({ threadId: thread!.id, sessionId: asking.id, to: "程序老李", state: "open" })]);
     expect((await tool(asking.id, "team_sessions")).text).toContain("等 程序老李 回复");

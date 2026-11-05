@@ -26,7 +26,7 @@
     <div class="h-acct" data-k="u-${k}"><div class="h-acct-line"><b>${name}</b><span class="h-acct-sub">${sub}</span><span class="h-left" data-k="u-${k}-left">${left}</span></div>
       ${used === undefined ? "" : `<div class="h-bar"><span data-k="u-${k}-bar" style="--w:${used}%"></span></div>`}</div>`;
 
-  T.uses("AMO Studio", "书签", "便签", "Focus", "全部任务", "专题", "项目", "看板", "画布", "+ 新任务", "Host 运行中", "要推进什么？", "放进待办", "开始", "待办", "进行中", "待审阅", "完成", "待批准", "运行中", "空闲");
+  T.uses("WorkStudio", "书签", "便签", "Focus", "全部任务", "专题", "项目", "看板", "画布", "+ 新任务", "Host 运行中", "要推进什么？", "放进待办", "开始", "待办", "进行中", "待审阅", "完成", "待批准", "运行中", "空闲");
   T.scene({
     id: "sc-board",
     title: "一句话加一个模型，就是看板上的一个任务",
@@ -34,7 +34,7 @@
     narrowHeight: 500,
     once: true,
     html: `<div class="h-app">
-      <div class="h-top"><span class="s-logo"></span><b class="h-brand">AMO Studio</b><span class="s-sp"></span><span class="h-tb">书签</span><span class="h-tb">便签</span><span class="h-tb">Focus</span></div>
+      <div class="h-top"><span class="s-logo"></span><b class="h-brand">WorkStudio</b><span class="s-sp"></span><span class="h-tb">书签</span><span class="h-tb">便签</span><span class="h-tb">Focus</span></div>
       <div class="h-nav">
         <div class="s-nav-row cur">全部任务<span class="n" data-k="n-all">1</span></div>
         <div class="s-nav-head">专题</div>

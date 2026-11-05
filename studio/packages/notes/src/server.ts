@@ -38,7 +38,7 @@ export interface NotesServer {
   announce(): void;
   /** Tells every window 待办 changed. */
   announceTodo(view: TodoView): void;
-  /** AMO Studio is linked (its socket, ?client=studio): a 待办's tag can be opened there (问题 #10). */
+  /** WorkStudio is linked (its socket, ?client=studio): a 待办's tag can be opened there (问题 #10). */
   studioLinked(): boolean;
 }
 

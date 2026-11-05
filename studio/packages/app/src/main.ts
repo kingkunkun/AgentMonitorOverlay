@@ -279,9 +279,9 @@ async function leaveDevUi(): Promise<void> {
 }
 
 /** The menu on a right-click (2026-10-29, the user: like 便签's, not Windows' own; @amo-studio/traymenu). */
-const trayWindow = new TrayMenu({ label: "AMO Studio 菜单" });
+const trayWindow = new TrayMenu({ label: "WorkStudio 菜单" });
 async function openTrayMenu(): Promise<void> {
-  const entries: MenuEntry[] = [{ kind: "title", label: "AMO Studio" }];
+  const entries: MenuEntry[] = [{ kind: "title", label: "WorkStudio" }];
   for (const i of trayItems(await devUiOn())) entries.push("label" in i ? { kind: "item", label: i.label, strong: i.click === showMain, run: i.click } : { kind: "rule" });
   trayWindow.open(entries);
 }

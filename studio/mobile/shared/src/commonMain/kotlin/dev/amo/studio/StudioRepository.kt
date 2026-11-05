@@ -179,7 +179,7 @@ class StudioRepository(private val platform: Platform) {
         val updater = platform.updater ?: return
         val file = state.value.update.ready ?: return
         val allowed = updater.canInstall()
-        setUpdate { it.copy(note = if (allowed) null else "请在打开的页面里允许 AMO Studio 安装应用，返回后再点「安装」") }
+        setUpdate { it.copy(note = if (allowed) null else "请在打开的页面里允许 WorkStudio 安装应用，返回后再点「安装」") }
         runCatching { updater.openInstaller(file) }.onFailure { e -> setUpdate { it.copy(note = "打不开安装界面：${e.message}") } }
     }
 

@@ -75,7 +75,7 @@ test("log in → install → a new version → update → 回滚 → 卸载; Stu
   const realLocal = join(process.env.LOCALAPPDATA ?? "", "AMO");
   const before = [realHome, realLocal].map((p) => (existsSync(p) ? statSync(p).mtimeMs : null));
   server.publish("reviewer", "1.0.0", tool("reviewer", "1.0.0"), { name: "AMO Reviewer", exe: "run.cmd", notes: "- 第一版：Git Review 和查看器", channel: "test" });
-  server.publish("studio", "0.9.0", tool("studio", "0.9.0"), { name: "AMO Studio", exe: "run.cmd", notes: "- 看板、任务、会话", channel: "test" });
+  server.publish("studio", "0.9.0", tool("studio", "0.9.0"), { name: "WorkStudio", exe: "run.cmd", notes: "- 看板、任务、会话", channel: "test" });
   server.publish("platform", "0.9.0", { "AMO Platform.exe": "p" }, { exe: "AMO Platform.exe", channel: "test" });
 
   const { app, page } = await launch(["--channel", "test"]);
@@ -224,7 +224,7 @@ test("log in → install → a new version → update → 回滚 → 卸载; Stu
   // ---- the tray (2026-10-29): one part per installed tool, not folded (便签 through Studio, which carries it); a click
   // opens 便签 or Studio as chosen; closing the window leaves the program running
   const trayNow = () => app.evaluate(() => (globalThis as { __platformTray?: () => string[] }).__platformTray!());
-  expect(await trayNow()).toEqual(["# AMO Studio", "打开 Studio", "完全退出 Studio", "—", "# AMO 便签", "显示 / 隐藏便签", "显示待办", "便签设置…", "退出便签", "—", "# AMO 平台", "打开 AMO 平台", "● 单击图标：打开便签", "○ 单击图标：打开 Studio", "退出平台"]);
+  expect(await trayNow()).toEqual(["# WorkStudio", "打开 Studio", "完全退出 Studio", "—", "# AMO 便签", "显示 / 隐藏便签", "显示待办", "便签设置…", "退出便签", "—", "# AMO 平台", "打开 AMO 平台", "● 单击图标：打开便签", "○ 单击图标：打开 Studio", "退出平台"]);
   const studioMark = () => (existsSync(join(root, "launched.studio")) ? readFileSync(join(root, "launched.studio"), "utf8").trim() : "");
   await app.evaluate(() => (globalThis as { __platformTrayIconClick?: () => void }).__platformTrayIconClick!());
   await expect.poll(studioMark).toBe(`studio 0.9.0 ${dataDir} --amo-tray=platform --amo-app=notes --amo-toggle`);
@@ -874,7 +874,7 @@ test("AMO 中转 from the platform (2026-10-28): listed after Studio as 「AMO �
   try {
     // A stand-in relay client: records what it was started with (the server the platform hands it).
     const relayTool = (version: string) => ({ ...tool("relay", version), "run.cmd": `@echo off\r\necho relay ${version} %*>"%AMO_FAKE_TOOL_MARK%.relay"\r\n` });
-    own.publish("studio", "0.9.0", tool("studio", "0.9.0"), { name: "AMO Studio", exe: "run.cmd", notes: "- 看板、任务、会话" });
+    own.publish("studio", "0.9.0", tool("studio", "0.9.0"), { name: "WorkStudio", exe: "run.cmd", notes: "- 看板、任务、会话" });
     own.publish("notes", "1.0.0", tool("notes", "1.0.0"), { name: "AMO Notes", exe: "run.cmd" });
     own.publish("relay", "0.9.0", relayTool("0.9.0"), { name: "AMO Relay", exe: "run.cmd", notes: "- 第一个从 AMO 平台发布的版本" });
     const { app, page } = await launch([], (r) => ({ AMO_RELAY_HOME: join(r, "relay-home") }));
@@ -978,7 +978,7 @@ test("Studio's card (2026-10-29): the Host's state and version; 重启 Studio wh
   const own = await startFakePlatformServer({ users: { 小王: "secret" } });
   let fake: ChildProcess | null = null;
   try {
-    own.publish("studio", "0.9.1", tool("studio", "0.9.1"), { name: "AMO Studio", exe: "run.cmd", notes: "- 托盘" });
+    own.publish("studio", "0.9.1", tool("studio", "0.9.1"), { name: "WorkStudio", exe: "run.cmd", notes: "- 托盘" });
     const { app, page } = await launch();
     const form = page.getByRole("form", { name: "登录" });
     await form.getByLabel("服务器地址").fill(own.url.replace("http://", ""));

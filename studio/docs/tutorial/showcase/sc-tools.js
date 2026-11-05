@@ -82,7 +82,7 @@
     html: `<div class="ic-cam"><div class="pgs">
       <section class="pg pg-split2 cur" data-k="p0">
         <div class="ch">
-          <div class="ch-head"><span class="iw-logo small"></span><b>掉落权重改成累加</b><span class="s-faint">AMO Studio</span></div>
+          <div class="ch-head"><span class="iw-logo small"></span><b>掉落权重改成累加</b><span class="s-faint">WorkStudio</span></div>
           <div class="ch-body">
             <div class="tk-user">掉落权重改成累加，改完带我看关键的地方</div>
             <p>改好了。要你看的三处我放进查看包了，每处写了为什么。</p>
@@ -130,7 +130,7 @@
         </div>
         <div class="toast" data-k="toast" data-off>已复制，贴回对话就行</div>
         <div class="ch pad-chat" data-k="padChat" data-off>
-          <div class="ch-head"><span class="iw-logo small"></span><b>背包界面</b><span class="s-faint">AMO Studio</span></div>
+          <div class="ch-head"><span class="iw-logo small"></span><b>背包界面</b><span class="s-faint">WorkStudio</span></div>
           <div class="ch-body">
             <div class="tk-user" data-k="padPasted" data-off>· 背包格子间距太挤，改成 8px<br>· 紫装图标和蓝装分不清<br>· 整理按钮放到右上</div>
             <p data-k="padFixed" data-off>三处都改了：格子间距 8px，紫装加了描边，整理按钮挪到右上。截图放进查看包了。</p>

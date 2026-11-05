@@ -153,7 +153,7 @@ export function dshAccountSignedIn(file: string): boolean {
 /** The patch for "account" mode: DSH's credentials from the desktop app's file, the ACP agent on the account's `model`. */
 export function accountPatchYaml(file: string, model: string): string {
   return [
-    "# Written by AMO Studio: the DeepSeek account signed in in the DSH desktop app (设置 → 模型 → DeepSeek).",
+    "# Written by WorkStudio: the DeepSeek account signed in in the DSH desktop app (设置 → 模型 → DeepSeek).",
     `- id: ${DSH_CREDENTIALS_PLUGIN}`,
     "  config:",
     `    path: ${JSON.stringify(file)}`,

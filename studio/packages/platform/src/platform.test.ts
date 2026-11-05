@@ -18,7 +18,7 @@ let server: FakePlatformServer;
 let root = "";
 beforeAll(async () => {
   server = await startFakePlatformServer({ users: { 小王: "secret" } });
-  server.publish("studio", "0.9.0", { "AMO Studio.exe": "studio 0.9.0", "resources/app.asar": "a" }, { name: "WorkStudio", exe: "AMO Studio.exe", notes: "- 第一版" });
+  server.publish("studio", "0.9.0", { "WorkStudio.exe": "studio 0.9.0", "resources/app.asar": "a" }, { name: "WorkStudio", exe: "WorkStudio.exe", notes: "- 第一版" });
   server.publish("reviewer", "0.9.0", { "AMO Reviewer.exe": "reviewer" }, { name: "AMO Reviewer", exe: "AMO Reviewer.exe" });
   server.publish("platform", "0.9.0", { "AMO Platform.exe": "p" }, { exe: "AMO Platform.exe" });
 });
@@ -83,7 +83,7 @@ describe("Platform", () => {
     expect(JSON.parse(readFileSync(join(env.AMO_HOME, "platform.json"), "utf8"))).toMatchObject({ studioDataDir: data, server: server.url, lastName: "小王" });
 
     expect(await platform.open("studio")).toEqual({ ok: true });
-    expect(launched[0]!.file).toMatch(/\\0\.9\.0\\AMO Studio\.exe$/);
+    expect(launched[0]!.file).toMatch(/\\0\.9\.0\\WorkStudio\.exe$/);
     expect(launched[0]!.env.AMO_STUDIO_DATA_DIR).toBe(data);
     expect(launched[0]!.env.ELECTRON_RUN_AS_NODE).toBeUndefined();
   });
@@ -166,7 +166,7 @@ describe("Platform", () => {
   });
 
   it("--channel test wins over the setting; a key the server no longer takes goes back to the login page", async () => {
-    server.publish("studio", "0.9.5", { "AMO Studio.exe": "studio 0.9.5" }, { exe: "AMO Studio.exe", channel: "test" });
+    server.publish("studio", "0.9.5", { "WorkStudio.exe": "studio 0.9.5" }, { exe: "WorkStudio.exe", channel: "test" });
     const { platform } = make({ argv: ["electron", ".", "--channel", "test"] });
     await platform.init();
     await platform.login(server.url, "小王", "secret");
@@ -296,7 +296,7 @@ describe("launch and the machine", () => {
   });
 
   it("a manifest cut short on the way is asked for once more, then said to be cut short — not 「不是 JSON 对象」 (2026-11-03)", async () => {
-    const whole = JSON.stringify({ tool: "studio", version: "0.9.28", exe: "AMO Studio.exe", files: [{ path: "AMO Studio.exe", size: 3, sha256: "a".repeat(64) }] });
+    const whole = JSON.stringify({ tool: "studio", version: "0.9.28", exe: "WorkStudio.exe", files: [{ path: "WorkStudio.exe", size: 3, sha256: "a".repeat(64) }] });
     const answers: string[] = [];
     const cut = (async () => {
       const body = answers.shift() ?? whole;
@@ -340,7 +340,7 @@ describe("launch and the machine", () => {
   });
 
   it("what is shown of a version is its summary; a server without …/summary hands the manifest instead (2026-11-03)", async () => {
-    const manifest = { tool: "studio", name: "AMO Studio", version: "0.9.29", builtAt: 5, exe: "AMO Studio.exe", notes: "- 新", files: [{ path: "AMO Studio.exe", size: 3, sha256: "a".repeat(64) }] };
+    const manifest = { tool: "studio", name: "WorkStudio", version: "0.9.29", builtAt: 5, exe: "WorkStudio.exe", notes: "- 新", files: [{ path: "WorkStudio.exe", size: 3, sha256: "a".repeat(64) }] };
     const asked: string[] = [];
     const server = (withSummary: boolean) =>
       (async (url: string) => {
@@ -348,7 +348,7 @@ describe("launch and the machine", () => {
         if (url.endsWith("/summary")) return withSummary ? new Response(JSON.stringify({ ...manifest, files: undefined, fileCount: 1, size: 3 })) : new Response(JSON.stringify({ message: "没有这个接口" }), { status: 404 });
         return new Response(JSON.stringify(manifest));
       }) as unknown as typeof fetch;
-    const shown = { tool: "studio", name: "AMO Studio", version: "0.9.29", builtAt: 5, exe: "AMO Studio.exe", notes: "- 新" };
+    const shown = { tool: "studio", name: "WorkStudio", version: "0.9.29", builtAt: 5, exe: "WorkStudio.exe", notes: "- 新" };
     expect(await new PlatformClient("http://s", "k", server(true)).summary("studio", "0.9.29")).toEqual(shown);
     expect(asked).toEqual(["/api/platform/tools/studio/0.9.29/summary"]);
     asked.length = 0;
@@ -511,7 +511,7 @@ describe("launch and the machine", () => {
     await platform.restartStudio();
     expect(card().result).toEqual({ tone: "ok", text: "已重启 Studio，现在是 0.9.0" });
     expect(launched).toHaveLength(1);
-    expect(launched[0]!.file).toMatch(/\\0\.9\.0\\AMO Studio\.exe$/);
+    expect(launched[0]!.file).toMatch(/\\0\.9\.0\\WorkStudio\.exe$/);
     expect(launched[0]!.env.AMO_STUDIO_DATA_DIR).toBe(data);
     expect(card().studio).toEqual({ hostUp: true, sessions: 0, version: "0.9.0", restart: "none", restarting: false });
     // 2026-11-05: the Host is gone, its shell hangs (windows closed, the process left): ended, and the new one opens.
@@ -537,7 +537,7 @@ describe("launch and the machine", () => {
     expect(await platform.close("studio")).toMatchObject({ ok: false, message: expect.stringContaining("是 0.9.7 打开的") });
     health = { ok: true, pid: 5000, running: 0 };
     expect(await platform.close("studio")).toEqual({ ok: true });
-    running.push(join(old, "AMO Studio.exe"));
+    running.push(join(old, "WorkStudio.exe"));
     expect(await platform.close("studio")).toMatchObject({ ok: false, message: expect.stringContaining("是 0.8.0 打开的") });
   });
 });

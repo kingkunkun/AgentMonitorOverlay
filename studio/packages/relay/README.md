@@ -98,7 +98,7 @@ platform/
 ```
 
 - 平台目录用 `serve --platform-dir <目录>` 或环境变量 `AMO_RELAY_PLATFORM_DIR` 指定；没指定时下面三个接口返回 404 和一句说明。Mac 上是 `$ROOT/platform`。
-- 清单：`{ tool, name, version, builtAt, exe, runtime, notes, files: [{ path, size, sha256 }] }`。`path` 用 `/` 分隔、相对程序文件夹；`exe` 是主程序（如 `AMO Studio.exe`）；`runtime` 是打包用的 Electron 版本（如 `44.7.0`，10-29 起，之前的清单没有）；`notes` 是这次的改动说明（Markdown）；`builtAt` 是打包时间（毫秒）。
+- 清单：`{ tool, name, version, builtAt, exe, runtime, notes, files: [{ path, size, sha256 }] }`。`path` 用 `/` 分隔、相对程序文件夹；`exe` 是主程序（如 `WorkStudio.exe`）；`runtime` 是打包用的 Electron 版本（如 `44.7.0`，10-29 起，之前的清单没有）；`notes` 是这次的改动说明（Markdown）；`builtAt` 是打包时间（毫秒）。
 - 工具 id 是小写字母开头的小写字母、数字和 `-`（`studio`、`reviewer`、`notes`、`relay`、`platform`）；版本号像 `0.9.1` 或 `0.9.1-test.1`。`relay` 是中转的桌面程序（10-28 起，版本从 0.9.0 起，取 `packages/relay-app`），它的界面不在这里，照旧是 `client/`。
 
 接口（都要登录，`Authorization: Bearer <key>`；objects 也接受 `?key=`，方便直接下载）：

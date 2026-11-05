@@ -246,7 +246,7 @@ function ScratchpadWindow({ link }: { link: HostLink }) {
           <span>
             <b>AMO 便签</b> {about.version ? `版本 ${about.version}` : "版本读不到"}
             {about.dev ? "（开发版）" : ""}
-            {about.viaStudio ? ` · 没有单独安装，随 AMO Studio ${about.viaStudio} 运行` : ""}
+            {about.viaStudio ? ` · 没有单独安装，随 WorkStudio ${about.viaStudio} 运行` : ""}
           </span>
           <button type="button" className="pad-icon" aria-label="关闭关于" title="关闭（Esc）" onClick={() => setAbout(null)}>
             ×

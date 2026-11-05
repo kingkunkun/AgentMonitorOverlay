@@ -119,7 +119,7 @@ export class GitReviewFeature extends Feature {
   async openReview(input: Partial<ReviewOpenRequest>): Promise<ReviewOpenResult> {
     // 远程 Reviewer (2026-11-02): a turn a paired device started shows there — no window here is needed then.
     const asked = typeof input.sessionId === "string" && input.sessionId ? input.sessionId : null;
-    if (!this.host.liveWindows && !this.f.remote.grants.showsElsewhere(asked)) throw new HostError("conflict", "AMO Studio 的窗口没有打开：先启动 AMO Studio，再打开 Review");
+    if (!this.host.liveWindows && !this.f.remote.grants.showsElsewhere(asked)) throw new HostError("conflict", "WorkStudio 的窗口没有打开：先启动 WorkStudio，再打开 Review");
     const text = (v: unknown, name: string): string | undefined => {
       if (v === undefined || v === null || v === "") return undefined;
       if (typeof v !== "string" || !v.trim() || v.length > 1000 || /[\0\r\n]/.test(v)) throw new HostError("bad_request", `${name} must be a non-empty string without control characters`);
@@ -194,7 +194,7 @@ export class GitReviewFeature extends Feature {
     if (workspace?.archivedAt) throw new HostError("conflict", "这个项目已归档，请先恢复它");
     // Where it shows: here, and/or on the paired device whose message started the turn (only the task's own project).
     const route = this.f.remote.grants.openRoute(sessionId ?? null, workspace?.id ?? null);
-    if (!this.host.liveWindows && !route.to) throw new HostError("conflict", "AMO Studio 的窗口没有打开：先启动 AMO Studio，再打开 Review");
+    if (!this.host.liveWindows && !route.to) throw new HostError("conflict", "WorkStudio 的窗口没有打开：先启动 WorkStudio，再打开 Review");
     const workspaceAdded = !workspace;
     workspace ??= this.f.projects.addWorkspace({ path: dir });
     const target: ReviewOpenTarget = { workspaceId: workspace.id, ...resolved };

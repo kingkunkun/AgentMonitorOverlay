@@ -112,11 +112,11 @@ test("问题页: sign in, report with a screenshot, the AI asks, answer, 发布�
   // last builds; a table of the last builds like Jenkins' stage view. Earlier builds as the service keeps them (the oldest
   // from 0.7.3, without its steps' times).
   const min = 60_000, t0 = Date.now() - 3 * 3600_000;
-  const past = (at: number, ok: boolean, took: number[]) => ({ label: "AMO Studio 0.9.18", steps: ["类型检查", "单测", "提交版本", "打包", "发布"], step: ok ? 4 : took.length - 1, stepAt: took.map((_, k) => at + took.slice(0, k).reduce((a, b) => a + b, 0)), by: "老戴", startedAt: at, updatedAt: at, endedAt: at + took.reduce((a, b) => a + b, 0), ok, message: ok ? "已发到测试通道：AMO Studio 0.9.18" : "npm run package:platform: exit 1" });
+  const past = (at: number, ok: boolean, took: number[]) => ({ label: "WorkStudio 0.9.18", steps: ["类型检查", "单测", "提交版本", "打包", "发布"], step: ok ? 4 : took.length - 1, stepAt: took.map((_, k) => at + took.slice(0, k).reduce((a, b) => a + b, 0)), by: "老戴", startedAt: at, updatedAt: at, endedAt: at + took.reduce((a, b) => a + b, 0), ok, message: ok ? "已发到测试通道：WorkStudio 0.9.18" : "npm run package:platform: exit 1" });
   store!.db.prepare("INSERT INTO issue_meta (key, value) VALUES ('release.builds', ?)").run(JSON.stringify([past(t0 + 3600_000, true, [0.9 * min, 1.6 * min, 0.1 * min, 4.2 * min, 0.7 * min]), past(t0, false, [1 * min, 1.4 * min, 0.1 * min, 2 * min]), { ...past(t0 - 3600_000, true, [6 * min]), steps: ["测试", "提交版本", "打包", "发布"], step: 3, stepAt: [t0 - 3600_000] }]));
-  await ai(me.key, "POST", "/api/issues/release/build", { start: { label: "AMO Studio 0.9.19", steps: ["类型检查", "单测", "提交版本", "打包", "发布"] } });
+  await ai(me.key, "POST", "/api/issues/release/build", { start: { label: "WorkStudio 0.9.19", steps: ["类型检查", "单测", "提交版本", "打包", "发布"] } });
   await ai(me.key, "POST", "/api/issues/release/build", { step: 3 });
-  await expect(page.getByTestId("issues-build")).toContainText("正在打包：AMO Studio 0.9.19 · 第 4/5 步「打包」", { timeout: 15_000 });
+  await expect(page.getByTestId("issues-build")).toContainText("正在打包：WorkStudio 0.9.19 · 第 4/5 步「打包」", { timeout: 15_000 });
   await expect(page.getByTestId("issues-build")).toContainText("预计还要");
   await expect(page.locator("#stages .stage-name")).toHaveText(["✓ 类型检查", "✓ 单测", "✓ 提交版本", "◐ 打包", "○ 发布"]);
   // 打包 against its median (the one that got through it: 4 分 12 秒); 发布 not begun.

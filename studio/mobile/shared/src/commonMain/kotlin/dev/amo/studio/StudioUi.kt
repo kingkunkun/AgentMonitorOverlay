@@ -162,7 +162,7 @@ private fun taskTone(t: RemoteTask): Tone {
     val available = state.onlineDevices.filter { online -> state.peers.none { it.identity == online.identity } }
     Column {
         available.forEach { p -> ListRow(p.name, "点一下请求配对，然后在这台电脑上确认", Tone.Quiet, tag = "peer-available") { repo.requestPair(p.account, p.device) } }
-        if (available.isEmpty()) Empty(if (state.peers.any { it.role == "guest" }) "同账号没有别的在线电脑要配对。" else "没有找到同账号在线的电脑。请确认电脑上的 AMO Studio 开着、登录的是同一个账号。")
+        if (available.isEmpty()) Empty(if (state.peers.any { it.role == "guest" }) "同账号没有别的在线电脑要配对。" else "没有找到同账号在线的电脑。请确认电脑上的 WorkStudio 开着、登录的是同一个账号。")
         state.pairing.filter { it.str("state") != "allowed" }.forEach { pair -> Text(if (pair.str("state") == "refused") "配对请求被电脑拒绝了" else "配对请求已发出，等电脑确认", color = LocalAmoColors.current.dim, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) }
     }
 }
@@ -328,7 +328,7 @@ private fun taskTone(t: RemoteTask): Tone {
     var name by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 32.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("AMO Studio", style = MaterialTheme.typography.headlineMedium)
+        Text("WorkStudio", style = MaterialTheme.typography.headlineMedium)
         Text("登录团队账号，在电脑上确认配对后，就能在手机上看进度、回消息、审批。", color = LocalAmoColors.current.dim, style = MaterialTheme.typography.bodySmall)
         Spacer(Modifier.height(4.dp))
         Field(server, { server = it }, "服务器地址", "login-server", hint = "比如 192.168.1.20:47120")

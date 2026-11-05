@@ -68,7 +68,7 @@ export function androidRelease({ apk = DEFAULT_APK, notes, root = ANDROID, badgi
   if (!existsSync(apk)) throw new Error(`没有安装包 ${apk}：先在 android 目录里 ./build.ps1`);
   const { version, versionCode } = gradleVersion(root);
   const b = badging ?? apkBadging(apk);
-  if (b.id !== APP_ID) throw new Error(`${apk} 不是 AMO Studio 安卓版（包名 ${b.id}）`);
+  if (b.id !== APP_ID) throw new Error(`${apk} 不是 WorkStudio 安卓版（包名 ${b.id}）`);
   if (b.versionCode !== versionCode || b.version !== version) throw new Error(`${apk} 是 ${b.version}（${b.versionCode}）打的，build.gradle.kts 现在是 ${version}（${versionCode}）：先重新 ./build.ps1`);
   const text = (notes ?? androidNotes(version, root))?.trim();
   if (!text) throw new Error(`mobile/CHANGELOG.md 里没有 ${version} 这一节：写上再发布，或者用 --notes "…"`);

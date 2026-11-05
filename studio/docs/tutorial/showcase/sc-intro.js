@@ -27,10 +27,10 @@
   const frowState = (k, word, sub, tone) => [["text", `${k}-w`, word], ["text", `${k}-sub`, sub], ["off", k, "att"], ["off", k, "done"], ...(tone ? [["on", k, tone]] : [])];
   const tiles = ORDER.flatMap((_, n) => [["on", `cw${n + 1}`, "lit"], ["off", `t${n + 1}`, "pend"], ["on", `t${n + 1}`, "pop"], ["wait", 280]]);
 
-  T.uses("AMO Studio", "书签", "便签", "Focus", "远程", "看板", "画布", "搜索任务或会话", "+ 新任务", "全部任务", "专题", "项目", "Host 运行中", "设置", "要推进什么？", "放进待办", "开始", "待办", "进行中", "待审阅", "完成", "运行中", "待批准", "完成待审核", "批准", "在工作台打开", "我知道了", "置顶", "回到本轮回复开始", "新会话", "Review", "归档");
+  T.uses("WorkStudio", "书签", "便签", "Focus", "远程", "看板", "画布", "搜索任务或会话", "+ 新任务", "全部任务", "专题", "项目", "Host 运行中", "设置", "要推进什么？", "放进待办", "开始", "待办", "进行中", "待审阅", "完成", "运行中", "待批准", "完成待审核", "批准", "在工作台打开", "我知道了", "置顶", "回到本轮回复开始", "新会话", "Review", "归档");
   T.scene({
     id: "sc-intro",
-    title: "AMO Studio：所有 AI，一个工作台",
+    title: "WorkStudio：所有 AI，一个工作台",
     height: 660,
     narrowHeight: 230,
     once: true,

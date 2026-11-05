@@ -704,7 +704,7 @@ export class Platform implements PlatformCalls {
     return readJsonFile<{ useTodo?: unknown }>(join(home, "settings.json"))?.useTodo !== false;
   }
 
-  /** 便签: its own install, else through Studio, which carries it (`AMO Studio.exe --amo-app=notes`). */
+  /** 便签: its own install, else through Studio, which carries it (`WorkStudio.exe --amo-app=notes`). */
   private startNotes(args: string[]): Promise<OpenResult> {
     const programs = this.programs();
     if (programs.notes || !programs.studio) return this.start("notes", args);

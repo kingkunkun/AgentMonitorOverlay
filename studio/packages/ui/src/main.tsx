@@ -78,7 +78,7 @@ const root = document.getElementById("root");
 if (!root) throw new Error("missing #root");
 createRoot(root).render(
   <StrictMode>
-    <WindowBoundary {...(focus || bot ? {} : { title: review ? "Git Review" : marks ? "书签" : viewer ? "查看器" : canvasMini ? "画布小窗" : "AMO Studio" })}>
+    <WindowBoundary {...(focus || bot ? {} : { title: review ? "Git Review" : marks ? "书签" : viewer ? "查看器" : canvasMini ? "画布小窗" : "WorkStudio" })}>
       {focus ? <FocusApp /> : bot ? <BotApp /> : review ? <ReviewApp /> : marks ? <MarksApp /> : viewer ? <ViewerApp /> : canvasMini ? <CanvasMiniApp /> : <App />}
       <Toaster />
       <BookmarkNotePrompt />

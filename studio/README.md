@@ -22,7 +22,7 @@ Studio 包不带 Claude Code（它是 Anthropic 的程序，也占了一半体�
 Studio 的首次启动：
 
 1. 拿到 `AMO-Studio-<版本>-portable.zip`。
-2. 解压到一个可写的文件夹，双击 `AMO Studio.exe`。不需要安装，也不写注册表。
+2. 解压到一个可写的文件夹，双击 `WorkStudio.exe`。不需要安装，也不写注册表。
 3. 第一次打开会出现**首次设置**：
    - **数据目录**：默认是 exe 旁边的 `data` 文件夹（整个文件夹拷走，数据就带走了）；也可以选别处。选择记在 exe 旁边的 `amo-studio.json`。
    - **环境检查**：本机的 `codex`（`npm i -g @openai/codex`）和 Claude Code，以及 Windows 凭据管理器里 DeepSeek / GLM 的凭据（只检查有没有，不显示密钥）。缺的不影响打开，对应的模型暂时不能用。
@@ -34,7 +34,7 @@ Studio 的首次启动：
 
 ## 随 Studio 一起的两个小程序
 
-- **AMO 便签**（`packages/notes`）：独立进程，托盘图标，全局快捷键（默认 Ctrl+Shift+F12）。Studio 启动时会把它带起来（Portable 里是 `AMO Studio.exe --amo-app=notes`）；单独启动 `npm run notes`。设置在它自己的托盘菜单里。
+- **AMO 便签**（`packages/notes`）：独立进程，托盘图标，全局快捷键（默认 Ctrl+Shift+F12）。Studio 启动时会把它带起来（Portable 里是 `WorkStudio.exe --amo-app=notes`）；单独启动 `npm run notes`。设置在它自己的托盘菜单里。
 - **AMO Reviewer**（`packages/reviewer`）：Git Review 和查看器，不需要 Studio，任何工具或模型都能用：`amo-review <文件夹> --reviewer [--mode file --file 路径 --line 行号]`，或 `npm run reviewer -- <文件夹>`。批注用「复制注释 / 复制并关闭」，贴到需要的地方。
 
 ## 日常怎么用

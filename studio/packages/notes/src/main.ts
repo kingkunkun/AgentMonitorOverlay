@@ -31,7 +31,7 @@ const startHidden = process.argv.includes("--hidden");
 
 // Chromium's profile and the single-instance lock live with its home, never in the shared %APPDATA%\Electron.
 app.setPath("userData", join(home, "electron"));
-// Its own taskbar group and login entry, also when it runs from AMO Studio.exe.
+// Its own taskbar group and login entry, also when it runs from WorkStudio.exe.
 if (process.platform === "win32") app.setAppUserModelId("AMO.Notes");
 
 interface ShortcutStatus {
@@ -437,7 +437,7 @@ function setOpenAtLogin(on: boolean): void {
     (globalThis as { __notesOpenAtLogin?: boolean }).__notesOpenAtLogin = on;
     return;
   }
-  // Portable: AMO Notes.exe, or AMO Studio.exe told which program to run (--amo-app=notes, its launcher).
+  // Portable: AMO Notes.exe, or WorkStudio.exe told which program to run (--amo-app=notes, its launcher).
   const args = app.isPackaged ? [...process.argv.filter((a) => a.startsWith("--amo-app=")), "--hidden"] : [app.getAppPath(), "--hidden"];
   // Before its own name (AMO.Notes, 10-24) the entry was Electron's default one; that one goes when it starts this.
   const legacy = { name: "electron.app.Electron", path: process.execPath, args };

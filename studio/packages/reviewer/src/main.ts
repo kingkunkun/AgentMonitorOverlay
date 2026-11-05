@@ -28,7 +28,7 @@ const ICON = [join(here, "..", "assets", "icon.png"), join(here, "..", "..", "ap
 const preload = join(here, "preload.cjs");
 
 app.setPath("userData", join(home, "electron"));
-// Its own taskbar group, also when it runs from AMO Studio.exe.
+// Its own taskbar group, also when it runs from WorkStudio.exe.
 if (process.platform === "win32") app.setAppUserModelId("AMO.Reviewer");
 
 let host: RunningHost | null = null;

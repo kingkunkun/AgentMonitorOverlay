@@ -53,7 +53,7 @@ export function TopBar({
     <header className="topbar">
       <div className="brand">
         <img className={mark.includes("/mascot/") ? "brand-mark mascot" : "brand-mark"} src={mark} alt="" aria-hidden="true" data-testid="brand-mark" />
-        <span className="brand-name">AMO Studio</span>
+        <span className="brand-name">WorkStudio</span>
         {scopeName && (
           <>
             <span className="brand-sep">/</span>

@@ -9,7 +9,7 @@
       <div class="p-hint">团队服务器上稳定通道里的工具，各自安装、各自更新。</div>
       <div class="p-card">
         <div class="p-card-head"><span class="p-mark">S</span>
-          <div><div class="p-name">AMO Studio</div><div class="p-status s-ok">✓ 0.9.10 · 已是最新</div>
+          <div><div class="p-name">WorkStudio</div><div class="p-status s-ok">✓ 0.9.10 · 已是最新</div>
             <div class="p-hint" data-k="hostLine" data-off>✓ 后台在运行 · 没有会话在跑</div></div>
           <span class="p-actions"><span class="s-btn" data-k="open">打开</span><span class="s-btn">⋯</span></span></div>
       </div>

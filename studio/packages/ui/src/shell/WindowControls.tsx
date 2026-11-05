@@ -11,7 +11,7 @@ export function ownTitleBar(): boolean {
   return !!window.amo?.windowControls;
 }
 
-/** The program's mark at the left of a title bar: AMO Studio's, or the AMO Reviewer's when it runs alone. */
+/** The program's mark at the left of a title bar: WorkStudio's, or the AMO Reviewer's when it runs alone. */
 export function appMark(): string {
   return inAmo() ? "./icon.svg" : "./reviewer.svg";
 }

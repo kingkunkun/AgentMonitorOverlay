@@ -49,7 +49,7 @@ export async function setupChecks(testMode: boolean): Promise<SetupChecks> {
   return { codex, claude, credentials, skipped: false };
 }
 
-const PAGE = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>AMO Studio · 首次设置</title>
+const PAGE = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>WorkStudio · 首次设置</title>
 <style>
 :root{--bg:#111316;--bg-header:#15181b;--panel:#181b1f;--raised:#1f2328;--chip:#1d2125;--border:#2b3036;--border-strong:#3a414a;--text:#e6e8eb;--dim:#a0a8b2;--primary:#7fb2ff;--on-primary:#0b1626;--ok:#8fddb0;--bad:#f2b544;--error:#e5484d;--error-text:#ff8a8a;color-scheme:dark}
 @media (prefers-color-scheme: light){:root{--bg:#efede8;--bg-header:#f8f7f3;--panel:#fbfaf7;--raised:#f4f2ed;--chip:#e7e3db;--border:#d9d3c7;--border-strong:#2a2723;--text:#22201c;--dim:#5d5850;--primary:#23436f;--on-primary:#fbfaf7;--ok:#3b7a4f;--bad:#93570a;--error:#a3302b;--error-text:#a3302b;color-scheme:light}}
@@ -73,10 +73,10 @@ button.primary{background:var(--primary);color:var(--on-primary);border-color:va
 ul{margin:0;padding-left:20px} .ok{color:var(--ok)} .bad{color:var(--bad)} #error{color:var(--error-text)}
 </style></head><body>
 <header class="tb"><svg class="mark" viewBox="24 24 464 464" aria-hidden="true"><g fill="none" stroke-linecap="round" stroke-linejoin="round"><g stroke="#fbfaf7" stroke-width="44" opacity="0.9"><path d="M80 168 V96 Q80 80 96 80 H168"/><path d="M344 80 H416 Q432 80 432 96 V168"/><path d="M432 344 V416 Q432 432 416 432 H344"/><path d="M168 432 H96 Q80 432 80 416 V344"/></g><g stroke="#22201c" stroke-width="28"><path d="M80 168 V96 Q80 80 96 80 H168"/><path d="M344 80 H416 Q432 80 432 96 V168"/><path d="M432 344 V416 Q432 432 416 432 H344"/><path d="M168 432 H96 Q80 432 80 416 V344"/></g></g><rect x="140" y="140" width="232" height="232" rx="62" fill="#2f5a92"/><g transform="translate(256 256) scale(0.78)"><circle cx="-52" cy="-22" r="32.3" fill="#fbfaf7"/><circle cx="52" cy="-22" r="32.3" fill="#fbfaf7"/><path d="M-62 46 Q0 92 62 46" fill="none" stroke="#fbfaf7" stroke-width="34" stroke-linecap="round"/></g></svg>
-<span class="tb-name">AMO Studio · 首次设置</span>
+<span class="tb-name">WorkStudio · 首次设置</span>
 <div class="wc" role="group" aria-label="窗口"><button id="wmin" aria-label="最小化" title="最小化"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M0.5 5.5 H9.5"/></svg></button><button id="wclose" class="close" aria-label="关闭" title="关闭（不保存，Studio 不会启动）"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M0.5 0.5 L9.5 9.5 M9.5 0.5 L0.5 9.5"/></svg></button></div>
 </header><div class="scroll"><main>
-<h1>欢迎使用 AMO Studio</h1>
+<h1>欢迎使用 WorkStudio</h1>
 <div class="dim">这是 Portable 版：程序和数据都可以放在同一个文件夹里，拷走即可带走。</div>
 <section><b>数据放在哪里</b><div class="dim">任务、会话记录、设置都存在这里。默认是程序旁边的 data 文件夹。</div>
 <div class="row"><input id="dir" aria-label="数据目录"><button id="pick">选择…</button></div></section>
@@ -117,7 +117,7 @@ export function runSetup(options: { portableDir: string; configPath: string; def
     const win = new BrowserWindow({
       width: 720,
       height: 620,
-      title: "AMO Studio · 首次设置",
+      title: "WorkStudio · 首次设置",
       icon: options.icon,
       // The page follows the system's light or dark (no 主题 chosen yet), in AMO's colours.
       backgroundColor: nativeTheme.shouldUseDarkColors ? "#111316" : "#efede8",

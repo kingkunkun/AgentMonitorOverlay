@@ -19,7 +19,7 @@ export interface Manifest {
   version: string;
   /** When it was built, in ms since 1970 (the server writes a number; 10-28). */
   builtAt: number;
-  /** The main program, relative to the program folder (`AMO Studio.exe`). */
+  /** The main program, relative to the program folder (`WorkStudio.exe`). */
   exe: string;
   /** The Electron version it was built with (2026-10-29; absent in manifests published before). */
   runtime?: string;

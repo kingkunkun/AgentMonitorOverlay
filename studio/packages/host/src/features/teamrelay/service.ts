@@ -18,7 +18,7 @@ const THREADS_KEY = "teamrelay.threads";
 /** How long a decided send stays listed. */
 const DECIDED_SHOWN_MS = 24 * 3600_000;
 const FILE_MAX = 20 * 1024 * 1024;
-const VIA_CLIENT = "AMO Studio";
+const VIA_CLIENT = "WorkStudio";
 export const TEAM_NOT_SIGNED_IN = "要先在 AMO 平台里登录团队服务器，才能用中转找人。";
 
 type Questions = TeamSend["questions"];
@@ -309,7 +309,7 @@ export class TeamRelayFeature extends Feature {
         next.set(t.id, { ...seen, deliveredAt: Date.now() });
       }
       if (!parts.length) continue;
-      this.tell(sessionId, `【中转回复】\n\n${parts.join("\n\n---\n\n")}\n\n（AMO Studio 从中转转回来的，你用的是 ${me} 的身份。还没问清楚，用 team_followup 追问；已经敲定，用 team_done 标记完成，再按敲定的方案接着做。）`);
+      this.tell(sessionId, `【中转回复】\n\n${parts.join("\n\n---\n\n")}\n\n（WorkStudio 从中转转回来的，你用的是 ${me} 的身份。还没问清楚，用 team_followup 追问；已经敲定，用 team_done 标记完成，再按敲定的方案接着做。）`);
     }
     this.saveThreads([...next.values()]);
   }

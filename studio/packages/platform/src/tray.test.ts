@@ -5,7 +5,7 @@ const labels = (items: TrayItem[]) => items.map((i) => (i.kind === "separator" ?
 
 const all: TrayState = {
   tools: [
-    { id: "studio", name: "AMO Studio" },
+    { id: "studio", name: "WorkStudio" },
     { id: "relay", name: "AMO 中转" },
     { id: "reviewer", name: "AMO Reviewer" },
   ],
@@ -18,7 +18,7 @@ const all: TrayState = {
 describe("the platform's tray menu (2026-10-29)", () => {
   it("lists every tool's items in one part each, not folded, with the click choice at the bottom", () => {
     expect(labels(trayMenu(all))).toEqual([
-      "# AMO Studio",
+      "# WorkStudio",
       "打开 Studio",
       "完全退出 Studio",
       "—",

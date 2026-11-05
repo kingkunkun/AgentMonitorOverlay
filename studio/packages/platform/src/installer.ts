@@ -96,7 +96,7 @@ export interface ProgramsFile {
   tools: Record<string, { version: string; dir: string; exe: string }>;
 }
 
-/** file-index.json: sha256 → { size, paths relative to apps\ (`studio/0.9.2/AMO Studio.exe`) }. */
+/** file-index.json: sha256 → { size, paths relative to apps\ (`studio/0.9.2/WorkStudio.exe`) }. */
 export interface FileIndex {
   format: 1;
   files: Record<string, { size: number; paths: string[] }>;

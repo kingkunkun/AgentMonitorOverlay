@@ -4,12 +4,12 @@
   const T = globalThis.AMO_TUTORIAL;
   const P = (T.parts = {});
 
-  T.uses("AMO Studio", "书签", "远程", "便签", "Focus", "置顶", "需要你", "看板", "画布", "搜索任务或会话", "+ 新任务", "全部任务", "专题", "项目", "Host 运行中", "设置", "+ 新专题", "+ 添加项目");
+  T.uses("WorkStudio", "书签", "远程", "便签", "Focus", "置顶", "需要你", "看板", "画布", "搜索任务或会话", "+ 新任务", "全部任务", "专题", "项目", "Host 运行中", "设置", "+ 新专题", "+ 添加项目");
   /** Studio 主窗口。nav / main 是里面的内容；needs: 顶栏的「需要你」先显示出来。 */
   P.studio = ({ nav, main, needs = false, scope = "", withNav = false }) => `
     <div class="s-app${withNav ? " with-nav" : ""}" data-k="app">
       <div class="s-top">
-        <span class="s-brand"><span class="s-logo"></span><span class="s-name">AMO Studio</span><span class="s-scope" data-k="scope">${scope}</span></span>
+        <span class="s-brand"><span class="s-logo"></span><span class="s-name">WorkStudio</span><span class="s-scope" data-k="scope">${scope}</span></span>
         <span class="s-sp"></span>
         <span class="s-needs" data-k="needs"${needs ? "" : " data-off"}>● 需要你 1</span>
         <span class="s-tb" data-k="tbMarks">书签</span>

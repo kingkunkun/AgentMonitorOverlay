@@ -109,10 +109,10 @@ describe("问题页 (2026-10-31)", () => {
     expect((await client.issues()).release.build).toBeNull();
     // A step with no build going on, or a bad one, is refused.
     await expect(client.reportIssueBuild({ step: 1 })).rejects.toThrow("现在没有在打包");
-    await expect(client.reportIssueBuild({ start: { label: "AMO Studio 0.9.19", steps: [] } })).rejects.toThrow("1 到 12 个步骤");
+    await expect(client.reportIssueBuild({ start: { label: "WorkStudio 0.9.19", steps: [] } })).rejects.toThrow("1 到 12 个步骤");
 
-    const started = await client.reportIssueBuild({ start: { label: "AMO Studio 0.9.19", steps: ["测试", "提交版本", "打包", "发布"] } });
-    expect(started.build).toMatchObject({ label: "AMO Studio 0.9.19", step: 0, by: "老戴", endedAt: null, ok: null });
+    const started = await client.reportIssueBuild({ start: { label: "WorkStudio 0.9.19", steps: ["测试", "提交版本", "打包", "发布"] } });
+    expect(started.build).toMatchObject({ label: "WorkStudio 0.9.19", step: 0, by: "老戴", endedAt: null, ok: null });
     const rev = (await client.issues()).rev;
     await client.reportIssueBuild({ step: 2 });
     // A step takes the counter up: the page's next look (after=rev) sees it.
@@ -128,9 +128,9 @@ describe("问题页 (2026-10-31)", () => {
     expect(failed.build).toMatchObject({ step: 2, ok: false, message: "npm run package:platform: exit 1", endedAt: expect.any(Number) });
     await expect(client.reportIssueBuild({ step: 3 })).rejects.toThrow("现在没有在打包");
     // The next one starts afresh; the last ones are kept, newest first (Jenkins' stage view on the page).
-    await client.reportIssueBuild({ start: { label: "AMO Studio 0.9.19", steps: ["类型检查", "单测", "打包", "发布"] } });
+    await client.reportIssueBuild({ start: { label: "WorkStudio 0.9.19", steps: ["类型检查", "单测", "打包", "发布"] } });
     await client.reportIssueBuild({ step: 3 });
-    const ok = await client.reportIssueBuild({ end: { ok: true, message: "已发到测试通道：AMO Studio 0.9.19" } });
+    const ok = await client.reportIssueBuild({ end: { ok: true, message: "已发到测试通道：WorkStudio 0.9.19" } });
     expect(ok.build).toMatchObject({ steps: ["类型检查", "单测", "打包", "发布"], step: 3, ok: true });
     expect(ok.builds.map((b) => b.ok)).toEqual([true, false]);
     // One that never said it ended is closed when the next starts.

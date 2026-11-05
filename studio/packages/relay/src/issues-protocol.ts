@@ -30,7 +30,7 @@ export const ISSUE_REVIEW_STATUSES: readonly IssueStatus[] = ["review", "rejecte
 
 /** The tools an issue can be about (the platform's tool ids); "" = not said. */
 export const ISSUE_TOOLS: Record<string, string> = {
-  studio: "AMO Studio",
+  studio: "WorkStudio",
   notes: "AMO 便签",
   reviewer: "AMO Reviewer",
   platform: "AMO 平台",
@@ -110,7 +110,7 @@ export const ISSUE_BUILDS_KEPT = 30;
  * going on and how far it got). Reported with the platform's login of the machine that builds; best effort.
  */
 export interface IssueBuild {
-  /** What goes out: "AMO Studio 0.9.19、AMO 便签 0.9.8". */
+  /** What goes out: "WorkStudio 0.9.19、AMO 便签 0.9.8". */
   label: string;
   /** Its steps in order ("测试", "提交版本", "打包", "发布"). */
   steps: string[];

@@ -9,7 +9,7 @@
     <div class="p-card" data-k="studioCard">
       <div class="p-card-head">
         <span class="p-mark">S</span>
-        <div><div class="p-name">AMO Studio</div><div class="p-hint">工作台：看板、任务、和模型的会话。自带 AMO 便签和 Reviewer。</div>
+        <div><div class="p-name">WorkStudio</div><div class="p-hint">工作台：看板、任务、和模型的会话。自带 AMO 便签和 Reviewer。</div>
           <div class="p-status" data-k="studioStatus">○ 没装 · 服务器上是 0.9.10</div></div>
         <span class="p-actions"><span class="s-btn" data-k="install">安装</span><span class="s-btn" data-k="open" data-off>打开</span><span class="s-btn" data-k="more" data-off>⋯</span></span>
       </div>
@@ -45,7 +45,7 @@
       { say: "打开 AMO 平台，先登录。[[服务器地址]] 填团队服务器的地址。", do: [["click", "server"], ["type", "server", "172.16.8.85:47120"]] },
       { say: "再填 [[名字]] 和 [[密码]]，点 [[登录]]。还没有账号就点下面的 [[没有账号？注册一个]]。", do: [["click", "name"], ["type", "name", "小王"], ["click", "pw"], ["type", "pw", "••••••"], ["click", "loginBtn"]] },
       { say: "登录后进到 [[工具]] 页：团队服务器上的工具，每个一张卡片，各自安装、各自更新。", do: [["hide", "login"], ["show", "main"], ["move", "studioCard", 0.3, 0.3]] },
-      { say: "在 AMO Studio 那张卡片上点 [[安装]]。下面的进度条走到头就装好了。", do: [["click", "install"], ["show", "progress"], ["wait", 300], ["text", "progressText", "正在下载 · 41 MB / 118 MB"], ["on", "fill", "half"], ["wait", 1300]] },
+      { say: "在 WorkStudio 那张卡片上点 [[安装]]。下面的进度条走到头就装好了。", do: [["click", "install"], ["show", "progress"], ["wait", 300], ["text", "progressText", "正在下载 · 41 MB / 118 MB"], ["on", "fill", "half"], ["wait", 1300]] },
       { say: "装好了：卡片上写着 [[已装好]]，状态是 [[已是最新]]，按钮变成 [[打开]]。", do: [["hide", "progress"], ["show", "result"], ["text", "studioStatus", "✓ 0.9.10 · 已是最新"], ["hide", "install"], ["show", "open"], ["show", "more"], ["hl", "open"], ["move", "open"]] },
     ],
   });

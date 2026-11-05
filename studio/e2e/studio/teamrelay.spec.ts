@@ -73,7 +73,7 @@ test("会话里用中转: the session asks 程序老李, the person sends it, th
   await expect.poll(async () => (await coder.threads()).length).toBe(1);
   const [thread] = await coder.threads();
   expect(thread!.request).toMatchObject({ from: "策划小王", to: "程序老李", byAi: true });
-  expect(thread!.last?.via).toMatchObject({ kind: "ai", client: "AMO Studio" });
+  expect(thread!.last?.via).toMatchObject({ kind: "ai", client: "WorkStudio" });
 
   // Whom it waits on: on the task's page and its card.
   await expect(banner.getByTestId("team-wait")).toContainText("等 程序老李 回复（中转）");

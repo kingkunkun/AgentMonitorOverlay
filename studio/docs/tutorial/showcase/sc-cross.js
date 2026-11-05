@@ -35,7 +35,7 @@
         ${win(
           "wA",
           "小王 · 策划",
-          "AMO Studio · 掉落配表",
+          "WorkStudio · 掉落配表",
           `<div class="tk-user">把 3.2 的掉落配表按新规则改一遍</div>
            <p>配表里的 <code>drop_rate</code> 程序是当百分比读还是小数？我拿不准，去问一下负责的程序。</p>
            <div class="ch-tool" data-k="ask" data-off><span class="ch-tn">工具调用</span><code>relay_session_open</code><span class="s-faint">发给 老李</span></div>
@@ -58,7 +58,7 @@
         ${win(
           "nb",
           "笔记本",
-          "AMO Studio · 远程",
+          "WorkStudio · 远程",
           `<div class="cx-h">配对一台设备</div><p class="s-faint">同一个账号、现在在线的设备：</p>
            <div class="cx-dev"><b>台式机</b><span class="s-faint">在线</span><span class="s-sp"></span><span class="s-btn pri" data-k="pair">发起配对</span></div>
            <div class="cx-note" data-k="pairWait" data-off>等 台式机 允许…</div>
@@ -68,7 +68,7 @@
         ${win(
           "dt",
           "台式机",
-          "AMO Studio · 远程",
+          "WorkStudio · 远程",
           `<div class="cx-h">收到的配对请求</div>
            <div class="cx-dev" data-k="req" data-off><b>笔记本</b><span class="s-faint">同一个账号</span><span class="s-sp"></span><span class="s-btn ghost">拒绝</span><span class="s-btn pri" data-k="allow">允许</span></div>
            <div class="cx-h" style="margin-top:22px">已配对的设备</div><div class="cx-dev" data-k="paired2" data-off><b>笔记本</b><span class="s-faint">刚刚</span></div>`,
@@ -79,7 +79,7 @@
         ${win(
           "dt2",
           "台式机",
-          "AMO Studio · 任务「掉落表改版」",
+          "WorkStudio · 任务「掉落表改版」",
           `<div class="cx-h">把「掉落表改版」授权给…</div>
            <div class="cx-dev"><b>笔记本</b><span class="s-sp"></span><span class="s-btn pri" data-k="grant">授权</span></div>
            <ul class="cx-warn"><li>会话还在这台电脑上跑：命令以这台电脑上你的用户身份运行，用的是这台电脑的模型账号。只授权给你自己的其他设备。</li></ul>`,
@@ -88,7 +88,7 @@
         ${win(
           "nb2",
           "笔记本",
-          "AMO Studio · 看板",
+          "WorkStudio · 看板",
           `<div class="cx-card" data-k="gcard" data-off><span class="cx-badge">远程</span><b>掉落表改版</b><span class="s-faint">在 台式机 上运行</span></div>`,
         )}
       </section>

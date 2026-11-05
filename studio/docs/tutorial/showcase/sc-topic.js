@@ -107,7 +107,7 @@
 
       <section class="pg pg-amo" data-k="p1">
         <div class="am-tree">
-          <div class="am-cap"><b>AMO Studio</b><span>项目 › 任务 › 会话</span></div>
+          <div class="am-cap"><b>WorkStudio</b><span>项目 › 任务 › 会话</span></div>
           <div class="am-proj" data-k="aProj"><div class="am-ph">${FOLDER}<b>项目</b><span class="am-pn">MyGame</span><code>G:\\Games\\MyGame</code></div>
             ${atask("aT1", "掉落表改版", "进行中", "run", [
               asess("▢", "主会话", "拆成基础权重和活动加成", "claude"),

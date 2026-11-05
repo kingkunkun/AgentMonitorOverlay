@@ -151,13 +151,13 @@ describe("问题页 tools", () => {
     // Builds go out by themselves (2026-11-01): fixed ones and 发布打包 are the script's; a failed build is 值守's.
     await page.requestIssueRelease();
     expect(await issues.pending()).toBeNull();
-    await page.reportIssueBuild({ start: { label: "AMO Studio 0.9.25", steps: ["类型检查", "单测", "打包"] } });
+    await page.reportIssueBuild({ start: { label: "WorkStudio 0.9.25", steps: ["类型检查", "单测", "打包"] } });
     await page.reportIssueBuild({ step: 1 });
     expect(await issues.pending()).toBeNull();
     await page.reportIssueBuild({ end: { ok: false, message: "单测有 1 个没过" } });
-    expect(await issues.pending()).toBe("上一次打测试包没成功（AMO Studio 0.9.25，停在「单测」：单测有 1 个没过）");
+    expect(await issues.pending()).toBe("上一次打测试包没成功（WorkStudio 0.9.25，停在「单测」：单测有 1 个没过）");
     expect(await issues.pendingWork()).toMatchObject({ title: "打包没成功" });
-    await page.reportIssueBuild({ start: { label: "AMO Studio 0.9.25", steps: ["打包"] } });
+    await page.reportIssueBuild({ start: { label: "WorkStudio 0.9.25", steps: ["打包"] } });
     await page.reportIssueBuild({ end: { ok: true, message: "已发到测试通道" } });
     expect(await issues.pending()).toBeNull();
     // Registered as 值守's check.

@@ -43,7 +43,7 @@ export function trayMenu(s: TrayState): TrayItem[] {
   };
   const has = (id: string) => s.tools.some((t) => t.id === id);
   if (has("studio"))
-    part("AMO Studio", [
+    part("WorkStudio", [
       { kind: "item", label: "打开 Studio", action: { kind: "open", tool: "studio" } },
       ...(s.studioRestart ? [{ kind: "item" as const, label: s.studioVersion ? `重启 Studio（换成 ${s.studioVersion}）` : "重启 Studio", action: { kind: "restart-studio" as const } }] : []),
       { kind: "item", label: "完全退出 Studio", action: { kind: "quit", tool: "studio" } },

@@ -33,7 +33,7 @@ export class ViewPacksFeature extends Feature {
     const body = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
     // 远程 Reviewer (2026-11-02): a turn a paired device started shows there — no window here is needed then.
     const asked = from.sessionId ?? (typeof body.sessionId === "string" && body.sessionId ? body.sessionId : null);
-    if (!this.host.liveWindows && !this.f.remote.grants.showsElsewhere(asked)) throw new HostError("conflict", "AMO Studio 的窗口没有打开：先启动 AMO Studio，再给人看");
+    if (!this.host.liveWindows && !this.f.remote.grants.showsElsewhere(asked)) throw new HostError("conflict", "WorkStudio 的窗口没有打开：先启动 WorkStudio，再给人看");
     const sessionId = from.sessionId ?? (typeof body.sessionId === "string" && body.sessionId ? body.sessionId : null);
     const session = sessionId ? this.store.getSession(sessionId) : undefined;
     if (sessionId && !session) throw new HostError("not_found", `session ${sessionId} not found`);
@@ -42,7 +42,7 @@ export class ViewPacksFeature extends Feature {
     const workspace = this.requireLiveWorkspace(workspaceId);
     // Where it shows (远程 Reviewer): here, and/or on the paired device whose message started the turn.
     const route = this.f.remote.grants.openRoute(sessionId, workspace.id);
-    if (!this.host.liveWindows && !route.to) throw new HostError("conflict", "AMO Studio 的窗口没有打开：先启动 AMO Studio，再给人看");
+    if (!this.host.liveWindows && !route.to) throw new HostError("conflict", "WorkStudio 的窗口没有打开：先启动 WorkStudio，再给人看");
     const raw = body.items;
     if (!Array.isArray(raw) || !raw.length || raw.length > MAX_VIEW_ITEMS) throw new HostError("bad_request", `items must be a list of 1 to ${MAX_VIEW_ITEMS}`);
     const ctx = kindContext(workspace);
