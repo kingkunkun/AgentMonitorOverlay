@@ -4,8 +4,12 @@
 // Asking the person a question (decision_request) only puts it in front of them.
 // session_start (2026-10-22): the person chose to have a session start another in its own task without asking.
 // review_open and view_open (查看包, 2026-10-23) only put something in front of the person.
-export const AUTO_APPROVED_WRITE_TOOLS = ["task_note_add", "handoff_submit", "mailbox_send", "mailbox_read", "decision_request", "checklist_check", "schedule_propose", "session_start", "review_open", "view_open"] as const;
+// session_archive (2026-11-01, 问题 #6): only sessions the caller itself started, so putting them away is as free as starting them.
+// session_send (2026-11-01): the same sessions; telling them more is as free as starting them.
+export const AUTO_APPROVED_WRITE_TOOLS = ["task_note_add", "handoff_submit", "mailbox_send", "mailbox_read", "decision_request", "checklist_check", "schedule_propose", "session_start", "session_send", "session_archive", "review_open", "view_open"] as const;
 
 // Writes the person approves first. Codex's default ("auto") lets tools annotated as non-destructive run unasked
 // (S5-05: canvas_group_create ran without a prompt), so these are set to "prompt" explicitly.
-export const PROMPTED_WRITE_TOOLS = ["canvas_group_create", "canvas_depend", "canvas_place"] as const;
+// mcp_server_save (MCP 设置, 2026-11-04): a server is a command run on this computer — never without the person's yes
+// (and so never for DSH, which leaves these out).
+export const PROMPTED_WRITE_TOOLS = ["canvas_group_create", "canvas_depend", "canvas_place", "mcp_server_save"] as const;

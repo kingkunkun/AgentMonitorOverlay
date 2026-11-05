@@ -1,11 +1,11 @@
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { removeTempDir, sha256Of, startFakePlatformServer, type FakePlatformServer } from "@amo-studio/testkit";
 import { PlatformClient } from "./client.js";
-import { Installer, type ProgramsFile } from "./installer.js";
+import { Installer, renamePatiently, type ProgramsFile } from "./installer.js";
 import { channelVersion, checkManifest, compareVersions, safeParts } from "./manifest.js";
 
 let server: FakePlatformServer;
@@ -36,6 +36,36 @@ function publishThree(tool: string) {
   server.publish(tool, "1.1.0", files("1.1.0"), { exe: "Tool.exe", notes: "第二版", channel: null });
   server.publish(tool, "1.2.0", { ...files("1.2.0"), "resources/new.txt": "new" }, { exe: "Tool.exe", notes: "第三版", channel: null });
 }
+
+describe("renamePatiently (2026-11-03)", () => {
+  it("tries again while the rename is refused for a moment (an antivirus holding a new file), then gives the error", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "amo-rename-"));
+    try {
+      // A folder renamed onto another folder is refused (EPERM on Windows): it stands in for one held.
+      const from = join(dir, ".partial"), to = join(dir, "0.9.17");
+      mkdirSync(from);
+      writeFileSync(join(from, "a.exe"), "a");
+      mkdirSync(to);
+      writeFileSync(join(to, "held"), "x");
+      const pauses: number[] = [];
+      await renamePatiently(from, to, 5_000, async (ms) => {
+        pauses.push(ms);
+        // Let go after the second wait (on Windows a folder is never renamed onto another: the stand-in goes as a whole).
+        if (pauses.length === 2) rmSync(to, { recursive: true });
+      });
+      expect(pauses).toEqual([100, 200]);
+      expect(readFileSync(join(to, "a.exe"), "utf8")).toBe("a");
+      // Held for longer than it waits: the error as it is.
+      mkdirSync(from);
+      const other = join(dir, "other");
+      mkdirSync(other);
+      writeFileSync(join(other, "held"), "x");
+      await expect(renamePatiently(from, other, 250, async () => undefined)).rejects.toMatchObject({ code: expect.stringMatching(/EPERM|ENOTEMPTY|EEXIST/) });
+    } finally {
+      removeTempDir(dir);
+    }
+  });
+});
 
 describe("Installer", () => {
   it("installs a version: the files, `current` as a junction to it, its record and programs.json", async () => {
@@ -88,15 +118,78 @@ describe("Installer", () => {
     expect(inst.currentVersion("gamma")).toBe("1.1.0");
   });
 
-  it("a download that breaks off half way leaves no half version behind", async () => {
+  it("a download that keeps breaking off half way leaves no half version behind; one that breaks once is tried again", async () => {
     const inst = setup();
     publishThree("delta");
-    server.breakObject(sha256Of(big("E")));
+    // The client tries a broken download three times in all (2026-11-03).
+    server.breakObject(sha256Of(big("E")), 3);
     await expect(inst.install("delta", "1.0.0", client)).rejects.toMatchObject({ code: expect.stringMatching(/unreachable|checksum/) });
     const dir = join(root, "apps", "delta");
     expect(readdirSync(dir)).toEqual([]);
     expect(inst.currentVersion("delta")).toBeNull();
     expect(existsSync(join(root, "home", "programs.json"))).toBe(false);
+    server.breakObject(sha256Of(big("E")));
+    await inst.install("delta", "1.0.0", client);
+    expect(inst.currentVersion("delta")).toBe("1.0.0");
+  });
+
+  it("an install that broke off goes on with the files it had downloaded; they go once it went through (2026-11-03)", async () => {
+    const inst = setup();
+    publishThree("resume");
+    server.breakObject(sha256Of(big("E")), 3);
+    await expect(inst.install("resume", "1.0.0", client)).rejects.toMatchObject({ code: "unreachable" });
+    const kept = join(root, "apps", ".objects");
+    expect(readdirSync(kept)).toHaveLength(3);
+    const before = objectGets();
+    const r = await inst.install("resume", "1.0.0", client);
+    expect(objectGets() - before).toBe(1);
+    expect(r).toMatchObject({ reused: 3, downloaded: 1 });
+    expect(readFileSync(join(root, "apps", "resume", "1.0.0", "resources", "app.js"), "utf8")).toBe('console.log("1.0.0")');
+    expect(readdirSync(kept)).toEqual([]);
+  });
+
+  it("an old version a program still runs from is kept until it stops; then it goes through .trash (2026-11-03)", async () => {
+    root = mkdtempSync(join(tmpdir(), "amo-platform-installer-"));
+    let running: string[] = [];
+    const inst = new Installer({ appsDir: join(root, "apps"), programsFile: join(root, "home", "programs.json"), runningPaths: async () => running });
+    publishThree("held");
+    const dir = join(root, "apps", "held");
+    await inst.install("held", "1.0.0", client);
+    await inst.install("held", "1.1.0", client);
+    running = [join(dir, "1.0.0", "Tool.exe")];
+    const r = await inst.install("held", "1.2.0", client);
+    expect(r.leftover).toEqual(["1.0.0"]);
+    expect(existsSync(join(dir, "1.0.0", "Tool.exe"))).toBe(true);
+    expect(inst.versions("held").map((v) => v.version)).toEqual(["1.2.0", "1.1.0", "1.0.0"]);
+    // Asking which programs run failed: nothing is removed.
+    const unsure = new Installer({ appsDir: join(root, "apps"), programsFile: join(root, "home", "programs.json"), runningPaths: async () => Promise.reject(new Error("no PowerShell")) });
+    await unsure.repair("held");
+    expect(existsSync(join(dir, "1.0.0"))).toBe(true);
+    running = [];
+    await inst.repair("held");
+    expect(readdirSync(dir).sort()).toEqual(["1.1.0", "1.1.0.json", "1.2.0", "1.2.0.json", "current"]);
+    expect(inst.emptyTrash()).toBe(0);
+    expect(existsSync(join(root, "apps", ".trash"))).toBe(false);
+    // The files the kept versions share are still there (only the old version's names went).
+    expect(readFileSync(join(dir, "1.1.0", "Tool.exe")).equals(big("E"))).toBe(true);
+  });
+
+  it("用完整包 (fresh): every file from the source, none linked from what is here; a kept copy nothing runs from is made again (2026-11-03)", async () => {
+    const inst = setup();
+    publishThree("fresh");
+    const dir = join(root, "apps", "fresh");
+    await inst.install("fresh", "1.0.0", client);
+    await inst.install("fresh", "1.1.0", client);
+    await inst.install("fresh", "1.0.0", client);
+    const before = objectGets();
+    const r = await inst.install("fresh", "1.1.0", client, undefined, { fresh: true });
+    expect(r).toMatchObject({ reused: 0, downloaded: 4, switchedOnly: false });
+    expect(objectGets() - before).toBe(4);
+    const a = statSync(join(dir, "1.0.0", "Tool.exe"), { bigint: true });
+    const b = statSync(join(dir, "1.1.0", "Tool.exe"), { bigint: true });
+    expect(b.ino).not.toBe(a.ino);
+    expect(inst.currentVersion("fresh")).toBe("1.1.0");
+    expect(readdirSync(dir).sort()).toEqual(["1.0.0", "1.0.0.json", "1.1.0", "1.1.0.json", "current"]);
   });
 
   it("switches `current` while a file of the old version is open (a program still running from it)", async () => {
@@ -175,7 +268,7 @@ describe("Installer", () => {
     unlinkSync(join(dir, "current"));
     symlinkSync(join(dir, "1.0.0"), join(dir, "current.next"), "junction");
     expect(inst.currentVersion("kappa")).toBeNull();
-    inst.repair("kappa");
+    await inst.repair("kappa");
     expect(readdirSync(dir).sort()).toEqual(["1.0.0", "1.0.0.json", "current"]);
     expect(inst.currentVersion("kappa")).toBe("1.0.0");
     expect(basename(realpathSync(join(dir, "current")))).toBe("1.0.0");
@@ -247,7 +340,7 @@ describe("Installer", () => {
     // repair() builds the tool's entries again from what is there.
     writeFileSync(join(root, "apps", "file-index.json"), JSON.stringify({ format: 1, files: {} }));
     const third = new Installer({ appsDir: join(root, "apps"), programsFile: join(root, "home", "programs.json") });
-    third.repair("n-two");
+    await third.repair("n-two");
     expect(index().files[sha256Of(big("F"))]!.paths).toEqual(["n-two/1.0.0/ffmpeg.dll"]);
   });
 
@@ -282,14 +375,14 @@ describe("Installer", () => {
     const after = new Installer({ appsDir: join(moved, "apps"), programsFile: join(root, "home", "programs.json") });
     // The junction still names the old place, which is gone.
     expect(after.currentVersion("moving")).toBeNull();
-    after.repair("moving");
+    await after.repair("moving");
     expect(after.currentVersion("moving")).toBe("1.1.0");
     expect(realpathSync(join(moved, "apps", "moving", "current"))).toBe(realpathSync(join(moved, "apps", "moving", "1.1.0")));
     expect(programs().tools.moving).toEqual({ version: "1.1.0", dir: join(moved, "apps", "moving", "current"), exe: "Tool.exe" });
     expect(after.rollbackTarget("moving")?.version).toBe("1.0.0");
     // A `current` already pointing here is left as it is.
     const link = readlinkSync(join(moved, "apps", "moving", "current"));
-    after.repair("moving");
+    await after.repair("moving");
     expect(readlinkSync(join(moved, "apps", "moving", "current"))).toBe(link);
   });
 

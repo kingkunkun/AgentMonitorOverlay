@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { _electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
+import { programLaunch } from "../support/packed.js";
 
 // AMO 中转's desktop client (plans/relay.md, relay-tasks.md) against a real service in this process: first start (loader →
 // content download → login), register two people, a session sent by an AI through the command line the client
@@ -55,11 +56,12 @@ test.afterAll(async () => {
 
 const startServer = (port: number) => relay.startRelayServer({ store, publicDir, filesDir: join(root, "files"), host: "127.0.0.1", port, name: "测试组", clientWatchMs: 300 });
 
-async function launch(who: string): Promise<{ app: ElectronApplication; page: Page; home: string }> {
+async function launch(who: string, extraArgs: string[] = []): Promise<{ app: ElectronApplication; page: Page; home: string }> {
   const home = join(root, who);
+  const launched = programLaunch("relay-app", join(studio, "packages", "relay-app", "dist", "main.js"));
   const app = await _electron.launch({
-    executablePath: electronPath,
-    args: [join(studio, "packages", "relay-app", "dist", "main.js"), "--server", server.url],
+    executablePath: launched.executablePath,
+    args: [...launched.args, "--server", server.url, ...extraArgs],
     // AMO_HOME: the platform's folder (account.json), empty unless the test logs in there — never this machine's own.
     env: { ...process.env, AMO_RELAY_HOME: home, AMO_HOME: join(home, "amo-home"), AMO_RELAY_TEST: "1" },
   });
@@ -68,6 +70,9 @@ async function launch(who: string): Promise<{ app: ElectronApplication; page: Pa
   page.on("pageerror", (e) => pageErrors.push(`${who}: ${e.stack ?? e.message}`));
   return { app, page, home };
 }
+
+/** What 复制… copied: kept in the test client, never on this machine's clipboard. */
+const copiedText = (app: ElectronApplication) => app.evaluate(() => (globalThis as unknown as { __relayCopied: () => string }).__relayCopied());
 
 async function shot(app: ElectronApplication, name: string): Promise<void> {
   const png = await app.evaluate(async ({ BrowserWindow }) => (await BrowserWindow.getAllWindows()[0]!.webContents.capturePage()).toPNG().toString("base64"));
@@ -103,7 +108,7 @@ test("register, an AI's request answered in the other client, updates, the servi
   expect(readFileSync(usageFile, "utf8")).toContain("我是 策划小王（策划）");
   expect(readFileSync(usageFile, "utf8")).toContain("程序老李（程序 · 战斗）");
   expect(readFileSync(usageFile, "utf8")).toContain("`relay newtask --title");
-  const copied = await a.app.evaluate(({ clipboard }) => clipboard.readText());
+  const copied = await copiedText(a.app);
   expect(copied).toContain(usageFile);
   expect(copied.length).toBeLessThan(400);
   const req = join(root, "req.json");
@@ -297,7 +302,7 @@ test("register, an AI's request answered in the other client, updates, the servi
   await flowShortcut.click();
   await b.page.frameLocator(".doc-frame").locator("#copy").click();
   await expect(b.page.locator(".toast")).toHaveText("已复制");
-  expect(await b.app.evaluate(({ clipboard }) => clipboard.readText())).toBe("按团队流程推进这个任务");
+  expect(await copiedText(b.app)).toBe("按团队流程推进这个任务");
   await b.page.locator(".viewer-foot").getByRole("button", { name: "完成" }).click();
   await expect(flowShortcut).not.toContainText("有更新");
 
@@ -502,9 +507,14 @@ test("tightened: an AI's session answered over two rounds, closed by the AI; no 
   await row(a.page, "背包格子上限怎么存").click();
   await expect(a.page.locator(".aiband")).toContainText("程序老赵 回复了");
   await shot(a.app, "33-tight-planner-back");
-  await a.page.locator(".aiband").getByRole("button", { name: "复制给 AI" }).click();
-  await expect.poll(() => a.app.evaluate(({ clipboard }) => clipboard.readText())).toContain(`程序老赵 回复了你发的会话（threadId ${threadId}）`);
-  expect(await a.app.evaluate(({ clipboard }) => clipboard.readText())).toContain("**上限放哪** → 服务端配置表");
+  // 复制新回复 (2026-10-30): for the conversation that asked — only what came after its own words; 复制整个会话: all.
+  await a.page.locator(".aiband").getByRole("button", { name: "复制新回复" }).click();
+  await expect.poll(() => copiedText(a.app)).toContain(`程序老赵 回复了你发的会话「背包格子上限怎么存」（threadId ${threadId}）`);
+  expect(await copiedText(a.app)).toContain("**上限放哪** → 服务端配置表");
+  expect(await copiedText(a.app)).not.toContain("写死在客户端常量里");
+  await a.page.locator(".aiband").getByRole("button", { name: "复制整个会话" }).click();
+  await expect.poll(() => copiedText(a.app)).toContain("写死在客户端常量里");
+  expect(await copiedText(a.app)).toContain("**上限放哪** → 服务端配置表");
 
   // The AI reads it and asks again with a new round; the coder answers that one too.
   expect(await exec("cmd.exe", ["/c", cli, "replies", threadId])).toContain("**上限放哪** → 服务端配置表");
@@ -516,6 +526,15 @@ test("tightened: an AI's session answered over two rounds, closed by the AI; no 
   await expect(b.page.locator(".reply-form")).toContainText("配置表用哪张");
   await b.page.locator(".reply-form .opt", { hasText: "新建 bag_limit" }).click();
   await b.page.getByRole("button", { name: "回复并返回给 策划小张 的 AI" }).click();
+
+  // Back again: 复制新回复 has the second round only — not the first, nor the AI's own follow-up.
+  await expect(a.page.locator(".aiband")).toContainText("程序老赵 回复了");
+  await a.page.locator(".aiband").getByRole("button", { name: "复制新回复" }).click();
+  await expect.poll(() => copiedText(a.app)).toContain("**配置表用哪张** → 新建 bag_limit");
+  const fresh = await copiedText(a.app);
+  expect(fresh).not.toContain("**上限放哪**");
+  expect(fresh).not.toContain("好，改放配置表。");
+  await shot(a.app, "35-tight-copy-new");
 
   // Settled: the AI closes it; both see it done.
   expect(await exec("cmd.exe", ["/c", cli, "replies", threadId])).toContain("**配置表用哪张** → 新建 bag_limit");
@@ -533,6 +552,55 @@ test("tightened: an AI's session answered over two rounds, closed by the AI; no 
   await expect(b.page.getByRole("button", { name: "私聊" })).toBeVisible();
   await expect(b.page.getByRole("button", { name: "发起会话" })).toHaveCount(0);
   await shot(b.app, "32-tight-member");
+  expect(pageErrors).toEqual([]);
+});
+
+test("what waits shows outside the window: the taskbar flashes with the count, the tray blinks with it; started by the platform, in attention.json", async () => {
+  type Shown = { flashing: boolean; overlay: number; trayBadge: boolean; tooltip: string; count: number; inUse: boolean; blinking: boolean };
+  const shown = (app: ElectronApplication) => app.evaluate(() => (globalThis as unknown as { __relayAttention: () => Shown }).__relayAttention());
+  // The planner runs on its own (its own tray); the coder as AMO 平台 starts it (no tray, the count in a file).
+  const a = await launch("planner3");
+  await register(a.page, "策划小周", "策划", false);
+  const b = await launch("coder3", ["--amo-tray=platform"]);
+  await register(b.page, "程序老吴", "程序", false);
+  const file = join(b.home, "attention.json");
+  const attention = () => (existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as { count: number; blink: boolean; pid: number }) : null);
+  expect(await shown(b.app)).toMatchObject({ count: 0, overlay: 0, blinking: false });
+
+  // An AI's session waiting on the coder: 1, flashing and blinking (a test window is never focused: nobody looks).
+  const req = join(root, "req3.json");
+  writeFileSync(req, JSON.stringify({ to: "程序老吴", title: "掉落表要不要分服", body: "想分服配，可以吗？" }));
+  const threadId = /threadId: (\S+)/.exec(await exec("cmd.exe", ["/c", join(a.home, "amo-relay.cmd"), "ask", "--json", req]))![1]!;
+  await expect(b.page.locator(".strip.attn")).toContainText("1 件等你处理");
+  await expect.poll(() => shown(b.app)).toMatchObject({ count: 1, overlay: 1, flashing: true, blinking: true, tooltip: "AMO 中转 · 1 条待处理 / 未读" });
+  const pid = await b.app.evaluate(() => process.pid);
+  await expect.poll(attention).toEqual({ count: 1, blink: true, pid, at: expect.any(String) as unknown as string });
+  // Looked at: no more flashing or blinking, the count stays (the platform's icon stops blinking, keeps the count).
+  await b.app.evaluate(({ BrowserWindow }) => {
+    // A test window cannot take focus: told so, as if it had.
+    const w = BrowserWindow.getAllWindows()[0]!;
+    (w as unknown as { isFocused: () => boolean }).isFocused = () => true;
+    w.emit("focus");
+  });
+  await expect.poll(() => shown(b.app)).toMatchObject({ count: 1, inUse: true, flashing: false, blinking: false, overlay: 1 });
+  await expect.poll(attention).toMatchObject({ count: 1, blink: false });
+
+  // Answered: nothing waits on the coder; the planner (its own tray) has the reply waiting, blinking there.
+  const row = (page: Page, text: string) => page.locator(".scope-nav .srow", { hasText: text });
+  await row(b.page, "掉落表要不要分服").click();
+  await b.page.getByPlaceholder("补充说明（支持 Markdown）").fill("可以，按服读配置。");
+  await b.page.getByRole("button", { name: "回复并返回给 策划小周 的 AI" }).click();
+  await expect.poll(() => shown(b.app)).toMatchObject({ count: 0, overlay: 0, blinking: false });
+  await expect.poll(attention).toMatchObject({ count: 0, blink: false });
+  await expect(a.page.locator(".strip.attn")).toContainText("1 件等你处理");
+  await expect.poll(() => shown(a.app)).toMatchObject({ count: 1, overlay: 1, trayBadge: expect.any(Boolean) as unknown as boolean, blinking: true });
+  // Started on its own it writes no file for the platform.
+  expect(existsSync(join(a.home, "attention.json"))).toBe(false);
+  expect(threadId).toBeTruthy();
+
+  // The coder's client quits: the file goes with it.
+  await b.app.close();
+  expect(existsSync(file)).toBe(false);
   expect(pageErrors).toEqual([]);
 });
 
@@ -611,8 +679,10 @@ test("installed by AMO 平台: no 更新桌面程序 (the platform updates the s
     const fromPlatform = await launchFrom(join(app, "packages", "relay-app", "dist", "main.js"), "platform-user");
     await expect(fromPlatform.page.locator(".view-tabs")).toBeVisible({ timeout: 30_000 });
     await expect(fromPlatform.page.getByRole("button", { name: "没有账号？注册一个" })).toHaveCount(0);
-    // Its MCP and command line use that account too.
-    expect(JSON.parse(readFileSync(join(root, "platform-user", "settings.json"), "utf8"))).toMatchObject({ name: "平台小赵", key: zhao.key });
+    // Its MCP and command line use that account too: a pointer to it, not its key in plain text (0d56e627, 2026-11-04).
+    const settings = JSON.parse(readFileSync(join(root, "platform-user", "settings.json"), "utf8")) as Record<string, unknown>;
+    expect(settings).toMatchObject({ name: "平台小赵", account: "platform" });
+    expect(settings.key).toBeUndefined();
     // Nobody logged in there: where to log in, no form; logged in later, it signs in by itself; logged out there, so here.
     const later = await launchFrom(join(app, "packages", "relay-app", "dist", "main.js"), "platform-later");
     await expect(later.page.getByTestId("platform-login")).toContainText("在 AMO 平台里登录", { timeout: 30_000 });

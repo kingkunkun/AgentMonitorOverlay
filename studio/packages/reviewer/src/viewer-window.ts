@@ -1,5 +1,6 @@
 import { BrowserWindow, ipcMain } from "electron";
 import { viewerHash, ViewerSet } from "./viewer-rules.js";
+import { sendMaximized } from "./window-controls.js";
 
 // The viewer windows (查看器, stage 13): a file opened from a conversation (or a mark) shows in one preview window,
 // loaded with #viewer?path=…; opening another file reuses it. 固定 keeps that window, and the next file opens a new one.
@@ -57,7 +58,8 @@ export function setupViewerWindows(options: ViewerWindowOptions): { closeAll(): 
 
 function createViewerWindow(url: string, { preload, icon, testMode }: ViewerWindowOptions): BrowserWindow {
   const win = new BrowserWindow({
-    width: 1000,
+    // 1060 (was 1000): room in the head for 置顶 left of 最小化 (2026-10-31, 问题 #3), so 文件 mode's buttons still fit.
+    width: 1060,
     height: 820,
     minWidth: 520,
     minHeight: 360,
@@ -65,12 +67,15 @@ function createViewerWindow(url: string, { preload, icon, testMode }: ViewerWind
     title: "查看器",
     icon,
     backgroundColor: "#efede8",
+    // No system title bar (2026-10-29): the page's head is the title bar, with its own window buttons.
+    titleBarStyle: "hidden",
     // Tests: off-screen, out of the taskbar, never focused (LOOP_RULES red line 7), as the workbench.
     show: false,
     ...(testMode ? { x: -32000, y: -32000, skipTaskbar: true, focusable: false } : {}),
     paintWhenInitiallyHidden: true,
     webPreferences: { preload, contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: !testMode },
   });
+  sendMaximized(win);
   const origin = new URL(url).origin;
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.webContents.on("will-navigate", (event, target) => {

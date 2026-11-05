@@ -9,7 +9,8 @@
 //   - Reviewer: reviewer/assets/icon.png (its windows when it runs on its own) and icon.ico (its exe).
 //   - 便签: notes/assets/icon.png and icon-16…64.png (window, tray, and package-portable.mjs builds its exe icon from them).
 //   - 平台: platform/assets/icon.png, icon-16…32.png (tray) and icon.ico.
-//   - 中转: relay-app/assets (window PNG, tray icon-16…32.png, exe ICO, the loader's SVG) and relay-ui/src/icon.svg.
+//   - 中转: relay-app/assets (window PNG, tray icon-16…32.png, exe ICO, the loader's SVG) and relay-ui/src/icon.svg;
+//     its tray PNGs also as platform/assets/relay-16…32.png (the platform's tray shows 中转's icon while something waits).
 //   ICO files carry 16–256 px, the small cut up to 24 px.
 // - 「AMO 娘」 (2026-10-26, used while she is the 桌宠): the blue mascot's ready-made icon (design/icon/mascot-blue/icon)
 //   and her six faces (design/icon/mascot-blue/0N-*.png) cropped square to what is drawn, for the UI (ui/public/mascot)
@@ -81,6 +82,8 @@ const relayAssets = assets("relay-app");
 writeFileSync(join(relayAssets, "icon.png"), await relay.png(256));
 writeFileSync(join(relayAssets, "icon.ico"), await ico(relay));
 await trayPngs(relay, relayAssets);
+// The platform's tray turns into 中转's icon while something waits there (2026-10-29, relay-attention.ts): its own copy.
+for (const size of TRAY_SIZES) copyFileSync(join(relayAssets, `icon-${size}.png`), join(assets("platform"), `relay-${size}.png`));
 copyFileSync(relay.svgPath, join(studio, "packages", "relay-ui", "src", "icon.svg"));
 copyFileSync(relay.svgPath, join(relayAssets, "icon.svg"));
 if (relayOnly) {
@@ -101,6 +104,8 @@ copyFileSync(studioIcon.svgPath, join(studio, "packages", "ui", "public", "icon.
 const reviewer = tool("reviewer");
 writeFileSync(join(assets("reviewer"), "icon.png"), await reviewer.png(256));
 writeFileSync(join(assets("reviewer"), "icon.ico"), await ico(reviewer));
+// The mark in its windows' title bars when it runs alone (2026-10-29).
+copyFileSync(reviewer.svgPath, join(studio, "packages", "ui", "public", "reviewer.svg"));
 
 // AMO 便签: the window icon and one PNG per size (tray; package-portable.mjs makes its exe icon from them).
 const notes = tool("notes");
@@ -119,51 +124,58 @@ const uiMascot = join(studio, "packages", "ui", "public", "mascot");
 const appMascot = join(studio, "packages", "app", "assets", "mascot");
 for (const dir of [uiMascot, appMascot]) mkdirSync(dir, { recursive: true });
 copyFileSync(join(mascot, "icon", "amo-studio-128.png"), join(uiMascot, "icon.png"));
+// The window icon (taskbar, Alt+Tab) shows her whole, as the page does: cut tighter (1.22×, the headphones' outer edges
+// off; 2026-10-29) it looked odd, the user had it undone on 10-30.
 copyFileSync(join(mascot, "icon", "amo-studio-256.png"), join(appMascot, "icon.png"));
 const FACE_SIZE = 128;
-const faces = readdirSync(mascot).filter((f) => /^0\d-[a-z]+\.png$/.test(f));
 await page.setContent("<html><body style='margin:0'></body></html>");
-for (const file of faces) {
-  const dataUrl = `data:image/png;base64,${readFileSync(join(mascot, file)).toString("base64")}`;
-  const b64 = await page.evaluate(
-    async ({ dataUrl, size }) => {
-      const img = new Image();
-      img.src = dataUrl;
-      await img.decode();
-      const src = document.createElement("canvas");
-      src.width = img.width;
-      src.height = img.height;
-      const sg = src.getContext("2d");
-      sg.drawImage(img, 0, 0);
-      // What is drawn (alpha above a trace), squared around its middle with a little room.
-      const { data, width, height } = sg.getImageData(0, 0, img.width, img.height);
-      let [x0, y0, x1, y1] = [width, height, 0, 0];
-      for (let y = 0; y < height; y++)
-        for (let x = 0; x < width; x++)
-          if (data[(y * width + x) * 4 + 3] > 8) [x0, y0, x1, y1] = [Math.min(x0, x), Math.min(y0, y), Math.max(x1, x), Math.max(y1, y)];
-      const side = Math.ceil(Math.max(x1 - x0, y1 - y0) * 1.04);
-      const [cx, cy] = [(x0 + x1) / 2, (y0 + y1) / 2];
-      let canvas = document.createElement("canvas");
-      canvas.width = canvas.height = side;
-      canvas.getContext("2d").drawImage(src, cx - side / 2, cy - side / 2, side, side, 0, 0, side, side);
-      while (canvas.width / 2 >= size) {
-        const half = document.createElement("canvas");
-        half.width = half.height = Math.round(canvas.width / 2);
-        const g = half.getContext("2d");
+/** What is drawn in `file`, squared around its middle with a little room. */
+const cut = async (file, size) =>
+  Buffer.from(
+    await page.evaluate(
+      async ({ dataUrl, size }) => {
+        const img = new Image();
+        img.src = dataUrl;
+        await img.decode();
+        const src = document.createElement("canvas");
+        src.width = img.width;
+        src.height = img.height;
+        const sg = src.getContext("2d");
+        sg.drawImage(img, 0, 0);
+        // What is drawn (alpha above a trace), squared around its middle with a little room.
+        const { data, width, height } = sg.getImageData(0, 0, img.width, img.height);
+        let [x0, y0, x1, y1] = [width, height, 0, 0];
+        for (let y = 0; y < height; y++)
+          for (let x = 0; x < width; x++)
+            if (data[(y * width + x) * 4 + 3] > 8) [x0, y0, x1, y1] = [Math.min(x0, x), Math.min(y0, y), Math.max(x1, x), Math.max(y1, y)];
+        const side = Math.ceil(Math.max(x1 - x0, y1 - y0) * 1.04);
+        const [cx, cy] = [(x0 + x1) / 2, (y0 + y1) / 2];
+        let canvas = document.createElement("canvas");
+        canvas.width = canvas.height = side;
+        canvas.getContext("2d").drawImage(src, cx - side / 2, cy - side / 2, side, side, 0, 0, side, side);
+        while (canvas.width / 2 >= size) {
+          const half = document.createElement("canvas");
+          half.width = half.height = Math.round(canvas.width / 2);
+          const g = half.getContext("2d");
+          g.imageSmoothingQuality = "high";
+          g.drawImage(canvas, 0, 0, half.width, half.height);
+          canvas = half;
+        }
+        const out = document.createElement("canvas");
+        out.width = out.height = size;
+        const g = out.getContext("2d");
         g.imageSmoothingQuality = "high";
-        g.drawImage(canvas, 0, 0, half.width, half.height);
-        canvas = half;
-      }
-      const out = document.createElement("canvas");
-      out.width = out.height = size;
-      const g = out.getContext("2d");
-      g.imageSmoothingQuality = "high";
-      g.drawImage(canvas, 0, 0, size, size);
-      return out.toDataURL("image/png").split(",")[1];
-    },
-    { dataUrl, size: FACE_SIZE },
+        g.drawImage(canvas, 0, 0, size, size);
+        return out.toDataURL("image/png").split(",")[1];
+      },
+      { dataUrl: `data:image/png;base64,${readFileSync(file).toString("base64")}`, size },
+    ),
+    "base64",
   );
-  for (const dir of [uiMascot, appMascot]) writeFileSync(join(dir, file), Buffer.from(b64, "base64"));
+const faces = readdirSync(mascot).filter((f) => /^0\d-[a-z]+\.png$/.test(f));
+for (const file of faces) {
+  const face = await cut(join(mascot, file), FACE_SIZE);
+  for (const dir of [uiMascot, appMascot]) writeFileSync(join(dir, file), face);
 }
 await browser.close();
 console.log(`icons written for Studio, Reviewer, 便签, 平台, 中转 (${ICO_SIZES.join(", ")} px; 16–24 px from the small cut); 「AMO 娘」 icon and ${faces.length} faces`);

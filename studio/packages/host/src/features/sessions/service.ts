@@ -1,17 +1,25 @@
 import { resolve } from "node:path";
-import { isCommon, type Workspace, asyncAnswerText, composeAnnotationRefs, composeRoleUpdate, formContent, type Attachment, type SessionOptions, type ApprovalDecision, type Id, type QuestionAnswer, type QuestionReply, type Session, type SessionItem, type TerminalAttach } from "@amo-studio/protocol";
-import type { SendMode } from "../../runtime/runtime.js";
+import { inTurn, isCommon, type Workspace, asyncAnswerText, composeAnnotationRefs, composeRoleUpdate, formContent, type Attachment, type SessionOptions, type ProfileChoices, type ApprovalDecision, type Id, type QuestionAnswer, type QuestionReply, type Session, type SessionItem, type TerminalAttach } from "@amo-studio/protocol";
+import type { SendMode, SendOptions } from "../../runtime/runtime.js";
 import type { TerminalHandle } from "../../terminal/launcher.js";
 import { HostError, optionValue, boundedText, TERMINAL_TOKEN_ENV } from "../../core/shared.js";
 import { Feature } from "../../core/feature.js";
 import { roleUpdate } from "../guide/role.js";
 import { fillDefaults, readModelPrefs } from "../../core/model-prefs.js";
+import { SessionInbox } from "./inbox.js";
 
 /** Most images one message can carry. */
 const MAX_MESSAGE_IMAGES = 10;
+/** A message from the person still on its way after this long is written to host.log (sendMessage). */
+export const SLOW_SEND_MS = 5000;
+/** A session in the middle of a turn: archiving it (closing its process) would cut the turn off (session_archive). */
+const busy = (s: Session) => inTurn(s.status);
 
 /** Sessions: conversation, approvals, branches, archive, names and options, terminals. */
 export class SessionsFeature extends Feature {
+  /** Messages from agents and from Studio: held until the session is free (inbox.ts). */
+  readonly inbox = new SessionInbox(this.host);
+
   /** Terminals that hold a Claude session (handoff); closing one gives the session back. */
   private readonly handoffs = new Map<Id, TerminalHandle>();
 
@@ -62,20 +70,66 @@ export class SessionsFeature extends Feature {
    * When the session's place in AMO changed since it was last told (its task joined a topic, was referenced on another
    * canvas, became a 主控…), a short note of what changed goes last (composeRoleUpdate).
    */
-  async sendMessage(sessionId: Id, text: string, attachments: readonly Id[] = [], annotations: readonly Id[] = []): Promise<{ mode: SendMode }> {
+  async sendMessage(sessionId: Id, text: string, attachments: readonly Id[] = [], annotations: readonly Id[] = [], options: SendOptions = {}): Promise<{ mode: SendMode }> {
     this.requireSession(sessionId);
     const referenced = annotations.length ? this.f.review.referencedAnnotations(sessionId, annotations) : null;
     if (referenced) {
-      const result = await this.sendMessage(sessionId, composeAnnotationRefs(text ?? "", referenced.refs), attachments);
+      const result = await this.sendMessage(sessionId, composeAnnotationRefs(text ?? "", referenced.refs), attachments, [], options);
       referenced.markSent();
       return result;
     }
     const images = this.images(attachments);
     if (!text?.trim() && !images.length) throw new HostError("bad_request", "text is required");
     const update = this.roleUpdate(sessionId);
-    const result = await this.wrap(() => this.runtime.sendMessage(sessionId, composeRoleUpdate(text ?? "", update.lines), images));
+    // 2026-11-05: a message the person sent right after 停止 (a DSH session) never came back and left no trace; the
+    // composer had already cleared it. One that fails, or is still on its way after SLOW_SEND_MS, is written to host.log.
+    const started = Date.now();
+    const runtime = this.store.getSession(sessionId)?.runtime ?? "?";
+    const slow = setTimeout(() => this.log(`${sessionId} (${runtime}): a message from the person is still on its way after ${SLOW_SEND_MS} ms`), SLOW_SEND_MS);
+    slow.unref?.();
+    let result: { mode: SendMode };
+    try {
+      result = await this.wrap(() => this.runtime.sendMessage(sessionId, composeRoleUpdate(text ?? "", update.lines), images, options));
+    } catch (err) {
+      this.log(`${sessionId} (${runtime}): a message from the person failed after ${Date.now() - started} ms: ${err instanceof Error ? err.message : String(err)}`);
+      throw err;
+    } finally {
+      clearTimeout(slow);
+    }
+    if (Date.now() - started >= SLOW_SEND_MS) this.log(`${sessionId} (${runtime}): the message went in after ${Date.now() - started} ms (${result.mode})`);
     update.told();
+    // The person wrote: what the inbox held since they stopped the session goes in with it (inbox.ts, pause).
+    this.inbox.resume(sessionId);
     return result;
+  }
+
+  /** 立即发送 (2026-11-02): a message still waiting is read by the model now (see SessionRuntimeApi.sendNow). */
+  async sendNow(sessionId: Id, itemId: Id): Promise<void> {
+    this.requireSession(sessionId);
+    const item = this.store.getItem(itemId);
+    // One held in the inbox (2026-11-04): it goes now, and the running turn gives way to it.
+    if (item?.type === "user" && item.sessionId === sessionId && item.delivery === "held") return this.inbox.sendNow(sessionId, itemId);
+    const rt = this.runtime;
+    if (!rt.sendNow) throw new HostError("bad_request", "this Host cannot send a waiting message now");
+    await this.wrap(() => rt.sendNow!(sessionId, itemId));
+  }
+
+  /** 重新发送 a message its process never read, with the pictures it had (those still kept here). */
+  async resend(sessionId: Id, itemId: Id): Promise<{ mode: SendMode }> {
+    this.requireSession(sessionId);
+    const item = this.store.getItem(itemId);
+    if (item?.type !== "user" || item.sessionId !== sessionId) throw new HostError("not_found", `message ${itemId} not found`);
+    const images = (item.images ?? []).flatMap((i) => {
+      if (!i.id) return [];
+      try {
+        return [this.f.attachments.get(i.id)];
+      } catch {
+        return [];
+      }
+    });
+    const rt = this.runtime;
+    if (!rt.resend) throw new HostError("bad_request", "this Host cannot send a message again");
+    return this.wrap(() => rt.resend!(sessionId, itemId, images));
   }
 
   /** The uploaded images a message carries, checked: known ids, at most MAX_MESSAGE_IMAGES. */
@@ -91,8 +145,13 @@ export class SessionsFeature extends Feature {
     });
   }
 
+  /** A message with what changed about the session's role written after it (composeRoleUpdate). */
+  withRole(text: string, lines: string[]): string {
+    return composeRoleUpdate(text, lines);
+  }
+
   /** What changed about the session's role since it was last told; nothing for one that cannot hear it. */
-  private roleUpdate(sessionId: Id): { lines: string[]; told: () => void } {
+  roleUpdate(sessionId: Id): { lines: string[]; told: () => void } {
     const none = { lines: [], told: () => undefined };
     const s = this.store.getSession(sessionId);
     // A copy of a remote session (远程 step 2): its own computer tells it what changed there.
@@ -104,8 +163,10 @@ export class SessionsFeature extends Feature {
     }
   }
 
+  /** 停止, the person's (here or from another device): the inbox holds what comes until they write again (2026-11-04, the user). */
   async interrupt(sessionId: Id): Promise<void> {
     this.requireSession(sessionId);
+    this.inbox.pause(sessionId);
     await this.wrap(() => this.runtime.interrupt(sessionId));
   }
 
@@ -282,10 +343,14 @@ export class SessionsFeature extends Feature {
     const profileId = picked.profileId;
     let options: SessionOptions | undefined = picked.model ? { model: picked.model } : undefined;
     if (remote?.permission) options = { ...options, permission: remote.permission };
-    else if (input.permission !== undefined && input.permission !== null && input.permission !== "") {
-      const level = PERMISSION_LEVELS.find((l) => l === input.permission);
-      if (!level) throw new HostError("bad_request", `permission must be one of: ${PERMISSION_LEVELS.join(", ")}`);
-      options = { ...options, permission: PERMISSIONS[this.f.requireProfile(profileId).runtime as Exclude<Session["runtime"], "remote">][level] };
+    else {
+      let level: PermissionLevel | null = null;
+      if (input.permission !== undefined && input.permission !== null && input.permission !== "") {
+        level = PERMISSION_LEVELS.find((l) => l === input.permission) ?? null;
+        if (!level) throw new HostError("bad_request", `permission must be one of: ${PERMISSION_LEVELS.join(", ")}`);
+      }
+      const permission = await this.peerPermission(from, profileId, level);
+      if (permission) options = { ...options, permission };
     }
     if (input.effort !== undefined && input.effort !== null && input.effort !== "" && !remote?.note) {
       if (typeof input.effort !== "string") throw new HostError("bad_request", "effort must be text, e.g. high");
@@ -317,10 +382,81 @@ export class SessionsFeature extends Feature {
   }
 
   /**
+   * 收会话 (session_archive, 2026-11-01, 问题 #6 — the person took the suggestions): a session archives one it started
+   * with session_start (startedBy is the caller; one opened forPerson has none, so it stays the person's), unasked, as
+   * the session list's 归档 does — branches and subagents with it, and it can be unarchived there. One still in a turn
+   * is refused unless `stop` is true: archiving closes its process and would cut the turn off.
+   */
+  async archivePeer(fromSessionId: Id, input: { sessionId?: unknown; stop?: unknown }): Promise<Session[]> {
+    const from = this.requireSession(fromSessionId);
+    if (typeof input.sessionId !== "string" || !input.sessionId) throw new HostError("bad_request", "sessionId is required");
+    if (input.sessionId === from.id) throw new HostError("bad_request", "不能归档你自己：只能归档你用 session_start 开的会话。");
+    const s = this.store.getSession(input.sessionId);
+    if (!s || s.startedBy !== from.id || s.taskId !== from.taskId) throw new HostError("bad_request", `会话 ${input.sessionId} 不是你用 session_start 开的，不能归档：只能归档你自己开的会话（人开的、别的会话开的、forPerson 开给人的都不行）。`);
+    if (s.archivedAt) throw new HostError("bad_request", `会话 ${s.id} 已经归档了`);
+    if (busy(s) && input.stop !== true) throw new HostError("conflict", `会话「${s.title || s.id}」还在跑（${s.status}），归档会打断它这一轮：等它做完再归档，或者带 stop: true 停掉它再归档。`);
+    if (busy(s)) await this.interrupt(s.id).catch(() => undefined);
+    return this.archive(s.id);
+  }
+
+  /**
+   * 续发 (session_send, 2026-11-01 — a session running a staged test asked for it: 交付 → 复核 → 发下一阶段 without the
+   * person relaying each stage): a session sends another message into one it started with session_start (the same
+   * sessions session_archive may take), unasked, marked as from it. One in a turn — running, or waiting on the person —
+   * gets it once that turn is over (the session's inbox, 2026-11-04: shown there meanwhile, kept across a restart);
+   * several waiting go in together. With report, the turn's report reaches the caller first.
+   */
+  async sendPeer(fromSessionId: Id, input: { sessionId?: unknown; text?: unknown }): Promise<{ session: Session; delivered: boolean; waiting: number }> {
+    const from = this.requireSession(fromSessionId);
+    if (typeof input.sessionId !== "string" || !input.sessionId) throw new HostError("bad_request", "sessionId is required");
+    if (input.sessionId === from.id) throw new HostError("bad_request", "不能发给你自己：只能发给你用 session_start 开的会话。");
+    const s = this.store.getSession(input.sessionId);
+    if (!s || s.startedBy !== from.id || s.taskId !== from.taskId) throw new HostError("bad_request", `会话 ${input.sessionId} 不是你用 session_start 开的，不能往里发：只能发给你自己开的会话（人开的、别的会话开的、forPerson 开给人的都不行）。`);
+    if (s.archivedAt) throw new HostError("bad_request", `会话 ${s.id} 已经归档了：要接着做就用 session_start 开个新的。`);
+    const text = boundedText(input.text, "text", 20_000);
+    const { delivered, waiting } = await this.inbox.put(s.id, `【开启你的会话「${from.title || "未命名会话"}」（${from.id}）发来】\n${text}`);
+    return { session: this.requireSession(s.id), delivered, waiting };
+  }
+
+  /**
    * An agent's effort (session_start, task_plan_propose; 2026-10-26): checked against the model the new session will
    * run (`chosen`, else the person's default in 设置 → 模型, else the CLI's), as its CLI names them; unchecked when the
    * list cannot be had.
    */
+  /**
+   * 开会话's permission (2026-10-29, the person's decision after a session started with `write` asked them about every
+   * read-only command): left out, the new session keeps the caller's own (on the same CLI; on another, that CLI's
+   * default); and it is never wider than the caller's — a level that would be is refused, a default that would be is
+   * brought down to the caller's level.
+   */
+  private async peerPermission(from: Session, profileId: Id, level: PermissionLevel | null): Promise<string | undefined> {
+    const runtime = this.f.requireProfile(profileId).runtime;
+    if (!isPeerRuntime(runtime)) return undefined;
+    const choices = await this.f.config.choices(profileId).catch(() => null);
+    const callerPermission = isPeerRuntime(from.runtime) ? from.options.permission || (await this.f.config.choices(from.profileId).catch(() => null))?.defaultPermission || "" : "";
+    const caller = isPeerRuntime(from.runtime) && callerPermission ? { runtime: from.runtime, permission: callerPermission } : null;
+    return peerPermission(caller, runtime, level, choices);
+  }
+
+  /**
+   * A session an agent sets up for later (duty_save, 2026-10-31): model, permission and effort as session_start takes
+   * them; the permission left out is the caller's own (an unattended session that asks would wait for nobody).
+   */
+  async optionsFor(fromSessionId: Id, input: { model?: unknown; permission?: unknown; effort?: unknown }): Promise<{ profileId: Id; options: SessionOptions }> {
+    const from = this.requireSession(fromSessionId);
+    const picked: { profileId: Id; model?: string } = typeof input.model === "string" && input.model.trim() ? await this.modelByRef(input.model.trim()) : { profileId: from.profileId };
+    let options: SessionOptions = picked.model ? { model: picked.model } : {};
+    let level: PermissionLevel | null = null;
+    if (input.permission !== undefined && input.permission !== null && input.permission !== "") {
+      level = PERMISSION_LEVELS.find((l) => l === input.permission) ?? null;
+      if (!level) throw new HostError("bad_request", `permission must be one of: ${PERMISSION_LEVELS.join(", ")}`);
+    }
+    const permission = await this.peerPermission(from, picked.profileId, level);
+    if (permission) options = { ...options, permission };
+    if (typeof input.effort === "string" && input.effort.trim()) options = { ...options, effort: await this.effortFor(picked.profileId, picked.model, input.effort.trim()) };
+    return { profileId: picked.profileId, options };
+  }
+
   async effortFor(profileId: Id, chosen: string | undefined, want: string): Promise<string> {
     const choices = await this.f.config.choices(profileId).catch(() => null);
     if (!choices?.models.length) return want;
@@ -356,7 +492,7 @@ export class SessionsFeature extends Feature {
   }
 
   /** A live project (or the common space) by id, name or folder path, as project_context lists them. */
-  private workspaceByRef(ref: unknown): Workspace {
+  workspaceByRef(ref: unknown): Workspace {
     if (typeof ref !== "string") throw new HostError("bad_request", "workspace must be a project's name, id or path");
     const want = ref.trim();
     const norm = (p: string) => resolve(p).replace(/[\\/]+$/, "").toLowerCase();
@@ -375,8 +511,11 @@ export class SessionsFeature extends Feature {
    */
   watchReports(): void {
     this.f.on("event", (e) => {
-      if (e.type === "session.upserted" && e.session.reportTo) this.checkReport(e.session);
+      if (e.type !== "session.upserted") return;
+      if (e.session.reportTo) this.checkReport(e.session);
     });
+    // The inbox (session_send's messages among them) after the reports: the caller hears of the turn first.
+    this.inbox.watch();
   }
 
   private checkReport(s: Session): void {
@@ -400,7 +539,8 @@ export class SessionsFeature extends Feature {
       const excerpt = reply.length > REPORT_MAX ? `${reply.slice(0, REPORT_MAX)}…（后面省略；完整的用 session_tree 或打开会话看）` : reply;
       text = mailed ? `【你开的会话${name}这一轮做完了，它已经用留言把结果发给你】` : `【你开的会话${name}这一轮做完了】\n${excerpt || "（它没有回复文字）"}`;
     }
-    void this.sendMessage(to, text).catch(() => {
+    // Into the caller's inbox (2026-11-04): it goes in once the caller is free, rather than into its running turn.
+    this.inbox.put(to, text).catch(() => {
       // The caller is gone or archived: it can still read it as mail.
       try {
         this.f.collab.sendMail(s.id, { kind: "session", sessionId: to }, text);
@@ -413,11 +553,63 @@ export class SessionsFeature extends Feature {
 
 /** session_start's permission levels, as each runtime's own permission option. */
 const PERMISSION_LEVELS = ["read-only", "write", "full"] as const;
-const PERMISSIONS: Record<Exclude<Session["runtime"], "remote">, Record<(typeof PERMISSION_LEVELS)[number], string>> = {
+type PermissionLevel = (typeof PERMISSION_LEVELS)[number];
+type PeerRuntime = Exclude<Session["runtime"], "remote">;
+const PERMISSIONS: Record<PeerRuntime, Record<PermissionLevel, string>> = {
   codex: { "read-only": "read-only", write: "workspace-write", full: "full-auto" },
-  claude: { "read-only": "plan", write: "acceptEdits", full: "bypassPermissions" },
+  // write = 帮我审批 (10-29): 自动接受编辑 asked about every command, read-only ones too — narrower than the caller's
+  // 帮我审批 and than Codex's and DSH's write, which run commands in their folder without asking.
+  claude: { "read-only": "plan", write: "auto", full: "bypassPermissions" },
   dsh: { "read-only": "read-only", write: "workspace-write", full: "full-access" },
 };
+/** Each runtime's permission options, narrowest first (for 「不比开它的会话宽」 on the same CLI). */
+const PERMISSION_ORDER: Record<PeerRuntime, string[]> = {
+  codex: ["read-only", "ask", "workspace-write", "auto-review", "on-request", "full-auto"],
+  claude: ["plan", "default", "acceptEdits", "auto", "bypassPermissions"],
+  dsh: ["read-only", "workspace-write", "full-access"],
+};
+
+function isPeerRuntime(runtime: string): runtime is PeerRuntime {
+  return runtime in PERMISSIONS;
+}
+
+/** The level a permission amounts to across CLIs: 0 read-only, 1 write (anything between), 2 full. */
+function permissionLevel(runtime: PeerRuntime, permission: string): number {
+  return permission === PERMISSIONS[runtime]["read-only"] ? 0 : permission === PERMISSIONS[runtime].full ? 2 : 1;
+}
+
+/** Whether `permission` (of `runtime`) lets a session do more than the caller's: by order on the same CLI, by level across. */
+function widerPermission(runtime: PeerRuntime, permission: string, callerRuntime: PeerRuntime, callerPermission: string): boolean {
+  if (runtime === callerRuntime) {
+    const order = PERMISSION_ORDER[runtime];
+    const [a, b] = [order.indexOf(permission), order.indexOf(callerPermission)];
+    if (a >= 0 && b >= 0) return a > b;
+  }
+  return permissionLevel(runtime, permission) > permissionLevel(callerRuntime, callerPermission);
+}
+
+/** 开会话's permission for a session of `runtime` (see SessionService.peerPermission); undefined = the model's default. */
+export function peerPermission(caller: { runtime: PeerRuntime; permission: string } | null, runtime: PeerRuntime, level: PermissionLevel | null, choices: Pick<ProfileChoices, "permissions" | "defaultPermission"> | null): string | undefined {
+  const usable = (id: string) => !choices || choices.permissions.some((p) => p.id === id && !p.unavailable);
+  const forLevel = (l: PermissionLevel) => {
+    const id = PERMISSIONS[runtime][l];
+    // 帮我审批 needs Anthropic's classifier: a Claude Code session on another endpoint (GLM…) gets 自动接受编辑.
+    return usable(id) ? id : runtime === "claude" && l === "write" ? "acceptEdits" : id;
+  };
+  if (level) {
+    const permission = forLevel(level);
+    if (caller && widerPermission(runtime, permission, caller.runtime, caller.permission)) {
+      const allowed = PERMISSION_LEVELS.filter((l) => !widerPermission(runtime, forLevel(l), caller.runtime, caller.permission));
+      throw new HostError("bad_request", `你自己的权限是 ${caller.permission}，开的会话不能比你宽：permission ${allowed.length ? `用 ${allowed.join(" 或 ")}，或者` : ""}不填（沿用你的）`);
+    }
+    return permission;
+  }
+  if (!caller) return undefined;
+  if (caller.runtime === runtime) return caller.permission;
+  const fallback = choices?.defaultPermission;
+  if (!fallback || !widerPermission(runtime, fallback, caller.runtime, caller.permission)) return undefined;
+  return forLevel(PERMISSION_LEVELS[permissionLevel(caller.runtime, caller.permission)]!);
+}
 
 /** How much of the new session's reply a report carries. */
 const REPORT_MAX = 4000;

@@ -1,11 +1,12 @@
-import { app, BrowserWindow, clipboard, ipcMain, Menu, shell } from "electron";
-import { existsSync, mkdirSync } from "node:fs";
+import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeTheme, shell } from "electron";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startHost, type RunningHost } from "@amo-studio/host";
 import type { HostEvent } from "@amo-studio/protocol";
 import { setupReviewWindows } from "./review-window.js";
 import { setupViewerWindows } from "./viewer-window.js";
+import { installWindowControls } from "./window-controls.js";
 
 // AMO Reviewer (2026-10-23): Git Review, the viewer and 查看包 as a program of their own, for any tool or model, not
 // only WorkStudio (plans/reviewer-standalone.md). It runs a Host of its own with no models — its own data dir, the same
@@ -78,9 +79,36 @@ function onHostEvent(e: HostEvent): void {
   }
 }
 
+/**
+ * 主题 (2026-10-29, the user: every tool both): the program's own (Studio's Reviewer windows follow Studio's), in
+ * theme.json beside its data; set as the system colours of all its windows, which the pages follow. 浅色 unless chosen.
+ */
+type Theme = "light" | "dark" | "system";
+const themeFile = join(home, "theme.json");
+const isTheme = (t: unknown): t is Theme => t === "light" || t === "dark" || t === "system";
+function readTheme(): Theme {
+  try {
+    const t = (JSON.parse(readFileSync(themeFile, "utf8")) as { theme?: unknown }).theme;
+    return isTheme(t) ? t : "light";
+  } catch {
+    return "light";
+  }
+}
+
 async function start(): Promise<void> {
   Menu.setApplicationMenu(null);
   mkdirSync(dataDir, { recursive: true });
+  nativeTheme.themeSource = readTheme();
+  ipcMain.handle("amo:theme", () => nativeTheme.themeSource);
+  ipcMain.handle("amo:set-theme", (_event, t: unknown) => {
+    if (!isTheme(t)) return;
+    nativeTheme.themeSource = t;
+    try {
+      writeFileSync(themeFile, JSON.stringify({ theme: t }, null, 2));
+    } catch {
+      // still applies until it ends
+    }
+  });
   host = await startHost({ dataDir, port: 0, uiDir, profiles: [] });
   // The Host opens Review only for a listening window; here the program itself listens (onHostEvent).
   host.service.liveWindows = 1;
@@ -93,6 +121,8 @@ async function start(): Promise<void> {
     else clipboard.writeText(String(text));
   });
   ipcMain.handle("amo:open-external", (_event, url: string) => (/^https?:\/\//.test(String(url)) ? shell.openExternal(String(url)) : undefined));
+  // The pages draw their own title bars and window buttons (2026-10-29).
+  installWindowControls();
   ipcMain.on("amo:min-width", (event, px: number) => {
     const w = BrowserWindow.fromWebContents(event.sender);
     if (w && !w.isDestroyed() && Number.isFinite(px) && px > 0) w.setMinimumSize(Math.min(Math.round(px), 1600), w.getMinimumSize()[1] ?? 0);
@@ -102,10 +132,33 @@ async function start(): Promise<void> {
   await openFromArgs(process.argv);
 }
 
+/**
+ * running.json in its home (2026-11-04, the user: AMO 平台 was slow to tell what runs): this one's pid and exe, so the
+ * platform knows it runs without asking Windows for every process; it goes when this one quits.
+ */
+const runningFile = join(home, "running.json");
+function writeRunning(): void {
+  try {
+    mkdirSync(home, { recursive: true });
+    writeFileSync(runningFile, JSON.stringify({ pid: process.pid, exe: process.execPath, startedAt: new Date().toISOString() }, null, 2));
+  } catch {
+    // the platform then asks Windows, as before
+  }
+}
+function removeRunning(): void {
+  try {
+    if ((JSON.parse(readFileSync(runningFile, "utf8")) as { pid?: unknown }).pid === process.pid) rmSync(runningFile, { force: true });
+  } catch {
+    // not there, or another one's
+  }
+}
+
 if (!app.requestSingleInstanceLock()) {
   // One runs already: it opens what this start asked for (second-instance) and this one ends.
   app.quit();
 } else {
+  writeRunning();
+  app.on("will-quit", removeRunning);
   app.on("second-instance", (_event, argv) => void openFromArgs(argv));
   // Started without a folder it waits for amo-review; it ends with its last window once one was opened.
   let hadWindow = false;

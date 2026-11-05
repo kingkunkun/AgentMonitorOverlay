@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
-import { REMOTE_FILE_CHUNK, REMOTE_KINDS, REMOTE_LOST_MS, remoteHeldTasks, remoteInUse, remoteProfileId, remoteQuitNote, type ModelProfile, type RemoteState, type SessionItem } from "@amo-studio/protocol";
+import { REMOTE_FILE_CHUNK, REMOTE_KINDS, REMOTE_LOST_MS, remoteHeldTasks, remoteInUse, remoteProfileId, remoteQuitNote, remoteStartFor, splitFileRefItems, withFileRefs, type HostEvent, type ModelProfile, type RemoteCatalog, type RemoteState, type SessionItem } from "@amo-studio/protocol";
 import { saveAccount, type Protector } from "@amo-studio/account";
 import { RelayStore, startRelayServer, type DeviceEvent, type RelayServer } from "@amo-studio/relay";
 import { removeTempDir } from "@amo-studio/testkit";
@@ -69,6 +69,8 @@ async function host(name: string, server: string, account: string, key: string) 
   const service = new HostService(store, new CodexRuntime({ store, servers, profiles: PROFILES }), PROFILES);
   const options = { env, protector: fake, watchMs: 30, backoff: new Backoff({ baseMs: 30, maxMs: 120 }), pingTimeoutMs: 2000 };
   service.remote.start(options);
+  // Off until turned on (2026-10-30).
+  await service.remote.setEnabled(true);
   cleanups.push(async () => {
     service.remote.stop();
     await servers.close();
@@ -155,8 +157,8 @@ describe("remote tasks between two Hosts (step 2)", () => {
     expect(a.store.getSession(third.id)).toMatchObject({ profileId: "q", options: { permission: "read-only" } });
 
     // What only A does is refused on B (its Host and its runtime both).
-    await expect(async () => b.service.tasks.updateTask(task.id, { title: "改名" })).rejects.toThrow("远程任务");
-    expect(() => b.remote.guardRoute("PATCH", "/api/tasks/:id", { id: task.id })).toThrow("A-PC 上的远程任务");
+    await expect(async () => b.service.tasks.updateTask(task.id, { column: "done" })).rejects.toThrow("远程任务");
+    expect(() => b.remote.guardRoute("POST", "/api/tasks/:id/unarchive", { id: task.id })).toThrow("A-PC 上的远程任务");
     expect(() => b.remote.guardRoute("POST", "/api/sessions/:id/fork", { id: session.id })).toThrow("A-PC 上的远程任务");
     expect(() => b.remote.guardRoute("POST", "/api/sessions/:id/messages", { id: session.id })).not.toThrow();
     await expect(b.service.sessions.fork(session.id)).rejects.toThrow("远程任务的会话不能在这台电脑上分支");
@@ -214,6 +216,42 @@ describe("remote tasks between two Hosts (step 2)", () => {
     await b.service.tasks.archiveTask(second.task.id);
     await b.remote.copies.syncPeer(toA(a));
     expect(b.store.getTask(second.task.id)).toBeUndefined();
+  }, 60_000);
+
+  it("B back after a long time away (2026-11-01): the many missed items are written at once and the windows told once, with the progress shown meanwhile", async () => {
+    const { a, b, toB } = await paired();
+    const { task, session } = await taskOnA(a);
+    a.remote.grant(task.id, toB);
+    await until(() => agentTexts(b, session.id), (t) => t.includes("FAKE: 第一句"), "B has the first reply");
+    b.remote.stop();
+    await until(a.state, (s) => s.peers[0]?.online === false, "A sees B gone");
+    // Hours of work on A while B was away: more than a page of items.
+    for (let i = 0; i < 450; i++) a.store.appendItem({ id: `away-${i}`, sessionId: session.id, createdAt: new Date().toISOString(), type: "notice", level: "info", message: `离开时的第 ${i} 条` });
+    const seen: HostEvent[] = [];
+    b.service.on("event", (e: HostEvent) => seen.push(e));
+    b.restart();
+    await until(() => b.store.getItem("away-449"), Boolean, "B caught up");
+    await until(() => seen.filter((e) => e.type === "items.reloaded"), (r) => r.length > 0, "told once");
+    expect(items(b, session.id).filter((i) => i.id.startsWith("away-")).length).toBe(450);
+    // Not one by one.
+    expect(seen.filter((e) => e.type === "item.appended" && e.item.id.startsWith("away-")).length).toBe(0);
+    expect(seen.filter((e) => e.type === "items.reloaded").map((e) => (e as { sessionId: string }).sessionId)).toEqual([session.id]);
+    // The task came before its items; the progress is gone once done.
+    const firstTask = seen.findIndex((e) => e.type === "task.upserted" && e.task.id === task.id);
+    const reloaded = seen.findIndex((e) => e.type === "items.reloaded");
+    expect(firstTask).toBeGreaterThanOrEqual(0);
+    expect(firstTask).toBeLessThan(reloaded);
+    await until(b.state, (s) => (s.syncing ?? []).length === 0, "progress gone");
+
+    // A few missed items still come one by one.
+    b.remote.stop();
+    await until(a.state, (s) => s.peers[0]?.online === false, "A sees B gone again");
+    for (let i = 0; i < 3; i++) a.store.appendItem({ id: `brief-${i}`, sessionId: session.id, createdAt: new Date().toISOString(), type: "notice", level: "info", message: `短暂离开 ${i}` });
+    seen.length = 0;
+    b.restart();
+    await until(() => b.store.getItem("brief-2"), Boolean, "B caught up again");
+    await until(() => seen.filter((e) => e.type === "item.appended" && e.item.id.startsWith("brief-")), (r) => r.length === 3, "one by one");
+    expect(seen.some((e) => e.type === "items.reloaded")).toBe(false);
   }, 60_000);
 
   it("A away: B cannot send (said why) and catches up once A is back; a question is answered from B", async () => {
@@ -304,6 +342,59 @@ describe("remote tasks between two Hosts (step 2)", () => {
     ws.send(JSON.stringify({ type: "relay", to: toA, id: "late-1", kind: "pong", re: "gone-1", body: {} }));
     await new Promise((r) => setTimeout(r, 300));
     expect(got.slice(before).filter((e) => e.type === "relay" && e.re === "late-1")).toEqual([]);
+  }, 60_000);
+
+  it("the own account's devices share grants (2026-10-31): a later-paired one gets them, a new grant reaches all, each drops its own; another account's stays apart", async () => {
+    const { url, keys } = await relayService();
+    const a = await host("A-PC", url, "台式机的我", keys["台式机的我"]!);
+    await until(a.state, online, "A online");
+    const aDevice = a.state().device!.id;
+    const toA = { account: "台式机的我", device: aDevice };
+    /** A raw device of `account`, paired with A (A allowed it), its frames kept. */
+    const device = async (account: string, id: string, name: string) => {
+      const key = keys[account]!;
+      const headers = { authorization: `Bearer ${key}`, "content-type": "application/json" };
+      const ws = new WebSocket(`${url.replace("http", "ws")}/api/devices/ws?device=${id}&name=${encodeURIComponent(name)}`, { headers: { authorization: `Bearer ${key}` } });
+      cleanups.push(() => ws.terminate());
+      const got: DeviceEvent[] = [];
+      ws.on("message", (d) => got.push(JSON.parse(String(d)) as DeviceEvent));
+      await new Promise((r) => ws.once("open", r));
+      const req = (await (await fetch(`${url}/api/devices/pair`, { method: "POST", headers, body: JSON.stringify({ device: id, deviceName: name, to: "台式机的我", toDevice: aDevice }) })).json()) as { request: { id: string } };
+      await until(a.state, (s) => s.incoming.some((r) => r.id === req.request.id), `${name}'s request`);
+      await a.remote.answer(req.request.id, true);
+      await until(a.state, (s) => s.peers.some((p) => p.device === id && p.online), `A sees ${name}`);
+      const ref = { account, device: id };
+      const granted = () => got.flatMap((e) => (e.type === "relay" && e.kind === REMOTE_KINDS.push && (e.body as { type: string }).type === "granted" ? [(e.body as { taskId: string }).taskId] : []));
+      return { ws, ref, granted };
+    };
+    const grantsOf = (ref: { device: string }) => a.state().grants.filter((g) => g.device === ref.device).map((g) => g.taskId).sort();
+
+    const desk = await device("台式机的我", "d_desk00000000000000000000", "台式机");
+    const first = await taskOnA(a, "先授权的");
+    a.remote.grant(first.task.id, desk.ref);
+    // Paired later, the phone gets what the desk computer has, and hears of it.
+    const phone = await device("台式机的我", "d_phone0000000000000000000", "手机");
+    expect(grantsOf(phone.ref)).toEqual([first.task.id]);
+    await until(phone.granted, (l) => l.includes(first.task.id), "phone hears the first grant");
+    // A grant to the phone now reaches the desk computer too.
+    const second = await taskOnA(a, "后授权的");
+    a.remote.grant(second.task.id, phone.ref);
+    expect(grantsOf(desk.ref)).toEqual([first.task.id, second.task.id].sort());
+    await until(desk.granted, (l) => l.includes(second.task.id), "desk hears the second grant");
+    // Another account's device: granted alone, and not given the own account's tasks when it pairs.
+    const guest = await device("笔记本的我", "d_guest0000000000000000000", "别人的笔记本");
+    expect(grantsOf(guest.ref)).toEqual([]);
+    const third = await taskOnA(a, "给别人的");
+    a.remote.grant(third.task.id, guest.ref);
+    expect(grantsOf(desk.ref)).not.toContain(third.task.id);
+    expect(grantsOf(phone.ref)).not.toContain(third.task.id);
+    // The phone puts its copy away: its grant ends, the desk computer's stays.
+    phone.ws.send(JSON.stringify({ type: "relay", to: toA, id: "drop-1", kind: REMOTE_KINDS.drop, body: { taskId: first.task.id } }));
+    await until(() => grantsOf(phone.ref), (l) => !l.includes(first.task.id), "phone's grant dropped");
+    expect(grantsOf(desk.ref)).toContain(first.task.id);
+    // Taken back from the desk computer here: the phone's own grant to the second stays.
+    a.remote.revoke(second.task.id, desk.ref);
+    expect(grantsOf(phone.ref)).toEqual([second.task.id]);
   }, 60_000);
 });
 
@@ -464,6 +555,331 @@ describe("requests for tasks between two Hosts (step 4)", () => {
     await a.remote.unpair(toB);
     expect(a.state().taskRequests).toEqual([]);
     await until(b.state, (s) => s.asks.length === 0, "B's requests to A gone with the pairing");
+  }, 60_000);
+});
+
+describe("远程创建 between two Hosts (plans/remote-page-and-new-task.md 4.1)", () => {
+  it("nothing allowed: refused, saying where to tick; the catalog lists only allowed projects, the topics with their allowed projects and the allowed models", async () => {
+    const { a, b } = await paired();
+    const A = toA(a);
+    // Nothing ticked on A: B's catalog is empty, creating is refused with where to tick.
+    expect(a.state().allowedProjects).toEqual({ workspaceIds: [], common: false });
+    expect(await b.remote.catalog(A)).toMatchObject({ name: "A-PC", projects: [], allowCommon: false, models: [] });
+    await expect(b.remote.create(A, { text: "跑一下", topicId: null, workspaceId: null, profileId: "p" })).rejects.toThrow("A-PC 还没勾远端允许的项目：在那台电脑的 远程 → 远程设置 里勾");
+
+    const yes = a.service.projects.addWorkspace({ path: tempDir("allowed-proj") });
+    const no = a.service.projects.addWorkspace({ path: tempDir("other-proj") });
+    const topic = a.service.topics.createTopic({ title: "掉落表", workspaceIds: [yes.id, no.id] });
+    a.remote.setAllowedProjects({ workspaceIds: [yes.id], common: false });
+    a.remote.setAllowed({ profiles: ["q", "p"], defaultProfile: "p", permission: null });
+    expect(a.state().allowedProjects).toEqual({ workspaceIds: [yes.id], common: false });
+    const catalog = await b.remote.catalog(A);
+    expect(catalog.projects.map((p) => p.id)).toEqual([yes.id]);
+    expect(catalog.allowCommon).toBe(false);
+    expect(catalog.topics).toMatchObject([{ id: topic.id, title: "掉落表", workspaceIds: [yes.id] }]);
+    expect(catalog.models).toEqual([
+      { id: "p", label: "Codex · P" },
+      { id: "q", label: "Codex · Q" },
+    ]);
+    // Only a project that is there; not the common folder by id.
+    expect(() => a.remote.setAllowedProjects({ workspaceIds: [a.service.commonWorkspace().id] })).toThrow("没有项目");
+    // B asks only devices that allowed it (A did not allow anything the other way round).
+    await expect(a.remote.catalog({ account: "笔记本的我", device: b.state().device!.id })).rejects.toThrow("只能在允许了这台电脑配对的设备上建任务");
+    // An A that does not know a command yet: B says to update it.
+    await expect(b.remote.copies.ask(A, "rt.nothing-yet", {})).rejects.toThrow("A-PC 上的 Studio 版本太旧，先在那台电脑上更新");
+  }, 60_000);
+
+  it("问题 #1: B's first sentence offers A's templates — the global ones and the picked allowed project's; not another project's, not B's own", async () => {
+    const { a, b } = await paired();
+    const A = toA(a);
+    const yes = a.service.projects.addWorkspace({ path: tempDir("tpl-allowed") });
+    const no = a.service.projects.addWorkspace({ path: tempDir("tpl-other") });
+    a.remote.setAllowedProjects({ workspaceIds: [yes.id], common: false });
+    a.service.promptTemplates.create({ title: "全局的", body: "g" });
+    a.service.promptTemplates.create({ title: "允许项目的", body: "y", workspaceId: yes.id });
+    a.service.promptTemplates.create({ title: "别的项目的", body: "n", workspaceId: no.id });
+    b.service.promptTemplates.create({ title: "B 自己的", body: "b" });
+    const titles = async (workspaceId: string | null) => (await b.remote.catalogTemplates(A, workspaceId)).map((t) => t.title).sort();
+    expect(await titles(yes.id)).toEqual(["允许项目的", "全局的"]);
+    // A project not allowed, or no project while the common folder is not: refused as rt.create would.
+    await expect(titles(no.id)).rejects.toThrow("这个项目不在 A-PC 远端允许的项目里");
+    await expect(titles(null)).rejects.toThrow("A-PC 不允许远程任务不选项目");
+    // The common folder: the global ones only (A's list without a project would be every project's).
+    a.remote.setAllowedProjects({ workspaceIds: [yes.id], common: true });
+    expect(await titles(null)).toEqual(["全局的"]);
+  }, 60_000);
+
+  it("a device that read the catalog hears of changes at once: 远端允许的项目, 远端允许的模型, a project renamed; nothing changed, nothing sent", async () => {
+    const { a, b } = await paired();
+    const A = toA(a);
+    const pushed: RemoteCatalog[] = [];
+    b.service.on("event", (e) => e.type === "remote.catalog" && e.account === A.account && e.device === A.device && pushed.push(e.catalog));
+    const yes = a.service.projects.addWorkspace({ path: tempDir("allowed-proj") });
+    const later = a.service.projects.addWorkspace({ path: tempDir("later-proj") });
+    a.remote.setAllowedProjects({ workspaceIds: [yes.id], common: false });
+    a.remote.setAllowed({ profiles: ["p"], defaultProfile: "p", permission: null });
+    // Not asked yet: nothing is sent.
+    await new Promise((r) => setTimeout(r, 500));
+    expect(pushed).toEqual([]);
+    expect((await b.remote.catalog(A)).projects.map((p) => p.id)).toEqual([yes.id]);
+
+    // A saves 远端允许的项目: B has the new catalog without asking.
+    a.remote.setAllowedProjects({ workspaceIds: [yes.id, later.id], common: true });
+    const first = await until(() => pushed.at(-1), (c) => !!c && c.projects.length === 2, "pushed projects");
+    expect(first).toMatchObject({ name: "A-PC", allowCommon: true });
+    expect(first!.projects.map((p) => p.id).sort()).toEqual([yes.id, later.id].sort());
+    // 远端允许的模型.
+    a.remote.setAllowed({ profiles: ["p", "q"], defaultProfile: "q", permission: null });
+    expect((await until(() => pushed.at(-1), (c) => c!.models.length === 2, "pushed models"))!.models.map((m) => m.id)).toEqual(["q", "p"]);
+    // A project renamed there.
+    a.service.projects.updateWorkspace(later.id, { name: "改了名" });
+    await until(() => pushed.at(-1), (c) => c!.projects.some((p) => p.name === "改了名"), "pushed rename");
+    // Work in a task changes only the order: not sent.
+    const count = pushed.length;
+    await a.service.tasks.createTask({ title: "只是干活", workspaceId: yes.id });
+    await new Promise((r) => setTimeout(r, 800));
+    expect(pushed.length).toBe(count);
+  }, 60_000);
+
+  it("creates in an allowed project on an allowed model: made in the topic, granted, running, the copy on B; a disallowed project, model or the common folder is refused with the reason", async () => {
+    const { a, b } = await paired();
+    const A = toA(a);
+    const yes = a.service.projects.addWorkspace({ path: tempDir("allowed-proj") });
+    const no = a.service.projects.addWorkspace({ path: tempDir("other-proj") });
+    const topic = a.service.topics.createTopic({ title: "掉落表" });
+    a.remote.setAllowedProjects({ workspaceIds: [yes.id], common: false });
+    a.remote.setAllowed({ profiles: ["p"], defaultProfile: "p", permission: "read-only" });
+    // B is another account here: 安全 lets it start at once (the default waits, see the next test).
+    a.remote.setSecurity({ sameAccount: "run", otherAccount: "run" });
+    expect((await b.remote.catalog(A)).confirm).toBe(false);
+
+    await expect(b.remote.create(A, { text: "x", topicId: null, workspaceId: no.id, profileId: "p" })).rejects.toThrow("这个项目不在 A-PC 远端允许的项目里");
+    await expect(b.remote.create(A, { text: "x", topicId: null, workspaceId: null, profileId: "p" })).rejects.toThrow("A-PC 不允许远程任务不选项目（公共文件夹）");
+    await expect(b.remote.create(A, { text: "x", topicId: null, workspaceId: yes.id, profileId: "q" })).rejects.toThrow("这个模型不在 A-PC 远端允许的模型里");
+    await expect(b.remote.create(A, { text: "x", topicId: "tp_gone", workspaceId: yes.id, profileId: "p" })).rejects.toThrow("A-PC 上没有这个专题了");
+    await expect(b.remote.create(A, { text: "  ", topicId: null, workspaceId: yes.id, profileId: "p" })).rejects.toThrow("第一句话不能是空的");
+    expect(a.store.listTasks()).toEqual([]);
+
+    const made = await b.remote.create(A, { title: "", text: "在 A 上跑这个", topicId: topic.id, workspaceId: yes.id, profileId: "p" });
+    expect(made).toMatchObject({ copied: true });
+    expect(made.sessionId).toBeTruthy();
+    expect(made.taskId).toBeTruthy();
+    if (!made.taskId) return;
+    expect(a.store.getTask(made.taskId)).toMatchObject({ title: "在 A 上跑这个", workspaceId: yes.id, topicId: topic.id, column: "doing" });
+    expect(a.state().grants).toMatchObject([{ taskId: made.taskId, account: "笔记本的我" }]);
+    expect(a.store.getSession(made.sessionId!)).toMatchObject({ profileId: "p", options: { permission: "read-only" } });
+    expect(b.store.getTask(made.taskId)?.remote).toMatchObject({ state: "active", name: "A-PC" });
+    await until(() => agentTexts(b, made.sessionId!), (t) => t.includes("FAKE: 在 A 上跑这个"), "B sees it run");
+
+    // The common folder once A allows it.
+    a.remote.setAllowedProjects({ workspaceIds: [], common: true });
+    const common = await b.remote.create(A, { title: "公共的", text: "公共文件夹里跑", topicId: null, workspaceId: null, profileId: "p" });
+    expect(a.store.getTask(common.taskId ?? "")).toMatchObject({ title: "公共的", workspaceId: a.service.commonWorkspace().id, topicId: null });
+    await expect(b.remote.create(A, { text: "x", topicId: null, workspaceId: yes.id, profileId: "p" })).rejects.toThrow("这个项目不在 A-PC 远端允许的项目里");
+
+    // A away: said at once.
+    a.remote.stop();
+    await until(b.state, (s) => s.peers[0]?.online === false, "B sees A gone");
+    await expect(b.remote.create(A, { text: "x", topicId: null, workspaceId: null, profileId: "p" })).rejects.toThrow("A-PC 不在线");
+  }, 90_000);
+
+  it("安全: another account's task waits for a yes on A with what B picked; allowed, it runs there; refused, B hears why", async () => {
+    const { a, b } = await paired();
+    const A = toA(a);
+    const yes = a.service.projects.addWorkspace({ path: tempDir("allowed-proj") });
+    const topic = a.service.topics.createTopic({ title: "掉落表" });
+    a.remote.setAllowedProjects({ workspaceIds: [yes.id], common: false });
+    a.remote.setAllowed({ profiles: ["p"], defaultProfile: "p", permission: null });
+    // The default: the own account's devices start at once, other accounts' wait — and B knows before it sends.
+    expect(a.state().security).toEqual({ sameAccount: "run", otherAccount: "confirm" });
+    expect((await b.remote.catalog(A)).confirm).toBe(true);
+
+    const made = await b.remote.create(A, { title: "等确认", text: "先别跑", topicId: topic.id, workspaceId: yes.id, profileId: "p" });
+    expect(made).toMatchObject({ taskId: null, sessionId: null, copied: false, waiting: { title: "等确认", state: "pending" } });
+    expect(a.store.listTasks()).toEqual([]);
+    const held = (await until(a.state, (s) => s.taskRequests.length === 1, "A has it to answer")).taskRequests[0]!;
+    expect(held).toMatchObject({ title: "等确认", text: "先别跑", account: "笔记本的我", preset: { workspaceId: yes.id, topicId: topic.id, profileId: "p" } });
+    expect(b.state().asks).toMatchObject([{ id: held.id, state: "pending", name: "A-PC" }]);
+
+    // Allowed where B picked: made in that project and topic, granted, running; no 说明 (B wrote only a first sentence).
+    await a.remote.acceptRequest(held.id, { workspaceId: yes.id, topicId: topic.id, profileId: "p" });
+    const task = a.store.listTasks().find((t) => t.title === "等确认")!;
+    expect(task).toMatchObject({ workspaceId: yes.id, topicId: topic.id, column: "doing" });
+    expect(task.description ?? "").toBe("");
+    expect(a.state().grants).toMatchObject([{ taskId: task.id, account: "笔记本的我" }]);
+    await until(b.state, (s) => s.asks.some((r) => r.id === held.id && r.state === "accepted"), "B hears it was allowed");
+    await until(() => b.store.getTask(task.id)?.remote?.state, (st) => st === "active", "B's copy");
+
+    // Refused: nothing made, B sees why.
+    const second = await b.remote.create(A, { title: "不要", text: "这个不行", topicId: null, workspaceId: yes.id, profileId: "p" });
+    a.remote.refuseRequest(second.waiting!.id, "今天不跑");
+    await until(b.state, (s) => s.asks.some((r) => r.id === second.waiting!.id && r.state === "refused" && r.reason === "今天不跑"), "B hears the refusal");
+    expect(a.store.listTasks().some((t) => t.title === "不要")).toBe(false);
+
+    // Turned off for other accounts: it starts at once again.
+    a.remote.setSecurity({ sameAccount: "run", otherAccount: "run" });
+    expect((await b.remote.catalog(A)).confirm).toBe(false);
+    const direct = await b.remote.create(A, { title: "直接跑", text: "现在跑", topicId: null, workspaceId: yes.id, profileId: "p" });
+    expect(direct.taskId).toBeTruthy();
+    expect(() => a.remote.setSecurity({ sameAccount: "run", otherAccount: "maybe" })).toThrow("otherAccount 只能是 run 或 confirm");
+  }, 90_000);
+
+  it("安全 tells the own account's devices from other accounts'", () => {
+    const s = { sameAccount: "run", otherAccount: "confirm" } as const;
+    expect(remoteStartFor(s, "dhy", "dhy")).toBe("run");
+    expect(remoteStartFor(s, "dhy", "测试-B")).toBe("confirm");
+    expect(remoteStartFor(s, null, "dhy")).toBe("confirm");
+    expect(remoteStartFor({ sameAccount: "confirm", otherAccount: "run" }, "dhy", "dhy")).toBe("confirm");
+  });
+});
+
+describe("pictures and files B sends A (2026-10-29 evening)", () => {
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const userOn = (h: Pair["a"], sessionId: string, has: string) =>
+    until(() => items(h, sessionId).filter((i): i is Extract<SessionItem, { type: "user" }> => i.type === "user").find((i) => i.text.includes(has)), Boolean, `the message «${has}»`);
+
+  it("a message in a granted task carries B's picture and files: A's session sees the picture and A's own paths; folders and missing files are refused on B", async () => {
+    const { a, b, toB } = await paired();
+    const { task, session } = await taskOnA(a);
+    a.remote.grant(task.id, toB);
+    await until(() => b.store.getTask(task.id), (t) => t?.remote?.state === "active", "B's copy");
+    // A picture in two pieces, a file with a marked range and note, an empty file.
+    const png = Buffer.concat([PNG, Buffer.alloc(REMOTE_FILE_CHUNK + 100, 7)]);
+    const pic = b.service.attachments.save(png, { name: "截图.png", mime: "image/png" });
+    const dir = tempDir("b-files");
+    writeFileSync(join(dir, "说明.txt"), "B 的说明");
+    writeFileSync(join(dir, "empty.log"), "");
+    await b.service.sessions.sendMessage(session.id, withFileRefs("看一下", [{ path: join(dir, "说明.txt"), startLine: 2, endLine: 3, note: "第二段" }, join(dir, "empty.log")]), [pic.id]);
+    const u = (await userOn(a, session.id, "看一下"))!;
+    expect(u.text).not.toContain(dir);
+    const { text, refs } = splitFileRefItems(u.text);
+    expect(text).toBe("看一下");
+    expect(refs).toHaveLength(2);
+    expect(refs[0]).toMatchObject({ startLine: 2, endLine: 3, note: "第二段" });
+    expect(refs[0]!.path.startsWith(a.service.attachments.dir())).toBe(true);
+    expect(refs[0]!.path.endsWith("-说明.txt")).toBe(true);
+    expect(readFileSync(refs[0]!.path, "utf8")).toBe("B 的说明");
+    expect(readFileSync(refs[1]!.path, "utf8")).toBe("");
+    expect(u.images).toHaveLength(1);
+    expect(readFileSync(u.images![0]!.path).equals(png)).toBe(true);
+    await until(() => agentTexts(a, session.id), (t) => t.some((x) => x.includes("看一下")), "A replies");
+    // Nothing left waiting on A.
+    expect(readdirSync(join(a.service.attachments.dir(), "..", "remote-uploads"))).toEqual([]);
+
+    // Refused on B before anything goes: a folder, a file that is not there.
+    await expect(b.service.sessions.sendMessage(session.id, withFileRefs("文件夹", [dir]))).rejects.toThrow("是文件夹");
+    await expect(b.service.sessions.sendMessage(session.id, withFileRefs("没了", [join(dir, "nope.txt")]))).rejects.toThrow("找不到");
+    // On A: an upload nobody sent.
+    await expect(b.remote.copies.ask(toA(a), REMOTE_KINDS.send, { sessionId: session.id, text: "x", uploads: [{ uploadId: "up_nothing1", name: "x" }] })).rejects.toThrow("没有传完整");
+    // A new session from B takes them too.
+    const started = await b.service.tasks.addSession(task.id, { profileId: b.store.getTask(task.id)!.remote!.allowed[0]!, text: withFileRefs("新会话", [join(dir, "说明.txt")]) });
+    const first = (await userOn(a, started.id, "新会话"))!;
+    expect(splitFileRefItems(first.text).refs[0]!.path.startsWith(a.service.attachments.dir())).toBe(true);
+  }, 60_000);
+
+  it("pictures in a copy are B's own (2026-10-30): B's sent one names B's attachment, one sent on A is fetched; B comments on a reply and sends it", async () => {
+    const { a, b, toB } = await paired();
+    const { task, session } = await taskOnA(a);
+    a.remote.grant(task.id, toB);
+    await until(() => b.store.getTask(task.id), (t) => t?.remote?.state === "active", "B's copy");
+    const png = Buffer.concat([PNG, Buffer.alloc(200, 3)]);
+    const pic = b.service.attachments.save(png, { name: "截图.png", mime: "image/png" });
+    await b.service.sessions.sendMessage(session.id, "看图", [pic.id]);
+    expect((await userOn(a, session.id, "看图"))!.images![0]!.id).not.toBe(pic.id);
+    // On B the message names the picture B has.
+    await until(() => (items(b, session.id).find((i) => i.type === "user" && i.text === "看图") as Extract<SessionItem, { type: "user" }> | undefined)?.images?.[0]?.id, (id) => id === pic.id, "B's own picture");
+
+    // A's person sends one on A: B fetches it and keeps it as its own.
+    await until(() => a.store.getSession(session.id)!.status, (s) => s === "idle" || s === "completed", "A idle");
+    const onA = a.service.attachments.save(Buffer.concat([PNG, Buffer.alloc(300, 9)]), { name: "A的图.png", mime: "image/png" });
+    await a.service.sessions.sendMessage(session.id, "A 发的图", [onA.id]);
+    const got = await until(() => (items(b, session.id).find((i) => i.type === "user" && i.text === "A 发的图") as Extract<SessionItem, { type: "user" }> | undefined)?.images?.[0], (im) => !!im?.id && im.id !== onA.id, "A's picture kept on B");
+    expect(readFileSync(b.service.attachments.get(got!.id!).path).equals(readFileSync(onA.path))).toBe(true);
+
+    // 批注 on a reply in the copy: kept on B, sent to A as a message.
+    expect(() => b.remote.guardRoute("POST", "/api/sessions/:id/annotations", { id: session.id })).not.toThrow();
+    expect(() => b.remote.guardRoute("POST", "/api/sessions/:id/annotations/send", { id: session.id })).not.toThrow();
+    await until(() => b.store.getSession(session.id)!.status, (s) => s === "idle" || s === "completed", "B's copy idle");
+    const reply = items(b, session.id).find((i): i is Extract<SessionItem, { type: "agent" }> => i.type === "agent" && !i.streaming)!;
+    const quote = reply.markdown.slice(0, 4);
+    b.service.review.addAnnotation(session.id, { itemId: reply.id, start: 0, end: quote.length, quote, note: "这里再看看" });
+    await b.service.review.sendAnnotations(session.id);
+    await userOn(a, session.id, "这里再看看");
+  }, 60_000);
+
+  it("B renames the task and a session (2026-10-30): renamed on A, the copy says so at once; other changes stay A's", async () => {
+    const { a, b, toB } = await paired();
+    const { task, session } = await taskOnA(a);
+    a.remote.grant(task.id, toB);
+    await until(() => b.store.getTask(task.id), (t) => t?.remote?.state === "active", "B's copy");
+    expect(() => b.remote.guardRoute("PATCH", "/api/tasks/:id", { id: task.id })).not.toThrow();
+    expect(() => b.remote.guardRoute("PATCH", "/api/sessions/:id", { id: session.id })).not.toThrow();
+
+    expect((await b.service.tasks.patchTask(task.id, { title: "B 起的名字" })).title).toBe("B 起的名字");
+    expect(a.store.getTask(task.id)!.title).toBe("B 起的名字");
+    expect((await b.service.sessions.renameSession(session.id, "B 的会话名")).title).toBe("B 的会话名");
+    expect(a.store.getSession(session.id)!.title).toBe("B 的会话名");
+    // A's own rename still comes over.
+    a.service.tasks.updateTask(task.id, { title: "A 又改了" });
+    await until(() => b.store.getTask(task.id)!.title, (t) => t === "A 又改了", "A's name on B");
+
+    // 提示词模板 (2026-10-31): B sees the templates A offers for the task (A's global ones and its project's), not those
+    // of A's other projects nor its own.
+    const other = a.store.addWorkspace({ path: tempDir("A-other"), name: "别的项目" });
+    a.service.promptTemplates.create({ title: "全局的", body: "g" });
+    a.service.promptTemplates.create({ title: "别的项目的", body: "o", workspaceId: other.id });
+    b.service.promptTemplates.create({ title: "B 自己的", body: "b" });
+    expect((await b.service.remote.copies.templates(b.store.getTask(task.id)!)).map((t) => t.title)).toEqual(["全局的"]);
+
+    expect(() => b.service.tasks.patchTask(task.id, { title: "x", column: "done" })).toThrow("状态、说明和专题");
+    expect(() => b.service.tasks.patchTask(task.id, { title: "  " })).toThrow("empty");
+
+    // 归档 / 恢复 a session from B (2026-10-30): done on A, the copy shows it when B's call returns; the task stays.
+    expect(() => b.remote.guardRoute("POST", "/api/sessions/:id/archive", { id: session.id })).not.toThrow();
+    expect(() => b.remote.guardRoute("POST", "/api/sessions/:id/unarchive", { id: session.id })).not.toThrow();
+    await until(() => a.store.getSession(session.id)!.status, (s) => s === "idle" || s === "completed", "A idle");
+    expect((await b.service.sessions.archive(session.id)).map((s) => s.id)).toContain(session.id);
+    expect(a.store.getSession(session.id)!.archivedAt).toBeTruthy();
+    expect(b.store.getSession(session.id)!.archivedAt).toBeTruthy();
+    expect(b.store.getTask(task.id)!.remote!.state).toBe("active");
+    await b.service.sessions.unarchive(session.id);
+    expect(a.store.getSession(session.id)!.archivedAt).toBeFalsy();
+    expect(b.store.getSession(session.id)!.archivedAt).toBeFalsy();
+  }, 60_000);
+
+  it("a task B creates that waits for a yes keeps what B sent until then: refused, it is gone; allowed, the first message carries it", async () => {
+    const { a, b } = await paired();
+    const A = toA(a);
+    const yes = a.service.projects.addWorkspace({ path: tempDir("allowed-proj") });
+    a.remote.setAllowedProjects({ workspaceIds: [yes.id], common: false });
+    a.remote.setAllowed({ profiles: ["p"], defaultProfile: "p", permission: null });
+    const pic = b.service.attachments.save(Buffer.concat([PNG, Buffer.alloc(50, 1)]), { name: "图.png", mime: "image/png" });
+    const dir = tempDir("b-files");
+    writeFileSync(join(dir, "表.csv"), "a,b\n1,2");
+
+    // Refused: nothing made, the files go.
+    const first = await b.remote.create(A, { title: "带附件", text: withFileRefs("看表", [join(dir, "表.csv")]), topicId: null, workspaceId: yes.id, profileId: "p", attachments: [pic.id] });
+    const held = (await until(a.state, (s) => s.taskRequests.length === 1, "held")).taskRequests[0]!;
+    expect(held.id).toBe(first.waiting!.id);
+    expect(held.text).toBe("看表");
+    expect(held.attached!.images.map((i) => i.name)).toEqual(["图.png"]);
+    expect(held.attached!.files).toMatchObject([{ name: "表.csv" }]);
+    const kept = held.attached!.files[0]!.path;
+    expect(readFileSync(kept, "utf8")).toBe("a,b\n1,2");
+    // B does not get A's paths.
+    expect(b.state().asks.find((r) => r.id === held.id)?.attached?.files[0]?.path).toBe("");
+    a.remote.refuseRequest(held.id, "不要");
+    expect(existsSync(kept)).toBe(false);
+
+    // Allowed: the first message has the picture and the file at A's path.
+    const second = await b.remote.create(A, { title: "带附件二", text: withFileRefs("再看表", [join(dir, "表.csv")]), topicId: null, workspaceId: yes.id, profileId: "p", attachments: [pic.id] });
+    await until(a.state, (s) => s.taskRequests.some((r) => r.id === second.waiting!.id), "held again");
+    await a.remote.acceptRequest(second.waiting!.id, { workspaceId: yes.id, profileId: "p" });
+    const task = a.store.listTasks().find((t) => t.title === "带附件二")!;
+    const s = a.store.listSessions({ taskId: task.id })[0]!;
+    const u = (await userOn(a, s.id, "再看表"))!;
+    expect(u.images).toHaveLength(1);
+    expect(readFileSync(splitFileRefItems(u.text).refs[0]!.path, "utf8")).toBe("a,b\n1,2");
   }, 60_000);
 });
 

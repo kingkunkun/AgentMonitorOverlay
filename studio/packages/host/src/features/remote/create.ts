@@ -1,0 +1,320 @@
+import { randomBytes } from "node:crypto";
+import { DEFAULT_REMOTE_SECURITY, isCommon, NO_REMOTE_PROJECTS, REMOTE_KINDS, remoteCreateOpen, remoteStartFor, topicWorkspaceIds, type HostEvent, type Id, type PromptTemplate, type RemoteAllowedProjects, type RemoteCatalog, type RemoteCreateAnswer, type RemotePush, type RemoteSecurity, type RemoteStart, type Session, type SessionOptions, type Task } from "@amo-studio/protocol";
+import type { DeviceRef } from "@amo-studio/relay";
+import { HostError } from "../../core/shared.js";
+import type { RemoteContext, RemoteGrants } from "./grants.js";
+import type { TaskRequests } from "./requests.js";
+import { claimedText, heldOf, type Claimed } from "./uploads.js";
+
+// 远程创建 on A (plans/remote-page-and-new-task.md 4.1, 2026-10-29): a paired device creates a task on this computer from
+// its new-task page. The user (10-29): nobody here says yes — 远程设置 limits it instead: 远端允许的项目 (kv
+// `remote.allowedProjects`, the whole computer, as 远端允许的模型 is) and 远端允许的模型. Nothing ticked: not available.
+// rt.catalog says what the device may pick; rt.create makes the task, grants it and starts its session — the same
+// path an allowed request takes (step 4, requests.ts).
+// 安全 (2026-10-29, the user): that is for the person's own devices (same account). A device of another account gets a
+// request here instead, its project and model already picked, unless 远程设置 → 安全 says otherwise (kv `remote.security`).
+
+const PROJECTS_KEY = "remote.allowedProjects";
+const SECURITY_KEY = "remote.security";
+const START: readonly RemoteStart[] = ["run", "confirm"];
+const TITLE_MAX = 200;
+const TEXT_MAX = 100_000;
+/** Changes that come together (saving 远程设置, a burst of task updates) make one catalog push. */
+const ANNOUNCE_MS = 300;
+
+/** A catalog as B would see it, ordering by recent work left out (it moves with every task update). */
+const catalogStamp = (c: RemoteCatalog): string => {
+  const byId = <T extends { id: Id }>(list: T[]) => [...list].sort((a, b) => a.id.localeCompare(b.id));
+  return JSON.stringify({ ...c, topics: byId(c.topics).map(({ lastUsed: _, ...t }) => t), projects: byId(c.projects).map(({ lastUsed: _, ...p }) => p) });
+};
+
+export interface GrantedTaskInput {
+  title: string;
+  /** The task's 说明 (an allowed request puts the request there). */
+  description?: string;
+  /** The session's first message. */
+  text: string;
+  /** null: the common folder. */
+  workspaceId: Id | null;
+  topicId: Id | null;
+  /** One of 远端允许的模型. */
+  profileId: Id;
+  /** Pictures B sent along (this computer's attachment ids; 2026-10-29 evening). */
+  attachments?: Id[];
+}
+
+/**
+ * Makes a task for a paired device: in 进行中 (its session starts just below), granted to the device, its session started
+ * on the model with 远端允许的模型's permissions and `text` as its first message. `granted` runs between the grant and
+ * the session (an allowed request answers the device there). A session that does not start leaves the task and the
+ * grant (`error` says why): it can be started on the task page, here or from the device.
+ */
+export async function startGrantedTask(ctx: RemoteContext, grants: RemoteGrants, to: DeviceRef, input: GrantedTaskInput, granted?: (task: Task) => void): Promise<{ task: Task; session: Session | null; error?: string }> {
+  const host = ctx.host;
+  const { task } = await host.tasks.createTask({ title: input.title, workspaceId: input.workspaceId, topicId: input.topicId, column: "doing" });
+  if (input.description) host.tasks.updateTask(task.id, { description: input.description });
+  grants.grant(task.id, to);
+  granted?.(task);
+  const permission = grants.permissionFor(input.profileId);
+  const options: SessionOptions | undefined = permission ? { permission } : undefined;
+  try {
+    // 远程 Reviewer (2026-11-02): its first turn is the device's — what the agent opens for the person shows there.
+    grants.expectFirst(task.id, to);
+    const session = await host.tasks.addSession(task.id, { profileId: input.profileId, text: input.text, ...(input.attachments?.length ? { attachments: input.attachments } : {}), ...(options ? { options } : {}) });
+    grants.markTurn(session.id, to);
+    return { task, session };
+  } catch (err) {
+    return { task, session: null, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+const textOf = (v: unknown, what: string, max: number, required: boolean): string => {
+  const t = typeof v === "string" ? v.trim() : "";
+  if (!t && required) throw new HostError("bad_request", `${what}不能是空的`);
+  if (t.length > max) throw new HostError("bad_request", `${what}太长了（${t.length} 个字，最多 ${max}）`);
+  return t;
+};
+
+export class RemoteCreates {
+  /**
+   * 2026-10-30 (the user: A saved 远端允许的项目, B's new-task page did not change): the devices that asked for the catalog
+   * since this Host started, and what they last got. Something it is made of changed (远程设置, a project, a topic, a
+   * model, this computer's name): each online one gets the new catalog, if theirs differs. One that never asked reads
+   * it when its page picks this computer.
+   */
+  private readonly told = new Map<string, { to: DeviceRef; stamp: string }>();
+  private announcing: NodeJS.Timeout | null = null;
+
+  constructor(
+    private readonly ctx: RemoteContext,
+    private readonly grants: RemoteGrants,
+    private readonly requests: TaskRequests,
+  ) {}
+
+  private get store() {
+    return this.ctx.host.store;
+  }
+
+  allowedProjects(): RemoteAllowedProjects {
+    try {
+      const v = JSON.parse(this.store.getKv(PROJECTS_KEY)?.value ?? "null") as RemoteAllowedProjects | null;
+      if (!v || typeof v !== "object" || !Array.isArray(v.workspaceIds)) return NO_REMOTE_PROJECTS;
+      return { workspaceIds: v.workspaceIds.filter((x) => typeof x === "string"), common: v.common === true };
+    } catch {
+      return NO_REMOTE_PROJECTS;
+    }
+  }
+
+  setAllowedProjects(input: unknown): RemoteAllowedProjects {
+    const b = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+    if (!Array.isArray(b.workspaceIds) || b.workspaceIds.some((x) => typeof x !== "string")) throw new HostError("bad_request", "workspaceIds 要是项目的列表");
+    if (b.common !== undefined && typeof b.common !== "boolean") throw new HostError("bad_request", "common 只能是 true 或 false");
+    const workspaceIds = [...new Set(b.workspaceIds as string[])];
+    for (const id of workspaceIds) {
+      const ws = this.store.getWorkspace(id);
+      if (!ws || isCommon(ws)) throw new HostError("bad_request", `没有项目 ${id}`);
+    }
+    const next: RemoteAllowedProjects = { workspaceIds, common: b.common === true };
+    this.store.setKv(PROJECTS_KEY, JSON.stringify(next));
+    this.ctx.changed();
+    return next;
+  }
+
+  security(): RemoteSecurity {
+    try {
+      const v = JSON.parse(this.store.getKv(SECURITY_KEY)?.value ?? "null") as Partial<RemoteSecurity> | null;
+      const pick = (x: unknown, d: RemoteStart) => (START.includes(x as RemoteStart) ? (x as RemoteStart) : d);
+      return { sameAccount: pick(v?.sameAccount, DEFAULT_REMOTE_SECURITY.sameAccount), otherAccount: pick(v?.otherAccount, DEFAULT_REMOTE_SECURITY.otherAccount) };
+    } catch {
+      return DEFAULT_REMOTE_SECURITY;
+    }
+  }
+
+  setSecurity(input: unknown): RemoteSecurity {
+    const b = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+    for (const k of ["sameAccount", "otherAccount"] as const) if (!START.includes(b[k] as RemoteStart)) throw new HostError("bad_request", `${k} 只能是 run 或 confirm`);
+    const next: RemoteSecurity = { sameAccount: b.sameAccount as RemoteStart, otherAccount: b.otherAccount as RemoteStart };
+    this.store.setKv(SECURITY_KEY, JSON.stringify(next));
+    this.ctx.changed();
+    return next;
+  }
+
+  /** 安全: what `from` creates waits for a yes here. */
+  private confirms(from: DeviceRef): boolean {
+    return remoteStartFor(this.security(), this.ctx.ownAccount(), from.account) === "confirm";
+  }
+
+  /** The allowed projects that are still there (an archived one is skipped until it comes back). */
+  private liveProjects(): Id[] {
+    return this.allowedProjects().workspaceIds.filter((id) => {
+      const ws = this.store.getWorkspace(id);
+      return !!ws && !ws.archivedAt && !isCommon(ws);
+    });
+  }
+
+  /** 远端允许的模型 that can run now, the default first (no fallback to a task's own models: there is no task yet). */
+  private models(): Id[] {
+    const cfg = this.grants.allowed();
+    const ids = cfg.profiles.filter((pid) => {
+      const p = this.ctx.host.profiles.find((x) => x.id === pid);
+      return !!p && !p.unavailable;
+    });
+    const first = cfg.defaultProfile && ids.includes(cfg.defaultProfile) ? cfg.defaultProfile : null;
+    return first ? [first, ...ids.filter((x) => x !== first)] : ids;
+  }
+
+  private requireOwner(from: DeviceRef): void {
+    if (!this.ctx.peer(from, "owner")) throw new HostError("bad_request", `只有 ${this.ctx.deviceName()} 允许配对的设备才能在它上面建任务`);
+  }
+
+  /** rt.catalog as the device asked for it: it hears of changes from now on (announce). */
+  serveCatalog(from: DeviceRef): RemoteCatalog {
+    const c = this.catalog(from);
+    this.told.set(`${from.account}\n${from.device}`, { to: { account: from.account, device: from.device }, stamp: catalogStamp(c) });
+    return c;
+  }
+
+  /** What the catalog is made of may have changed: the devices that asked hear of it shortly. */
+  announce(): void {
+    if (this.announcing || !this.told.size) return;
+    this.announcing = setTimeout(() => {
+      this.announcing = null;
+      this.tell();
+    }, ANNOUNCE_MS);
+    this.announcing.unref?.();
+  }
+
+  /** A change on this computer the catalog is made of. */
+  onHostEvent(e: HostEvent): void {
+    switch (e.type) {
+      case "workspace.upserted":
+      case "workspace.removed":
+      case "topic.upserted":
+      // A topic's projects are also its tasks'.
+      case "task.upserted":
+      case "profiles.updated":
+      case "data.purged":
+        this.announce();
+        return;
+      default:
+        return;
+    }
+  }
+
+  stop(): void {
+    if (this.announcing) clearTimeout(this.announcing);
+    this.announcing = null;
+    this.told.clear();
+  }
+
+  private tell(): void {
+    const link = this.ctx.link();
+    if (!link || link.state !== "online") return;
+    for (const [key, seen] of this.told) {
+      const peer = this.ctx.peer(seen.to, "owner");
+      // Unpaired since: it no longer asks.
+      if (!peer) {
+        this.told.delete(key);
+        continue;
+      }
+      // Away: it reads the catalog again when it is back (its page asks when this computer comes online).
+      if (!peer.online) continue;
+      let catalog: RemoteCatalog;
+      try {
+        catalog = this.catalog(seen.to);
+      } catch {
+        continue;
+      }
+      const stamp = catalogStamp(catalog);
+      if (stamp === seen.stamp) continue;
+      this.told.set(key, { to: seen.to, stamp });
+      const body: RemotePush = { type: "catalog", catalog };
+      link.send({ type: "relay", to: seen.to, id: `p_${randomBytes(8).toString("hex")}`, kind: REMOTE_KINDS.push, body });
+    }
+  }
+
+  /** rt.catalog: what the device may pick — A's topics, the allowed projects, the common folder, the allowed models. */
+  catalog(from: DeviceRef): RemoteCatalog {
+    this.requireOwner(from);
+    const tasks = this.store.listTasks().filter((t) => !t.archivedAt && !t.remote);
+    const workspaces = this.store.listWorkspaces();
+    const last = new Map<Id, string>();
+    const touch = (id: Id | null, at: string) => {
+      if (id && (last.get(id) ?? "") < at) last.set(id, at);
+    };
+    for (const t of tasks) {
+      touch(t.workspaceId, t.updatedAt);
+      touch(t.topicId, t.updatedAt);
+    }
+    const byLast = <T extends { lastUsed: string | null }>(list: T[]) => list.sort((a, b) => (b.lastUsed ?? "").localeCompare(a.lastUsed ?? ""));
+    const allowed = new Set(this.liveProjects());
+    const projects = byLast(
+      [...allowed].map((id) => ({ id, name: this.store.getWorkspace(id)!.name, lastUsed: last.get(id) ?? null })),
+    );
+    const topics = byLast(
+      this.store
+        .listTopics()
+        .filter((t) => !t.archivedAt)
+        .map((t) => ({ id: t.id, title: t.title, workspaceIds: topicWorkspaceIds(t, tasks, workspaces).filter((id) => allowed.has(id)), lastUsed: last.get(t.id) ?? null })),
+    );
+    return { name: this.ctx.deviceName(), topics, projects, allowCommon: this.allowedProjects().common, models: this.models().map((id) => ({ id, label: this.grants.labelOf(id) })), confirm: this.confirms(from) };
+  }
+
+  /**
+   * rt.createTemplates (问题 #1, 2026-10-31): what @ → 提示词模板… offers in the device's first sentence — the global
+   * templates and the picked project's, only for a project it may create in (no project: the global ones alone; the
+   * Host's list without a project would be every project's).
+   */
+  templates(from: DeviceRef, workspaceId: unknown): PromptTemplate[] {
+    this.requireOwner(from);
+    const name = this.ctx.deviceName();
+    const list = this.ctx.host.promptTemplates;
+    if (workspaceId === null || workspaceId === undefined || workspaceId === "") {
+      if (!this.allowedProjects().common) throw new HostError("bad_request", `${name} 不允许远程任务不选项目（公共文件夹）：选一个项目`);
+      return list.list().filter((t) => t.workspaceId === null);
+    }
+    if (typeof workspaceId !== "string" || !this.liveProjects().includes(workspaceId)) throw new HostError("bad_request", `这个项目不在 ${name} 远端允许的项目里（可能刚被取消勾选）`);
+    return list.list(workspaceId);
+  }
+
+  /** rt.create: checked against 远端允许的项目 and 远端允许的模型, then made, granted and started. */
+  async create(from: DeviceRef, body: Record<string, unknown>): Promise<RemoteCreateAnswer> {
+    this.requireOwner(from);
+    const name = this.ctx.deviceName();
+    if (!remoteCreateOpen({ workspaceIds: this.liveProjects(), common: this.allowedProjects().common })) throw new HostError("bad_request", `${name} 还没勾远端允许的项目：在那台电脑的 远程 → 远程设置 里勾`);
+    const text = textOf(body.text, "第一句话", TEXT_MAX, true);
+    const title = textOf(body.title, "任务名", TITLE_MAX, false) || text.slice(0, 60);
+    let workspaceId: Id | null = null;
+    if (body.workspaceId === null || body.workspaceId === undefined || body.workspaceId === "") {
+      if (!this.allowedProjects().common) throw new HostError("bad_request", `${name} 不允许远程任务不选项目（公共文件夹）：选一个项目`);
+    } else {
+      if (typeof body.workspaceId !== "string" || !this.liveProjects().includes(body.workspaceId)) throw new HostError("bad_request", `这个项目不在 ${name} 远端允许的项目里（可能刚被取消勾选）`);
+      workspaceId = body.workspaceId;
+    }
+    let topicId: Id | null = null;
+    if (body.topicId !== null && body.topicId !== undefined && body.topicId !== "") {
+      const topic = typeof body.topicId === "string" ? this.store.getTopic(body.topicId) : undefined;
+      if (!topic || topic.archivedAt) throw new HostError("not_found", `${name} 上没有这个专题了（可能刚归档）`);
+      topicId = topic.id;
+    }
+    if (!this.grants.allowed().profiles.length) throw new HostError("bad_request", `${name} 还没勾远端允许的模型：在那台电脑的 远程 → 远程设置 里勾`);
+    const profileId = typeof body.profileId === "string" ? body.profileId : "";
+    if (!this.models().includes(profileId)) throw new HostError("bad_request", `这个模型不在 ${name} 远端允许的模型里（或现在用不了）`);
+    // Pictures and files B sent first (rt.upload) become this computer's attachments (a DSH session takes no pictures).
+    const inbox = this.ctx.inbox();
+    const claimed: Claimed = inbox.claim(from, body.uploads, { noImages: this.ctx.host.profiles.find((p) => p.id === profileId)?.runtime === "dsh" });
+    // 安全: waits for a yes here (Focus, 远程) with what was picked and sent; nothing is made until then.
+    if (this.confirms(from)) {
+      const attached = claimed.images.length || claimed.files.length ? { attached: heldOf(claimed) } : {};
+      return { taskId: null, sessionId: null, waiting: this.requests.hold(from, { title, text, preset: { workspaceId, topicId, profileId }, ...attached }) };
+    }
+    let made;
+    try {
+      made = await startGrantedTask(this.ctx, this.grants, from, { title, text: claimedText(text, claimed), workspaceId, topicId, profileId, ...(claimed.images.length ? { attachments: claimed.images.map((a) => a.id) } : {}) });
+    } catch (err) {
+      inbox.drop(claimed);
+      throw err;
+    }
+    return { taskId: made.task.id, sessionId: made.session?.id ?? null, ...(made.error ? { error: made.error } : {}) };
+  }
+}

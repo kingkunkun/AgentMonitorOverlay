@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type SetStateAction } from "react";
 import { readSessionDraft, writeSessionDraft } from "./sessionDraft.js";
-import type { Annotation, ApprovalDecision, DecisionRequest, ModelProfile, Session, SessionItem, SessionPreset, SlashCommand, SubsessionNote, Task } from "@amo-studio/protocol";
+import type { Annotation, ApprovalDecision, DecisionRequest, ModelProfile, Session, SessionItem, SessionPreset, SlashCommand, SubsessionNote, Task, Workspace } from "@amo-studio/protocol";
 import { call, copyText, HostApiError, type HostLink } from "../host/client.js";
 import { SessionOptionsBar } from "../chat/SessionOptionsBar.js";
 import { readSelection, type SelectionAnchor } from "../lib/selection.js";
 import { ReplyNav } from "./ReplyNav.js";
 import { navHistory } from "../shell/navHistory.js";
 import { FindBar } from "../gitreview/FindBar.js";
-import { Transcript } from "../chat/Transcript.js";
+import { Transcript, type DeliveryAction } from "../chat/Transcript.js";
 import { useScrollOnSend, useTranscriptView } from "../chat/prefs.js";
 import { IconArrowDown, IconArrowUp, IconStop } from "../chat/icons.js";
 import { sessionStats, type ApprovalItem } from "../chat/turns.js";
@@ -20,6 +20,7 @@ import { MentionBackdrop, MentionList, useComposerMentions } from "../attach/use
 import { FileSelector } from "../attach/FileSelector.js";
 import { SubSessionDialog } from "../attach/SubSessionDialog.js";
 import { QuickCommitDialog } from "../attach/QuickCommitDialog.js";
+import { PromptTemplateDialog, remoteTaskTemplates } from "../attach/PromptTemplateDialog.js";
 import { markFileMessage } from "../marks/open.js";
 import { QuestionCard } from "../chat/questions/QuestionCard.js";
 import { DecisionPrompt, SessionDecisions } from "../collab/DecisionPanel.js";
@@ -48,10 +49,15 @@ import { AnnotationRefChips, ComposerStats, composerPlaceholder } from "./Thread
 const COMPACT: SlashCommand = { name: "compact", description: "", group: "studio" };
 /** A draft is kept this long after typing stops. */
 const DRAFT_SAVE_MS = 400;
+/** A message on its way this long: the composer's hint says so; this long with no answer: its text comes back (send). */
+const SEND_SLOW_MS = 3000;
+const SEND_GIVE_UP_MS = 30_000;
 
 interface ThreadProps {
   link: HostLink;
   session: Session | null;
+  /** The task was filed with this sentence (放进待办): shown while it has no session; its first session starts with it. */
+  firstMessage?: string;
   /** The session's model profile (its account mark and models). */
   profile?: ModelProfile;
   /** Every model profile: 开子会话… in the @ list picks one. */
@@ -62,6 +68,8 @@ interface ThreadProps {
   tasks?: readonly Task[];
   /** Sessions the composer can @ (those of the same project or topic are offered). */
   sessions?: readonly Session[];
+  /** Projects the composer can @ once something is typed (2026-10-29; the message then says which folder). */
+  projects?: readonly Workspace[];
   /** 常用预设, shown as chips for sessions on the same profile. */
   presets: readonly SessionPreset[];
   items: readonly SessionItem[];
@@ -73,9 +81,11 @@ interface ThreadProps {
   busy: boolean;
   onApprove(item: ApprovalItem, decision: ApprovalDecision): void;
   onJump(sessionId: string): void;
-  /** `attachments`: ids of uploaded images sent along. */
-  onSend(text: string, attachments: string[]): Promise<boolean>;
+  /** `attachments`: ids of uploaded images sent along; `now`: 立即发送 (Ctrl+Enter while it works, 2026-11-02). */
+  onSend(text: string, attachments: string[], now?: boolean): Promise<boolean>;
   onInterrupt(): void;
+  /** 立即发送 a waiting message / 重新发送 one never read (the buttons under it). */
+  onDelivery?(itemId: string, action: DeliveryAction): void;
   /** Annotating in place (the bubble by the selection): resolve true once saved. */
   onSaveAnnotation(anchor: SelectionAnchor, note: string): Promise<boolean>;
   /** 书签 (2026-10-19) on the selection bar: the selected passage under the session's topic. */
@@ -99,7 +109,7 @@ interface ThreadProps {
 
 
 /** Conversation of one session plus its composer. */
-export function Thread({ link, presets, session, profile, profiles = [], subsessionNotes = [], tasks = [], sessions = [], items, annotations, annotationRefs, model, busy, onApprove, onJump, onSend, onInterrupt, onSaveAnnotation, onEditAnnotation, onDeleteAnnotation, onBookmark, initialScroll, atPassage = false, onError, decisions = [], remote }: ThreadProps) {
+export function Thread({ link, presets, session, firstMessage, profile, profiles = [], subsessionNotes = [], tasks = [], sessions = [], projects, items, annotations, annotationRefs, model, busy, onApprove, onJump, onSend, onInterrupt, onDelivery, onSaveAnnotation, onEditAnnotation, onDeleteAnnotation, onBookmark, initialScroll, atPassage = false, onError, decisions = [], remote }: ThreadProps) {
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
@@ -151,6 +161,7 @@ export function Thread({ link, presets, session, profile, profiles = [], subsess
     onFile: (path) => attach.addFiles([path]),
     onFind: (query) => setFinding({ query }),
     onMark: (ref) => attach.addRefs([ref]),
+    ...(projects ? { projects } : {}),
   });
   // `/` at the start: the command menu (stage 12, S12-E).
   const slash = useSlashCommands({ link, session, text: draft, setText: setDraft, onRun: (command, args) => void runCommand(command, args) });
@@ -327,6 +338,28 @@ export function Thread({ link, presets, session, profile, profiles = [], subsess
       : composerPlaceholder({ readOnly, claudeSub, isRevising, planReview: !!planReview, generating, queues, waitsForTurn: session?.runtime === "dsh" });
   const stats = useMemo(() => sessionStats(items), [items]);
   const sendLabel = generating ? (queues ? "排队" : "插话") : "发送";
+  // 立即发送 (2026-11-02): Claude and Codex (a remote copy's computer says what it can); DSH waits for the turn's end.
+  const sendsNow = generating && !readOnly && !planReview && !isRevising;
+  // 问题 #16 (2026-11-03): 停止 and 立即发送 ask the model to stop, and it can take a few seconds to (a command or a reply
+  // in flight); until the turn ends the composer and the waiting message say so, so it does not read as failed.
+  const [haltAsked, setHaltAsked] = useState<{ sessionId: string; kind: "stop" | "now" } | null>(null);
+  /** The session a message of the person's has been on its way to for SEND_SLOW_MS (send). */
+  const [sending, setSending] = useState<string | null>(null);
+  useEffect(() => {
+    if (!generating) setHaltAsked(null);
+  }, [generating]);
+  const halting = generating && haltAsked && haltAsked.sessionId === session?.id ? haltAsked.kind : null;
+  const askHalt = (kind: "stop" | "now") => session && setHaltAsked((cur) => (cur?.sessionId === session.id && cur.kind === "stop" ? cur : { sessionId: session.id, kind }));
+  // Kept the same between keystrokes, as the Transcript is drawn again only when its props change (2026-10-20).
+  const halt = useRef(askHalt);
+  halt.current = askHalt;
+  const deliver = useCallback(
+    (itemId: string, action: DeliveryAction) => {
+      if (action === "now") halt.current("now");
+      onDelivery?.(itemId, action);
+    },
+    [onDelivery],
+  );
   // Images must finish uploading (or be removed when they failed) before the message can go.
   const attachHold = attach.uploading ? "图片上传中…" : attach.failed ? "有图片上传失败，移除后再发送" : "";
   const referring = !isRevising && (annotationRefs?.list.length ?? 0) > 0;
@@ -358,7 +391,7 @@ export function Thread({ link, presets, session, profile, profiles = [], subsess
     }
   }
 
-  async function send() {
+  async function send(now = false) {
     const text = draft.trim();
     if (!canSend) return;
     if (isRevising) {
@@ -384,9 +417,30 @@ export function Thread({ link, presets, session, profile, profiles = [], subsess
     jumpToEnd();
     const message = withFileRefs(text ? mentions.expand(text) : "", sent.refs);
     const ids = sent.images.flatMap((i) => (i.id ? [i.id] : []));
-    if (await onSend(message, ids)) attach.release(sent);
-    else {
+    const givesWay = now && sendsNow;
+    if (givesWay) askHalt("now");
+    // 2026-11-05: a message sent right after 停止 never came back — no row, no error, the composer already empty. Slow:
+    // the hint says it is on its way; given up on: its text comes back into the composer, saying why.
+    const sid = session?.id ?? "";
+    let settled = false;
+    let gaveUp = false;
+    const slow = setTimeout(() => !settled && setSending(sid), SEND_SLOW_MS);
+    const giveUp = setTimeout(() => {
+      if (settled) return;
+      gaveUp = true;
+      setSending((cur) => (cur === sid ? null : cur));
       setDraft((d) => (d.trim() ? d : text));
+      onError?.(`发出去 ${SEND_GIVE_UP_MS / 1000} 秒了，Host 还没回应：文字放回了输入框。先看一眼对话里有没有这条，没有再发。`);
+    }, SEND_GIVE_UP_MS);
+    const ok = await onSend(message, ids, givesWay);
+    settled = true;
+    clearTimeout(slow);
+    clearTimeout(giveUp);
+    setSending((cur) => (cur === sid ? null : cur));
+    if (ok) attach.release(sent);
+    else {
+      if (givesWay) setHaltAsked((cur) => (cur?.kind === "now" ? null : cur));
+      if (!gaveUp) setDraft((d) => (d.trim() ? d : text));
       attach.restore(sent);
     }
   }
@@ -394,6 +448,7 @@ export function Thread({ link, presets, session, profile, profiles = [], subsess
   /** 停止 before anything came back for the message (2026-10-28): it goes back into the composer, ahead of what is there. */
   function stop() {
     const back = unansweredPrompt(items);
+    askHalt("stop");
     onInterrupt();
     if (back) setDraft((d) => (d.trim() ? `${back}
 
@@ -418,8 +473,9 @@ ${d}` : back));
     return () => window.removeEventListener("keydown", onKey);
   }, [readOnly, askCommit, isRemote]);
 
-  // Files dragged in from Explorer (or anywhere) over the conversation or the composer (not into a remote session yet).
-  const dropTarget = readOnly || isRemote
+  // Files dragged in from Explorer (or anywhere) over the conversation or the composer. Into a remote session too since
+  // 2026-10-29 evening: this computer's Host sends them to the computer it runs on before the message.
+  const dropTarget = readOnly
     ? {}
     : {
         onDragOver: (e: DragEvent) => {
@@ -510,11 +566,19 @@ ${d}` : back));
             </button>
           ))}
           <div className="thread-inner">
-            {!session && <div className="thread-empty">这个任务还没有会话。在左侧新建一个会话即可开始。</div>}
+            {!session &&
+              (firstMessage ? (
+                <div className="thread-empty thread-first" data-testid="task-first-message">
+                  <div>这个任务还没有会话。放进待办时写的第一句话在这里，在左侧新建一个会话，它会放进输入框，看过再发：</div>
+                  <blockquote className="thread-first-text">{firstMessage}</blockquote>
+                </div>
+              ) : (
+                <div className="thread-empty">这个任务还没有会话。在左侧新建一个会话即可开始。</div>
+              ))}
             <AttachLink.Provider value={link}>
               <QuestionSeatContext.Provider value={seat}>
                 {/* A remote session's approvals grey while its computer is away (or the grant is gone): they are checked again there. */}
-                <Transcript session={session} items={items} annotations={annotations} model={model} busy={busy || !!blocked} view={view} onApprove={onApprove} onJump={onJump} keepTurn={initialScroll?.key} />
+                <Transcript session={session} items={items} annotations={annotations} model={model} busy={busy || !!blocked} view={view} onApprove={onApprove} onJump={onJump} keepTurn={initialScroll?.key} {...(onDelivery && !readOnly && !blocked ? { onDelivery: deliver } : {})} givingWay={halting === "now"} />
               </QuestionSeatContext.Provider>
             </AttachLink.Provider>
           </div>
@@ -640,7 +704,7 @@ ${d}` : back));
                   mentions.track(e.currentTarget);
                   slash.track(e.currentTarget);
                 }}
-                onPaste={readOnly || isRemote ? undefined : attach.onPaste}
+                onPaste={readOnly ? undefined : attach.onPaste}
                 disabled={readOnly}
                 rows={2}
                 placeholder={placeholder}
@@ -654,7 +718,8 @@ ${d}` : back));
                   }
                   if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                     e.preventDefault();
-                    void send();
+                    // Ctrl+Enter while it works: 立即发送, as Claude Code's Send now (otherwise the same as Enter).
+                    void send(e.ctrlKey || e.metaKey);
                   }
                 }}
               />
@@ -666,8 +731,8 @@ ${d}` : back));
                 type="button"
                 className="round-btn attach"
                 aria-label="添加图片或文件"
-                title={isRemote ? "远程任务暂时不能从这台电脑发图片和文件过去，只能发文字" : "添加图片或文件（也可以粘贴或拖进来）"}
-                disabled={readOnly || isRemote}
+                title={isRemote ? "添加图片或文件（也可以粘贴截图或拖进来）：发送时一起传到那台电脑，每个最多 20 MB" : "添加图片或文件（也可以粘贴或拖进来）"}
+                disabled={readOnly}
                 onClick={() => picker.current?.click()}
               >
                 <IconPaperclip />
@@ -684,10 +749,21 @@ ${d}` : back));
                 }}
               />
               <SessionOptionsBar link={link} session={session} profile={profile} presets={presets} disabled={readOnly || isRemote} />
-              <span className="composer-hint" {...(blocked ? { "data-testid": "remote-blocked" } : {})}>{blocked || attachHold || (generating && !readOnly && !planReview ? (session?.runtime === "dsh" ? "生成中：本轮结束后发出" : queues ? "生成中：工具调用后或本轮结束后读到" : "生成中：发送会插入到当前回合") : "")}</span>
+              <span
+                className="composer-hint"
+                {...(blocked ? { "data-testid": "remote-blocked" } : {})}
+                {...(sending && sending === session?.id && !blocked && !attachHold ? { title: `Host 还没回应这条消息；${SEND_GIVE_UP_MS / 1000} 秒内还没有，文字会放回输入框` } : halting && !blocked && !attachHold ? { title: "模型手上的命令或回复收住可能要几秒，这一轮结束前会一直显示" } : {})}
+              >{blocked || attachHold || (sending && sending === session?.id ? "正在发送…" : "") || (halting === "stop" ? "正在停止…" : halting === "now" ? "正在打断，停下后马上发出…" : "") || (generating && !readOnly && !planReview ? (session?.runtime === "dsh" ? "本轮结束后发出 · Ctrl+Enter 立即发送" : `${sendsNow ? "" : "生成中："}${queues ? "工具调用后或本轮结束后读到" : "发送会插入到当前回合"}${sendsNow ? " · Ctrl+Enter 立即发送" : ""}`) : "")}</span>
               <span className="spacer" />
               {generating && !readOnly && !blocked && (
-                <button type="button" className="round-btn stop" onClick={stop} aria-label="打断" title={unansweredPrompt(items) ? "停止生成：还没有回复，刚发的消息放回输入框" : "停止生成"}>
+                <button
+                  type="button"
+                  className={`round-btn stop${halting === "stop" ? " stopping" : ""}`}
+                  onClick={stop}
+                  disabled={halting === "stop"}
+                  aria-label={halting === "stop" ? "正在停止" : "打断"}
+                  title={halting === "stop" ? "正在停止：等模型收住手上的这一步" : unansweredPrompt(items) ? "停止生成：还没有回复，刚发的消息放回输入框" : "停止生成"}
+                >
                   <IconStop />
                 </button>
               )}
@@ -697,7 +773,7 @@ ${d}` : back));
                 onClick={() => void send()}
                 disabled={!canSend}
                 aria-label={isRevising ? "发送修改意见" : sendLabel}
-                title={isRevising ? "把修改意见发给 Claude" : generating ? (queues ? "排队发送" : "插话发送") : "发送消息"}
+                title={isRevising ? "把修改意见发给 Claude" : generating ? `${queues ? "排队发送" : "插话发送"}${sendsNow ? "（Ctrl+Enter 立即发送：打断当前这一步）" : ""}` : "发送消息"}
               >
                 <IconArrowUp />
               </button>
@@ -717,6 +793,22 @@ ${d}` : back));
           onClose={() => {
             setFinding(null);
             requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(".chat-input textarea")?.focus());
+          }}
+        />
+      )}
+      {mentions.askingTemplate && (
+        <PromptTemplateDialog
+          link={link}
+          workspaceId={session?.workspaceId ?? null}
+          projects={projects ?? []}
+          {...(isRemote && session.taskId ? { remote: remoteTaskTemplates(link, session.taskId, tasks.find((t) => t.id === session.taskId)?.remote?.name ?? "那台电脑") } : {})}
+          onDone={(body) => {
+            const caret = mentions.finishTemplate(body);
+            requestAnimationFrame(() => {
+              const el = document.querySelector<HTMLTextAreaElement>(".chat-input textarea");
+              el?.focus();
+              if (el && caret !== null) el.setSelectionRange(caret, caret);
+            });
           }}
         />
       )}

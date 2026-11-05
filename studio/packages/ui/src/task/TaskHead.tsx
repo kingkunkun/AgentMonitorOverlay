@@ -3,6 +3,8 @@ import { isCommon, TASK_COLUMNS, type Task, type TaskColumn, type Topic, type Wo
 import { call, type HostLink } from "../host/client.js";
 import { COLUMN_NAMES } from "../lib/status.js";
 import { CopyId } from "../lib/CopyId.js";
+import { ContextMenu } from "../lib/ContextMenu.js";
+import { dutyOfTask, openDuty, useDuty } from "../duty/duty.js";
 
 // The task page's head (2026-10-14, 方案 A): the title, and under it one quiet line of what the task is — status,
 // project, branch, topic — each a word that opens its own small picker. No boxes until hovered.
@@ -31,20 +33,6 @@ export function useGitBranch(link: HostLink, workspaceId: string | null | undefi
   return state;
 }
 
-/** Closes on Escape and on a press outside `.ctx-menu` / the picker. */
-function useDismiss(onClose: () => void, inside = ".ctx-menu") {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    const onDown = (e: MouseEvent) => !(e.target as Element | null)?.closest?.(inside) && onClose();
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("mousedown", onDown);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("mousedown", onDown);
-    };
-  }, [onClose, inside]);
-}
-
 /** Where a popover opens: under the element that opened it. */
 export type Anchor = { x: number; y: number };
 export const below = (el: HTMLElement): Anchor => {
@@ -52,19 +40,17 @@ export const below = (el: HTMLElement): Anchor => {
   return { x: r.left, y: r.bottom + 4 };
 };
 
-/** A small menu under its button (⋯ menus of the task and the session). */
+/** A small menu under its button (⋯ menus of the task and the session); closed as every menu is (lib/ContextMenu.tsx). */
 export function PopMenu({ at, label, onClose, children, testId }: { at: Anchor; label: string; onClose(): void; children: ReactNode; testId?: string }) {
-  useDismiss(onClose);
   return (
-    <div className="ctx-menu" role="menu" aria-label={label} style={{ left: Math.min(at.x, window.innerWidth - 200), top: at.y }} data-testid={testId}>
+    <ContextMenu at={at} label={label} onClose={onClose} {...(testId ? { testId } : {})}>
       {children}
-    </div>
+    </ContextMenu>
   );
 }
 
 /** 改状态: the four columns, also by 1–4 while open. */
 export function StatusMenu({ at, value, onPick, onClose }: { at: Anchor; value: TaskColumn; onPick(c: TaskColumn): void; onClose(): void }) {
-  useDismiss(onClose);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const i = Number(e.key) - 1;
@@ -78,7 +64,7 @@ export function StatusMenu({ at, value, onPick, onClose }: { at: Anchor; value: 
     return () => window.removeEventListener("keydown", onKey);
   }, [onPick, onClose]);
   return (
-    <div className="ctx-menu status-menu" role="menu" aria-label="任务状态" style={{ left: at.x, top: at.y }} data-testid="status-menu">
+    <ContextMenu at={at} label="任务状态" onClose={onClose} className="status-menu" testId="status-menu">
       {TASK_COLUMNS.map((c, i) => (
         <button
           key={c}
@@ -97,7 +83,7 @@ export function StatusMenu({ at, value, onPick, onClose }: { at: Anchor; value: 
           <kbd>{i + 1}</kbd>
         </button>
       ))}
-    </div>
+    </ContextMenu>
   );
 }
 
@@ -238,6 +224,7 @@ export function TaskMeta({
   onStatus(at: Anchor): void;
   onTopic(): void;
 }) {
+  const duty = dutyOfTask(useDuty(), task.id);
   const parts: ReactNode[] = [
     <button key="status" type="button" className="meta-item status" disabled={disabled} title="改状态" aria-label={`状态：${COLUMN_NAMES[task.column]}`} onClick={(e) => onStatus(below(e.currentTarget))} data-testid="task-status">
       <span className="meta-dot" style={{ background: STATUS_DOT[task.column] }} />
@@ -277,6 +264,13 @@ export function TaskMeta({
       {topic ? topic.title : "—"}
     </button>,
   );
+  if (duty.length)
+    parts.push(
+      <button key="duty" type="button" className="meta-item" title={`值守开着：${duty.map((i) => i.title).join("、")}。到点（检查到有事）会在这个任务里开会话。点击看值守`} onClick={openDuty} data-testid="task-duty">
+        <span className="duty-chip">值守</span>
+        {duty.length > 1 ? `${duty.length} 项` : duty[0]!.title}
+      </button>,
+    );
   parts.push(<CopyId key="id" id={task.id} label="任务" className="meta-item mono" testId="task-id" />);
   return (
     <div className="task-meta" data-testid="task-meta">

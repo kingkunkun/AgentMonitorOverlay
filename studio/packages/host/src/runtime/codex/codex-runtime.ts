@@ -1,10 +1,12 @@
-import type { ApprovalDecision, Attachment, Id, ModelOption, ModelProfile, ProfileChoices, QuestionReply, Session, SessionOptions, SlashCommand, SlashCommandList, SlashCommandResult, Workspace, AccountUsage } from "@amo-studio/protocol";
+import { randomUUID } from "node:crypto";
+import { inTurn, type ApprovalDecision, type Attachment, type Id, type ModelOption, type ModelProfile, type ProfileChoices, type QuestionReply, type Session, type SessionOptions, type SlashCommand, type SlashCommandList, type SlashCommandResult, type UserDelivery, type Workspace, type AccountUsage } from "@amo-studio/protocol";
 import type { Store } from "../../store/store.js";
-import { codexThreadParams } from "../profiles.js";
+import { codexThreadParams, profileGone } from "../profiles.js";
 import { McpIdentities } from "../../mcp/identity.js";
 import { codexAutoCompactConfig } from "../compact.js";
 import { CODEX_DEFAULT_PERMISSION, codexPermission, codexPermissions } from "../choices.js";
-import { RuntimeBase, type RuntimeEvents } from "../runtime.js";
+import { RuntimeBase, STOP_GRACE_MS, type RuntimeEvents, type SendOptions } from "../runtime.js";
+import { withDelivery } from "../items.js";
 import type { CodexServerHandle } from "./server-manager.js";
 import { codexUsage, reviewTarget, STANDARD_TIER, toModelOption, type CodexModel, type CodexSkill, type GetAccountRateLimitsResponse } from "./account.js";
 import { CodexAsks } from "./asks.js";
@@ -32,6 +34,8 @@ export interface CodexRuntimeOptions {
   servers: CodexServers;
   profiles: readonly ModelProfile[];
   now?: () => Date;
+  /** 停止 not answered by the app-server this long: Studio takes the turn as stopped (default STOP_GRACE_MS). */
+  stopGraceMs?: number;
   /**
    * Tests only: fixed approval policy and sandbox for every session. Otherwise each session's permission option
    * decides (choices.ts; default "ask": outside the Windows sandbox, every command except known-safe reads waits for
@@ -66,7 +70,7 @@ export class CodexRuntime extends RuntimeBase {
   private readonly events: CodexEvents;
 
   constructor(private readonly options: CodexRuntimeOptions) {
-    super(options.store, "codex", options.now);
+    super(options.store, "codex", options.now, options.profiles);
     const core: CodexCore = {
       ...this.makeCore(),
       sessionState: (id) => this.sessionState(id),
@@ -76,14 +80,19 @@ export class CodexRuntime extends RuntimeBase {
       profile: (id) => this.profile(id),
     };
     this.asks = new CodexAsks(core);
-    this.events = new CodexEvents(core, this.asks, (profileId, limits) => {
-      const profile = this.options.profiles.find((p) => p.id === profileId);
-      if (profile && profile.provider === null) this.usageCache.set(profile.id, codexUsage(profile, limits));
-    });
+    this.events = new CodexEvents(
+      core,
+      this.asks,
+      (profileId, limits) => {
+        const profile = this.options.profiles.find((p) => p.id === profileId);
+        if (profile && profile.provider === null) this.usageCache.set(profile.id, codexUsage(profile, limits));
+      },
+      (sessionId) => void this.afterTurn(sessionId),
+    );
     this.asks.cancelStale();
     // Sessions not running any more (the last Host stopped mid-turn): close what that turn left open.
     for (const s of this.store.listSessions()) {
-      if (s.runtime === "codex" && s.status !== "running" && s.status !== "awaiting-approval" && s.status !== "awaiting-answer") this.settleLeftovers(s.id, false);
+      if (s.runtime === "codex" && !inTurn(s.status)) this.settleTurn(s.id, false);
     }
     options.servers.on("ready", (handle) => {
       this.attach(handle);
@@ -129,8 +138,17 @@ export class CodexRuntime extends RuntimeBase {
     return this.store.getSession(session.id)!;
   }
 
-  /** Starts a turn, or steers the running one; images go as `localImage` input (app-server reads the file). */
-  async sendMessage(sessionId: Id, text: string, images: readonly Attachment[] = [], extra: ReadonlyArray<Record<string, unknown>> = []): Promise<{ mode: "start" | "steer" }> {
+  /**
+   * Starts a turn, or steers the running one; images go as `localImage` input (app-server reads the file). A steered
+   * message shows at once as `waiting` (2026-11-02: before, it showed only once read, and a 停止 before that lost it
+   * unseen); `now` (立即发送) then makes the turn give way to it.
+   */
+  async sendMessage(sessionId: Id, text: string, images: readonly Attachment[] = [], options: SendOptions = {}): Promise<{ mode: "start" | "steer" }> {
+    return this.send(sessionId, text, images, [], options);
+  }
+
+  /** `extra`: more input (a skill); `again`: the row of a message sent again (重新发送), reused instead of a new one. */
+  private async send(sessionId: Id, text: string, images: readonly Attachment[], extra: ReadonlyArray<Record<string, unknown>>, options: SendOptions = {}, again?: Id): Promise<{ mode: "start" | "steer" }> {
     const session = this.writable(sessionId);
     const handle = await this.handleFor(session.profileId);
     const st = this.sessionState(sessionId);
@@ -138,22 +156,121 @@ export class CodexRuntime extends RuntimeBase {
     if (!session.title) this.updateSession(sessionId, { title: (text || "图片").slice(0, 60) });
     // The person's next message is the answer to request_user_input_async (the card, or typed by hand).
     this.asks.closeAsync(sessionId);
+    const setDelivery = (itemId: Id, delivery: UserDelivery | undefined) => this.updateItem(itemId, (it) => (it.type === "user" ? withDelivery(it, delivery) : it));
+    let row = again;
     if (st.activeTurnId) {
+      // Studio's row from the start; Codex echoes the id back with the message once it read it (events.ts).
+      const clientId = randomUUID();
+      if (row) setDelivery(row, "waiting");
+      else {
+        const pictures = images.map((a) => ({ id: a.id, path: a.path }));
+        row = this.appendItem(sessionId, { type: "user", text, ...(pictures.length ? { images: pictures } : {}), delivery: "waiting" }, { method: "user/steer", turnId: st.activeTurnId }).id;
+      }
+      const entry = { itemId: row, kind: "steer" as const, input };
+      st.sent.set(clientId, entry);
       try {
-        await handle.client.request("turn/steer", { threadId: session.runtimeRef!, expectedTurnId: st.activeTurnId, input } as never);
+        await handle.client.request("turn/steer", { threadId: session.runtimeRef!, expectedTurnId: st.activeTurnId, input, clientUserMessageId: clientId } as never);
         // An async question answered while its turn still runs: the session runs again (unless something else waits).
         if (this.store.getSession(sessionId)?.status === "awaiting-answer") this.asks.afterAnswer(sessionId);
+        if (options.now) await this.sendNow(sessionId, row);
         return { mode: "steer" };
       } catch (err) {
+        // The turn ended meanwhile and afterTurn took the message on to the next turn: it is on its way.
+        if (st.sent.get(clientId) !== entry) return { mode: "start" };
+        st.sent.delete(clientId);
         // The turn ended as the message went out (its turn/completed not handled yet): it starts the next turn instead
         // of failing (2026-10-21: "turn/steer: no active turn to steer").
-        if (!/no active turn/i.test(err instanceof Error ? err.message : String(err))) throw err;
+        if (!/no active turn/i.test(err instanceof Error ? err.message : String(err))) {
+          setDelivery(row, "unsent");
+          throw err;
+        }
       }
+    }
+    // A row shown already goes with an id, so its echo settles it rather than adding another.
+    const clientId = row ? randomUUID() : undefined;
+    if (row && clientId) {
+      setDelivery(row, undefined);
+      st.sent.set(clientId, { itemId: row, kind: "start", input });
     }
     // Status and the active turn come from turn/started and turn/completed: a short turn can finish before this
     // response arrives, so setting them here would leave the session stuck in "running".
-    await handle.client.request("turn/start", { threadId: session.runtimeRef!, input, ...this.turnOptions(session.options), ...(await this.serviceTier(session)) } as never);
+    try {
+      await handle.client.request("turn/start", { threadId: session.runtimeRef!, input, ...(clientId ? { clientUserMessageId: clientId } : {}), ...this.turnOptions(session.options), ...(await this.serviceTier(session)) } as never);
+    } catch (err) {
+      if (row && clientId) {
+        st.sent.delete(clientId);
+        setDelivery(row, "unsent");
+      }
+      throw err;
+    }
     return { mode: "start" };
+  }
+
+  /**
+   * 立即发送 (2026-11-02): Codex reads a steered message at its next step — while a command runs, only once it is done.
+   * As the TUI's "press esc to interrupt and send immediately": the turn is interrupted, and the messages it did not
+   * read go on as the next turn (afterTurn).
+   */
+  async sendNow(sessionId: Id, itemId: Id): Promise<void> {
+    const session = this.writable(sessionId);
+    const st = this.sessionState(sessionId);
+    const waiting = [...st.sent.values()].some((m) => m.itemId === itemId && m.kind === "steer");
+    if (!waiting || !st.activeTurnId || !session.runtimeRef) return;
+    const handle = await this.handleFor(session.profileId);
+    await handle.client.request("turn/interrupt", { threadId: session.runtimeRef, turnId: st.activeTurnId } as never);
+  }
+
+  /** 重新发送 (2026-11-02): a message Codex never read goes again, as the same row; also a held one of Studio's inbox. */
+  async resend(sessionId: Id, itemId: Id, images: readonly Attachment[] = [], options: SendOptions = {}): Promise<{ mode: "start" | "steer" }> {
+    this.writable(sessionId);
+    const item = this.store.getItem(itemId);
+    if (item?.type !== "user" || item.sessionId !== sessionId) throw Object.assign(new Error(`message ${itemId} not found`), { code: "not_found" });
+    if (item.delivery !== "unsent" && item.delivery !== "held") return { mode: this.sessionState(sessionId).activeTurnId ? "steer" : "start" };
+    return this.send(sessionId, item.text, images, [], options, itemId);
+  }
+
+  /**
+   * A turn ended with steered messages it never read (stopped, given way to 立即发送, or ended as they came): Codex has
+   * dropped them, so they go on as the next turn, as the TUI does — the first starts it, the rest are steered into it.
+   * 2026-11-02, the user: a message waiting when 停止 is pressed is sent, not lost (as the Claude Code CLI does too).
+   */
+  private async afterTurn(sessionId: Id): Promise<void> {
+    const st = this.sessionState(sessionId);
+    const left = [...st.sent].filter(([, m]) => m.kind === "steer");
+    if (!left.length) return;
+    for (const [clientId] of left) st.sent.delete(clientId);
+    const lost = (from: number) => {
+      for (const [, m] of left.slice(from)) this.updateItem(m.itemId, (it) => (it.type === "user" ? withDelivery(it, "unsent") : it));
+    };
+    const session = this.store.getSession(sessionId);
+    if (!session?.runtimeRef || session.archivedAt || session.writer !== "workbench") return lost(0);
+    const [firstId, first] = left[0]!;
+    // The rest stay waiting (fresh entries, so a later afterTurn taking them on is seen): steered into the new turn
+    // below, or on to the one after it when that turn ends first (its afterTurn).
+    const rest = left.slice(1).map(([clientId, m]) => [clientId, { ...m }] as const);
+    st.sent.set(firstId, { ...first, kind: "start" });
+    for (const [clientId, m] of rest) st.sent.set(clientId, m);
+    this.updateItem(first.itemId, (it) => (it.type === "user" ? withDelivery(it, undefined) : it));
+    let handle: CodexServerHandle;
+    try {
+      handle = await this.handleFor(session.profileId);
+      await handle.client.request("turn/start", { threadId: session.runtimeRef, input: first.input, clientUserMessageId: firstId, ...this.turnOptions(session.options), ...(await this.serviceTier(session)) } as never);
+    } catch (err) {
+      this.emit("log", `could not send the unread messages of ${sessionId}: ${String(err)}`);
+      for (const [clientId] of left) st.sent.delete(clientId);
+      return lost(0);
+    }
+    for (const [clientId, m] of rest) {
+      if (st.sent.get(clientId) !== m) continue;
+      // The new turn is over already (a short one): what is left starts the next.
+      if (!st.activeTurnId) return void this.afterTurn(sessionId);
+      try {
+        await handle.client.request("turn/steer", { threadId: session.runtimeRef, expectedTurnId: st.activeTurnId, input: m.input, clientUserMessageId: clientId } as never);
+      } catch {
+        if (!st.activeTurnId && st.sent.get(clientId) === m) void this.afterTurn(sessionId);
+        return;
+      }
+    }
   }
 
   /** Switches model, effort or permissions; Codex applies them from the next turn (a running turn keeps its own). */
@@ -229,8 +346,18 @@ export class CodexRuntime extends RuntimeBase {
     const st = this.sessionState(sessionId);
     if (!st.activeTurnId || !session.runtimeRef) return;
     this.asks.cancelQuestionsOf(sessionId);
+    // 停止's fallback (2026-11-04, plans/message-delivery.md): the app-server is shared by the channel's sessions, so it
+    // is not closed; the turn is taken as stopped here, and what the turn had not read becomes 没送到.
+    const turnId = st.activeTurnId;
+    const grace = this.options.stopGraceMs ?? STOP_GRACE_MS;
+    this.armStopGrace(sessionId, grace, () => this.state.get(sessionId)?.activeTurnId === turnId, () => {
+      st.activeTurnId = null;
+      this.settleTurn(sessionId, false);
+      this.appendItem(sessionId, { type: "notice", level: "warning", message: `点了停止 ${Math.round(grace / 1000)} 秒后 Codex 还没停下，Studio 不再等它，把这一轮记成已停止。发一条消息即可接着对话；还不行的话重启 Studio。` });
+      this.setStatus(sessionId, "idle");
+    }, "taking it as stopped");
     const handle = await this.handleFor(session.profileId);
-    await handle.client.request("turn/interrupt", { threadId: session.runtimeRef, turnId: st.activeTurnId } as never);
+    await handle.client.request("turn/interrupt", { threadId: session.runtimeRef, turnId } as never);
   }
 
   /** Forks with an explicit provider so the fork never falls back to the server default. */
@@ -249,8 +376,7 @@ export class CodexRuntime extends RuntimeBase {
 
   /** Archives the session with its forks and subagents, and archives their threads. */
   async archive(sessionId: Id): Promise<Session[]> {
-    const changed = this.store.archiveSubtree(sessionId);
-    for (const s of changed) this.publish({ type: "session.upserted", session: s });
+    const changed = this.archiveTree(sessionId);
     for (const s of changed) {
       if (!s.runtimeRef || s.kind === "sub") continue;
       try {
@@ -264,8 +390,7 @@ export class CodexRuntime extends RuntimeBase {
   }
 
   async unarchive(sessionId: Id): Promise<Session[]> {
-    const changed = this.store.unarchiveSubtree(sessionId);
-    for (const s of changed) this.publish({ type: "session.upserted", session: s });
+    const changed = this.unarchiveTree(sessionId);
     for (const s of changed) {
       if (!s.runtimeRef || s.kind === "sub") continue;
       try {
@@ -352,7 +477,7 @@ export class CodexRuntime extends RuntimeBase {
     }
     const skill = (await this.skills(session)).find((s) => s.name === name);
     if (!skill) throw Object.assign(new Error(`Codex 没有 /${name} 这个命令`), { code: "bad_request" });
-    const sent = await this.sendMessage(sessionId, `$${skill.name}${args ? ` ${args}` : ""}`, [], [{ type: "skill", name: skill.name, path: skill.path }]);
+    const sent = await this.send(sessionId, `$${skill.name}${args ? ` ${args}` : ""}`, [], [{ type: "skill", name: skill.name, path: skill.path }]);
     return { mode: sent.mode };
   }
 
@@ -375,18 +500,11 @@ export class CodexRuntime extends RuntimeBase {
    * The thread is not running (any more): a turn the last Host saw start, and its streaming text and running tools,
    * are over. `notify` adds a line saying the reply was cut off.
    */
-  private settleLeftovers(sessionId: Id, notify: boolean): void {
-    let cut = false;
-    const at = this.now().toISOString();
-    for (const item of this.store.listUnfinishedItems(sessionId)) {
-      if (item.type === "turn" && item.state === "running") {
-        cut = true;
-        this.updateItem(item.id, (it) => (it.type === "turn" && it.state === "running" ? { ...it, state: "interrupted", endedAt: at } : it));
-      } else if (item.type === "agent" && item.streaming) this.updateItem(item.id, (it) => (it.type === "agent" ? { ...it, streaming: false } : it));
-      else if (item.type === "reasoning" && item.streaming) this.updateItem(item.id, (it) => (it.type === "reasoning" ? { ...it, streaming: false } : it));
-      else if (item.type === "tool" && item.status === "running") this.updateItem(item.id, (it) => (it.type === "tool" ? { ...it, status: "failed" } : it));
-      else if (item.type === "compaction" && item.state === "running") this.updateItem(item.id, (it) => (it.type === "compaction" ? { ...it, state: "failed" } : it));
-    }
+  private settleTurn(sessionId: Id, notify: boolean): void {
+    // Approvals are not settled here: the app-server replays the ones still wanted after resubscribing (asks.ts).
+    const cut = this.settleLeftovers(sessionId);
+    // Steered and never read (now unsent): the turn (and Codex's copy of it) is gone.
+    this.state.get(sessionId)?.sent.clear();
     if (cut && notify) this.appendItem(sessionId, { type: "notice", level: "warning", message: "这一轮回复被中断了（Host 或 Codex 重启）。发一条消息即可接着对话。" });
   }
 
@@ -412,7 +530,15 @@ export class CodexRuntime extends RuntimeBase {
         handle.client.respondError(r.id, -32603, `WorkStudio could not handle ${r.method}`);
       }
     });
-    handle.client.once("close", () => this.asks.onConnectionLost(handle.profileId));
+    handle.client.once("close", () => {
+      this.asks.onConnectionLost(handle.profileId);
+      // Steered messages the app-server had not read went with it (2026-11-02).
+      for (const [id, st] of this.state) {
+        if (!st.sent.size || this.store.getSession(id)?.profileId !== handle.profileId) continue;
+        for (const m of st.sent.values()) this.updateItem(m.itemId, (it) => (it.type === "user" && it.delivery === "waiting" ? withDelivery(it, "unsent") : it));
+        st.sent.clear();
+      }
+    });
   }
 
   /** After a (re)connect, subscribe again to every live thread served by this profile's server. */
@@ -427,12 +553,12 @@ export class CodexRuntime extends RuntimeBase {
         const st = this.sessionState(s.id);
         if (!active) {
           st.activeTurnId = null;
-          this.settleLeftovers(s.id, true);
+          this.settleTurn(s.id, true);
         }
         const current = this.store.getSession(s.id)!.status;
-        if (active && current !== "awaiting-approval" && current !== "awaiting-answer") this.setStatus(s.id, "running");
+        if (active && !inTurn(current)) this.setStatus(s.id, "running");
         // Cut off from outside (the Host or the app-server went down mid-turn): red until a message carries it on.
-        if (!active && (current === "running" || current === "awaiting-approval" || current === "awaiting-answer")) this.setStatus(s.id, "interrupted");
+        if (!active && inTurn(current)) this.setStatus(s.id, "interrupted");
       } catch (err) {
         this.emit("log", `thread/resume failed for ${s.id}: ${String(err)}`);
       }
@@ -521,15 +647,9 @@ export class CodexRuntime extends RuntimeBase {
 
   private profile(id: Id): ModelProfile {
     const p = this.options.profiles.find((x) => x.id === id);
-    if (!p || p.runtime !== "codex") throw new Error(`unknown Codex profile ${id}`);
+    if (!p) throw profileGone(id);
+    if (p.runtime !== "codex") throw new Error(`unknown Codex profile ${id}`);
     return p;
-  }
-
-  private writable(id: Id): Session {
-    const s = this.requireSession(id);
-    if (s.writer === "archived" || s.writer === "terminal-handoff") throw Object.assign(new Error(`session ${id} is read-only (${s.writer})`), { code: "read_only" });
-    if (!s.runtimeRef) throw new Error(`session ${id} has no thread yet`);
-    return s;
   }
 
   private findByThread(threadId: string): Session | undefined {

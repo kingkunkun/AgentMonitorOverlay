@@ -1,0 +1,182 @@
+// 问题页 (2026-10-31, plans/issues.md): the person reports AMO's problems on the team server's /issues page (a line or
+// two and screenshots); Studio's 值守 fetches them, fixes each in a session, answers on the issue and sets its status;
+// 发布打包 on the page asks for a test build. Shared by the service, the page and Studio's Host.
+
+export const ISSUE_STATUSES = ["review", "rejected", "new", "working", "asking", "fixed", "released", "stuck", "discuss", "closed"] as const;
+export type IssueStatus = (typeof ISSUE_STATUSES)[number];
+
+export const ISSUE_STATUS_LABEL: Record<IssueStatus, string> = {
+  // 维护者 (2026-11-03, the user): what someone who is not a maintainer reports waits for a maintainer to look at it
+  // first — 确认制作 makes it 新 for 值守, 打回 sends it back with the reason; a word from its author then hands it in
+  // again. 值守 never touches these two.
+  review: "待审核",
+  rejected: "打回",
+  new: "新",
+  working: "修复中",
+  // The AI wants the person's word — it does not understand, or the issue is big and it wrote how it would go: they
+  // talk it over here, round after round (2026-10-31 晚, the user: 不用再有建议单开讨论，issue 本身就能多轮交流).
+  asking: "需要确认",
+  fixed: "已修好，待发布",
+  released: "已发布",
+  stuck: "卡住了",
+  // The person took it to a session in Studio (前往讨论, the user, 2026-10-31 晚): 值守 leaves it alone, answers on
+  // it included, until they hand it back.
+  discuss: "去会话讨论",
+  closed: "不修了",
+};
+
+/** What only a maintainer sets: 值守 (the AI) never does, and leaves issues in them alone. */
+export const ISSUE_REVIEW_STATUSES: readonly IssueStatus[] = ["review", "rejected"];
+
+/** The tools an issue can be about (the platform's tool ids); "" = not said. */
+export const ISSUE_TOOLS: Record<string, string> = {
+  studio: "AMO Studio",
+  notes: "AMO 便签",
+  reviewer: "AMO Reviewer",
+  platform: "AMO 平台",
+  relay: "AMO 中转",
+};
+
+/** Pictures only (screenshots), each at most MAX_FILE_BYTES, a few per entry. */
+export const ISSUE_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"] as const;
+export const ISSUE_IMAGES_PER_ENTRY = 8;
+
+export interface IssueImage {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+}
+
+export interface IssueEntry {
+  id: string;
+  seq: number;
+  author: string;
+  /** Written by Studio's AI (值守's session), as the person's account. */
+  ai: boolean;
+  /** report: what the issue says first; comment: a word after it; status: only the status changed. */
+  kind: "report" | "comment" | "status";
+  body: string;
+  images: IssueImage[];
+  /** The status this entry set, if any. */
+  status: IssueStatus | null;
+  at: number;
+}
+
+export interface Issue {
+  /** #1, #2… in the order they were reported. */
+  number: number;
+  title: string;
+  author: string;
+  status: IssueStatus;
+  /** ISSUE_TOOLS id or "". */
+  tool: string;
+  /** The version the person had, as they gave it or the page filled it; "". */
+  version: string;
+  /** The test build it went out in ("Studio 0.9.17"); "". */
+  fixedIn: string;
+  /** The maintainer who let it be worked on (确认制作), or its author when that was a maintainer; "" while it waits. */
+  approvedBy: string;
+  /** Who works on it now, as 值守 says ("Opus 5.5 · 任务「问题 #3 …」"); "". */
+  worker: string;
+  /** The Studio session that wrote on it last, to find it in Studio's search (2026-10-31 晚); "". */
+  session: string;
+  createdAt: number;
+  updatedAt: number;
+  /** Goes up with every change of the issue (the service's change counter at that moment). */
+  rev: number;
+  entryCount: number;
+  /** Whether the last entry is the person's (not the AI's): something for 值守 to read. */
+  awaitsAi: boolean;
+  /** Only when one issue is asked for. */
+  entries?: IssueEntry[];
+}
+
+export interface IssueRelease {
+  /** 发布打包 was clicked and is not done yet. */
+  requestedAt: number | null;
+  requestedBy: string;
+  last: { version: string; at: number } | null;
+  /** The test build going on now, or the last one (ended). */
+  build: IssueBuild | null;
+  /** The last ISSUE_BUILDS_KEPT builds, newest first (build is the first): how long each step took, like Jenkins' stage view. */
+  builds: IssueBuild[];
+}
+
+export const ISSUE_BUILDS_KEPT = 30;
+
+/**
+ * A test build as `npm run release` reports it while it runs (2026-10-31, the user: 问题页 shows whether a build is
+ * going on and how far it got). Reported with the platform's login of the machine that builds; best effort.
+ */
+export interface IssueBuild {
+  /** What goes out: "AMO Studio 0.9.19、AMO 便签 0.9.8". */
+  label: string;
+  /** Its steps in order ("测试", "提交版本", "打包", "发布"). */
+  steps: string[];
+  /** The step it is at (index into steps); where it stopped when it failed. */
+  step: number;
+  /** When each step it reached began (steps 0…step): a step took until the next one began, or the end. */
+  stepAt: number[];
+  by: string;
+  startedAt: number;
+  /** The last word from it: a build that has not ended and says nothing for long has probably gone. */
+  updatedAt: number;
+  endedAt: number | null;
+  ok: boolean | null;
+  /** Why it stopped, or what went out. */
+  message: string;
+}
+
+/** POST /api/issues/release/build: one of start (a new build), step (where it is now), end. */
+export interface IssueBuildReport {
+  start?: { label: string; steps: string[] };
+  step?: number;
+  end?: { ok: boolean; message?: string };
+}
+
+/** A build that has not ended and said nothing this long is shown as probably gone. */
+export const ISSUE_BUILD_QUIET_MS = 30 * 60_000;
+
+/** GET /api/issues[?after=rev]: the issues changed after `after` (all without it), and the counter now. */
+export interface IssueList {
+  issues: Issue[];
+  release: IssueRelease;
+  rev: number;
+  /** Who asks: a maintainer sees every issue and reviews the others' (2026-11-03); anyone else only their own. */
+  me: IssueViewer;
+}
+
+/** The account asking, as the issue service sees it (members.maintainer, set on the admin page). */
+export interface IssueViewer {
+  name: string;
+  maintainer: boolean;
+}
+
+export interface NewIssue {
+  title?: string;
+  body: string;
+  tool?: string;
+  version?: string;
+  /** Ids from POST /api/issues/images, not yet used. */
+  images?: string[];
+}
+
+export interface NewIssueEntry {
+  body?: string;
+  images?: string[];
+  /** Written by the AI (Studio's 值守). */
+  ai?: boolean;
+  /** Changes the status with this entry. */
+  status?: IssueStatus;
+  /** The Studio session writing it (the AI's). */
+  session?: string;
+}
+
+export interface IssuePatch {
+  status?: IssueStatus;
+  title?: string;
+  fixedIn?: string;
+  worker?: string;
+  session?: string;
+}

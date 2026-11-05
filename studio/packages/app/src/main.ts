@@ -1,7 +1,7 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, powerSaveBlocker, screen, shell, Tray } from "electron";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { connectHost, HostStartError, keepHostAlive, readHostJson, requestShutdown, stopHost, waitForExit, type HostConnection, type HostLinkOptions } from "./host-link.js";
+import { connectHost, HostStartError, keepHostAlive, putHostJson, readHostJson, requestShutdown, stopHost, waitForExit, type HostConnection, type HostLinkOptions } from "./host-link.js";
 import { remoteInUse, remoteQuitNote, type RemoteState } from "@amo-studio/protocol";
 import { createFocusWindow, displays, letTitleDragsMove, mainBounds, pagePressed, recoverLostClicks, refitFocusWindow, rescaleFocusWindow, setFocusActivatable, ShellPrefs, UI_SCALES, uiScaleOk } from "./focus-window.js";
 import { centreIn, displayFor } from "./placement.js";
@@ -11,7 +11,8 @@ import { tmpdir } from "node:os";
 import { platformDataDir, resolveDataDir } from "./paths.js";
 import { runSetup, SETUP_TEMP_PROFILE } from "./setup.js";
 import { installNotesLink } from "./notes-link.js";
-import { setupReviewWindows, setupViewerWindows } from "@amo-studio/reviewer";
+import { installWindowControls, sendMaximized, setupReviewWindows, setupViewerWindows } from "@amo-studio/reviewer";
+import { TrayMenu, type MenuEntry } from "@amo-studio/traymenu";
 import { installMarksWindow } from "./marks-window.js";
 import { installCanvasWindow } from "./canvas-window.js";
 import { ResizeTrace } from "./resize-trace.js";
@@ -257,8 +258,32 @@ function watchRemoteUse(): void {
   setInterval(() => void look(), Number(process.env.AMO_STUDIO_REMOTE_WATCH_MS) || 20_000).unref();
 }
 
-function trayItems(): Array<{ label: string; click: () => void } | { type: "separator" }> {
-  return [{ label: "打开 Studio", click: showMain }, { type: "separator" }, { label: "完全退出", click: () => void quitCompletely() }];
+function trayItems(devUi = false): Array<{ label: string; click: () => void } | { type: "separator" }> {
+  return [{ label: "打开 Studio", click: showMain }, ...(devUi ? [{ label: "恢复安装版界面", click: () => void leaveDevUi() }] : []), { type: "separator" as const }, { label: "完全退出", click: () => void quitCompletely() }];
+}
+
+/**
+ * 设置 → 测试功能 → 开发界面目录 (2026-11-05): the windows' UI comes from a worktree's build; when that build does not
+ * even draw the window (so its own 恢复安装版 cannot be clicked), the tray puts the installed one back and reloads.
+ */
+async function devUiOn(): Promise<boolean> {
+  const conn = host;
+  if (!conn) return false;
+  const s = await readHostJson<{ devUiDir?: string | null }>(conn, "/api/settings", 800);
+  return !!s?.devUiDir;
+}
+async function leaveDevUi(): Promise<void> {
+  const conn = host;
+  if (!conn || !(await putHostJson(conn, "/api/settings", { devUiDir: null }))) return;
+  for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed() && w.webContents.getURL().startsWith(conn.url)) w.webContents.reload();
+}
+
+/** The menu on a right-click (2026-10-29, the user: like 便签's, not Windows' own; @amo-studio/traymenu). */
+const trayWindow = new TrayMenu({ label: "AMO Studio 菜单" });
+async function openTrayMenu(): Promise<void> {
+  const entries: MenuEntry[] = [{ kind: "title", label: "AMO Studio" }];
+  for (const i of trayItems(await devUiOn())) entries.push("label" in i ? { kind: "item", label: i.label, strong: i.click === showMain, run: i.click } : { kind: "rule" });
+  trayWindow.open(entries);
 }
 
 /** The tray icon at each scale Windows may ask for: assets/icon-16…32.png (scripts/make-icons.mjs), else the window icon shrunk. */
@@ -280,17 +305,18 @@ function createTray(): void {
   tray = new Tray(trayImage());
   tray.setToolTip("WorkStudio");
   tray.on("click", showMain);
-  tray.setContextMenu(Menu.buildFromTemplate(trayItems()));
+  tray.on("right-click", () => void openTrayMenu());
 }
 
 /**
  * shell.json in the data dir (2026-10-29): this shell's pid, so the AMO platform's 重启 Studio can wait for it to end
- * before starting the new version (otherwise the new one would only find this one by the single-instance lock).
+ * before starting the new version (otherwise the new one would only find this one by the single-instance lock). Its exe
+ * since 2026-11-04: the platform then knows the installed Studio runs (and which version) without asking Windows.
  */
 const shellFile = join(dataDir, "shell.json");
 function writeShellFile(): void {
   try {
-    writeFileSync(shellFile, JSON.stringify({ pid: process.pid, version: STUDIO_VERSION, startedAt: new Date().toISOString() }, null, 2));
+    writeFileSync(shellFile, JSON.stringify({ pid: process.pid, exe: process.execPath, version: STUDIO_VERSION, startedAt: new Date().toISOString() }, null, 2));
   } catch {
     // the platform then only waits for the Host
   }
@@ -304,23 +330,28 @@ function removeShellFile(): void {
   }
 }
 
-if (!app.requestSingleInstanceLock()) {
+/**
+ * Started by AMO 平台 (2026-10-29, the user: too many tray icons): the platform's tray menu has Studio's items, so this
+ * one makes none. `--amo-quit` (the platform's 关闭 / 完全退出 Studio): handed to the running Studio, which quits as its
+ * own 完全退出 does (asking first); with none running there is nothing to quit.
+ */
+const trayByPlatform = process.argv.includes("--amo-tray=platform");
+const quitAsked = (argv: readonly string[]) => argv.includes("--amo-quit");
+
+if (!app.requestSingleInstanceLock() || quitAsked(process.argv)) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
+  app.on("second-instance", (_event, argv) => {
+    if (quitAsked(argv)) return void quitCompletely();
     // A user launched Studio again: bring the existing window forward, also out of the tray (never happens in tests).
     if (mainWindow && !testMode) bringForward(mainWindow);
   });
 
   ipcMain.handle("amo:host", () => (host ? { url: host.url, token: host.token } : null));
-  // The page draws the title bar and its window buttons (minimise, maximise / restore, close).
-  ipcMain.on("amo:window", (event, action: unknown) => {
-    if (!mainWindow || event.sender !== mainWindow.webContents) return;
-    if (action === "minimize") mainWindow.minimize();
-    else if (action === "maximize") mainWindow.isMaximized() ? mainWindow.unmaximize() : mainWindow.maximize();
-    else if (action === "close") mainWindow.close();
-  });
-  ipcMain.handle("amo:window-maximized", (event) => (mainWindow && event.sender === mainWindow.webContents ? mainWindow.isMaximized() : false));
+  // The pages draw the title bar and its window buttons (minimise, maximise / restore, close), each for its own window
+  // (2026-10-29: 书签, the 画布小窗, Git Review, the viewer and the setup too). The workbench's × only hides it: its
+  // close handler (createMainWindow) does that.
+  installWindowControls();
   // Copy through the main process: navigator.clipboard needs a focused document, which is not always the case.
   // Tests never touch the user's clipboard; they read the recorded text instead.
   // A page's top bar needs this much width (CSS px, lib/fitWidth.ts): the window keeps at least that, never less than
@@ -361,15 +392,6 @@ if (!app.requestSingleInstanceLock()) {
       return;
     }
     await shell.openExternal(url);
-  });
-  // 置顶 (stage 14): the workbench window above other windows, remembered for the next start.
-  ipcMain.handle("amo:pin-get", () => mainWindow?.isAlwaysOnTop() ?? false);
-  ipcMain.handle("amo:pin-set", (_event, on: unknown) => {
-    const pinned = on === true;
-    prefs.setPinned(pinned);
-    if (!mainWindow) return;
-    mainWindow.setAlwaysOnTop(pinned);
-    mainWindow.webContents.send("amo:pin-changed", pinned);
   });
   // 界面大小 (2026-10-15): one zoom for every Studio page, kept for the next start. Chromium zooms by origin, so
   // setting it on one page sets it on all of them; each page gets it again when it loads.
@@ -450,7 +472,7 @@ if (!app.requestSingleInstanceLock()) {
     // No (or an empty) taskId opens the board: scheduler proposals, and topic sessions from Focus. `show`: only bring
     // the window forward, where it is (Focus's icon, 2026-10-15).
     if (!mainWindow) return;
-    // 远程 (2026-10-29): a pairing request from Focus → 设置 → 远程.
+    // 远程 (2026-10-29): a pairing or task request from Focus → the workbench opens its 远程 page (the field still says settings: "remote").
     if (t?.settings === "remote") mainWindow.webContents.send("amo:navigate", { taskId: "", settings: "remote" });
     else if (t?.show !== true) {
       const taskId = typeof t?.taskId === "string" ? t.taskId : "";
@@ -554,7 +576,7 @@ if (!app.requestSingleInstanceLock()) {
         ...(process.env.AMO_STUDIO_KEEPALIVE_MS ? { intervalMs: Number(process.env.AMO_STUDIO_KEEPALIVE_MS) } : {}),
         // Asked to stop (完全退出 from another place, the platform's 重启 Studio): this shell goes with it (2026-10-29).
         onStopped: () => {
-          trace?.note("host", "the Host was asked to stop; quitting with it");
+          trace?.mark("host", "the Host was asked to stop; quitting with it");
           appQuitting = true;
           app.quit();
         },
@@ -571,7 +593,7 @@ if (!app.requestSingleInstanceLock()) {
       });
       if (prefs.focus(!testMode)) setFocusVisible(true);
       // The tray (2026-10-29). Tests make no icon: they reach its menu through these.
-      if (!testMode) createTray();
+      if (!testMode && !trayByPlatform) createTray();
       else
         Object.assign(globalThis, {
           __studioTray: () => trayItems().map((i) => ("label" in i ? i.label : "—")),
@@ -581,7 +603,25 @@ if (!app.requestSingleInstanceLock()) {
           },
         });
       // 便签 is a program of its own (packages/notes, 2026-10-23): started with Studio, brought up from the title bar.
-      installNotesLink({ studioRoot, dataDir, host, testMode, log: (line) => console.error(`[${new Date().toISOString()}] ${line}`) });
+      installNotesLink({
+        studioRoot,
+        dataDir,
+        host,
+        testMode,
+        log: (line) => console.error(`[${new Date().toISOString()}] ${line}`),
+        // A 待办's tag (问题 #10): as 在工作台打开 from Focus does.
+        openTask: (t) => {
+          if (!mainWindow) return;
+          mainWindow.webContents.send("amo:navigate", t);
+          if (testMode) {
+            const g = globalThis as { __amoMainShown?: number; __amoTodoOpened?: unknown[] };
+            g.__amoMainShown = (g.__amoMainShown ?? 0) + 1;
+            (g.__amoTodoOpened ??= []).push(t);
+            return;
+          }
+          bringForward(mainWindow);
+        },
+      });
       // The file marks window (文件标记).
       installMarksWindow({ url: process.env.AMO_STUDIO_DEV_URL ?? `${host.url}/`, preload: join(here, "preload.cjs"), icon: APP_ICON, testMode, mainWindow });
       installCanvasWindow({ url: process.env.AMO_STUDIO_DEV_URL ?? `${host.url}/`, preload: join(here, "preload.cjs"), icon: APP_ICON, testMode, mainWindow });
@@ -620,10 +660,19 @@ if (!app.requestSingleInstanceLock()) {
       app.exit(1);
     });
 
-  app.on("window-all-closed", () => app.quit());
+  app.on("window-all-closed", () => {
+    trace?.mark("quit", "every window closed");
+    app.quit();
+  });
+
+  // Each step of quitting, written at once (2026-11-05): Studio 0.9.36 once hung after the platform's 重启 — windows
+  // and helper processes gone, the process left — with nothing in the log after "quitting with it".
+  app.on("quit", (_event, code) => trace?.mark("quit", `quit (exit code ${code})`));
+  process.once("exit", (code) => trace?.mark("quit", `process exit ${code}`));
 
   let quitting = false;
   app.on("before-quit", (event) => {
+    trace?.mark("quit", "before-quit");
     // Now the workbench window really closes (× only hides it).
     appQuitting = true;
     // Quitting stops (in tests) or leaves the Host; it is not to be restarted.
@@ -635,9 +684,16 @@ if (!app.requestSingleInstanceLock()) {
     void stopHost(host).finally(() => app.quit());
   });
   app.on("will-quit", () => {
+    trace?.mark("quit", "will-quit");
     removeShellFile();
     tray?.destroy();
     tray = null;
+    // Still here well after will-quit (the hang above, if JavaScript still runs then): end the process. The Host is
+    // its own process and the windows are gone; nothing is lost. Unref'd: it never keeps a quitting process alive.
+    setTimeout(() => {
+      trace?.mark("quit", "still running 10 s after will-quit: ending the process");
+      app.exit(0);
+    }, 10_000).unref();
   });
 
   // A window's page process crashed (or ran out of memory): load it again; the Host and the sessions never stopped.
@@ -684,8 +740,8 @@ function createMainWindow(conn: HostConnection): BrowserWindow {
     show: false,
     ...(testMode ? { x: -32000, y: -32000, skipTaskbar: true, focusable: false } : {}),
     paintWhenInitiallyHidden: true,
-    // 置顶, as it was left (stage 14). The window never activates for it, so off-screen test windows stay harmless.
-    alwaysOnTop: prefs.pinned(),
+    // No 置顶 for the workbench any more (2026-10-31, 问题 #4): one left on in shell-prefs.json is no longer applied,
+    // since there is no button left to turn it off.
     webPreferences: {
       preload: join(here, "preload.cjs"),
       contextIsolation: true,
@@ -715,8 +771,7 @@ function createMainWindow(conn: HostConnection): BrowserWindow {
   win.on("session-end", () => {
     appQuitting = true;
   });
-  win.on("maximize", () => win.webContents.send("amo:window-maximized", true));
-  win.on("unmaximize", () => win.webContents.send("amo:window-maximized", false));
+  sendMaximized(win);
   // Without a menu, the usual keys: F5 / Ctrl+R reload, F12 / Ctrl+Shift+I DevTools.
   win.webContents.on("before-input-event", (event, input) => {
     if (input.type !== "keyDown") return;

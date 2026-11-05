@@ -1,7 +1,9 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import type { Session, StateSnapshot, Task, Workspace } from "@amo-studio/protocol";
+import { removeTempDir } from "@amo-studio/testkit";
 import { launchStudio, screenshot, type Studio } from "../support/studio.js";
 
 // Stage 17: DeepSeek on DSH's own harness. 「Mock DSH」 sessions run the scripted ACP agent standing in for
@@ -28,13 +30,27 @@ test("a DSH session: approval card, a message waits for the turn, no fork or ter
   await expect(card).toContainText("New-Item notes.md", { timeout: 30_000 });
   await expect(card).toContainText("the person asked for it");
   await screenshot(studio.app, "stage-17", "S17-dsh-approval", page);
+  // 2026-11-04 (plans/message-delivery.md): a mail forwarded while the turn waits on the person goes into the session's
+  // inbox — shown at once, 「等这一轮结束后送进去」 — and is sent as the next turn once this one is over.
+  const mail = await studio.api<{ id: string }>("POST", "/api/mail", { to: { kind: "session", sessionId: session.id }, text: "记得跑一下测试" });
+  await studio.api("POST", `/api/mail/${mail.id}/forward`, {});
+  const heldLine = page.getByTestId("msg-delivery").filter({ hasText: "等这一轮结束后送进去" });
+  await expect(heldLine).toHaveAttribute("data-delivery", "held");
+  await expect(heldLine.getByRole("button", { name: "立即发送" })).toBeVisible();
+  await screenshot(studio.app, "studio", "inbox-held", page);
   await card.getByRole("button", { name: "批准" }).click();
   await expect(card).toContainText("已批准");
-  await expect(page.getByTestId("msg-agent").last()).toContainText("DONE New-Item notes.md", { timeout: 30_000 });
+  await expect(page.getByTestId("msg-agent").filter({ hasText: "DONE New-Item notes.md" })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId("msg-agent").last()).toContainText("记得跑一下测试", { timeout: 30_000 });
+  await expect(page.getByTestId("msg-delivery")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "发送" })).toBeVisible({ timeout: 30_000 });
 
   // DSH has no fork and no terminal of its own.
   await expect(page.getByTestId("session-fork")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "在终端打开" })).toHaveCount(0);
+  await page.getByTestId("session-more").click();
+  await expect(page.getByTestId("session-menu")).toBeVisible();
+  await expect(page.getByTestId("session-terminal")).toHaveCount(0);
+  await page.keyboard.press("Escape");
 
   // A message sent while a turn runs waits for the turn to end.
   const composer = page.getByLabel("输入消息");
@@ -45,11 +61,53 @@ test("a DSH session: approval card, a message waits for the turn, no fork or ter
   await composer.fill("顺便看看测试");
   await page.getByRole("button", { name: "排队" }).click();
   await expect(page.getByTestId("msg-user").filter({ hasText: "顺便看看测试" })).toBeVisible();
+  // 2026-11-04: it waits (等待送达), and 打断 sends it as the next turn instead of dropping it.
+  await expect(page.getByTestId("msg-delivery").last()).toHaveAttribute("data-delivery", "waiting");
   await screenshot(studio.app, "stage-17", "S17-dsh-queued", page);
   await page.getByRole("button", { name: "打断" }).click();
+  await expect(page.getByTestId("msg-agent").last()).toContainText("MOCK-DSH: 顺便看看测试", { timeout: 30_000 });
   await expect(page.getByRole("button", { name: "发送" })).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByText("停止后，排队的 1 条消息没有发出")).toBeVisible();
+  await expect(page.getByTestId("msg-delivery")).toHaveCount(0);
 });
+
+test("a DSH goal going on by itself: each round a turn, the answers stay in sight, 打断 stops it (问题 #13)", async () => {
+  // 标准 view: finished turns fold (the tests' default 完全展开 never folds).
+  studio = await launchStudio({ dsh: true, transcriptView: "standard" });
+  const { page } = studio;
+  const ws = await studio.api<Workspace>("POST", "/api/workspaces", { path: studio.workspace("alpha") });
+  await studio.api<{ task: Task; session: Session }>("POST", "/api/tasks", { title: "DSH 目标", workspaceId: ws.id, firstSession: { profileId: "dsh-mock", text: "一直做 [[goal: 2]]" } });
+  await page.getByTestId("task-card").filter({ hasText: "DSH 目标" }).click();
+  const turns = page.getByTestId("turn");
+  // Round 2 replied and DSH is still taken to be working (its turn ends after a quiet spell): three turns.
+  await expect(page.getByTestId("msg-agent").filter({ hasText: "ROUND 2 DONE" })).toBeVisible({ timeout: 30_000 });
+  await expect(turns).toHaveCount(3);
+  // The person's turn and round 1 are over and folded, their answers outside the fold.
+  await expect(turns.nth(0)).toHaveAttribute("data-folded", "true");
+  await expect(turns.nth(0).getByTestId("msg-agent")).toContainText("MOCK-DSH: 一直做");
+  await expect(turns.nth(1)).toHaveAttribute("data-folded", "true");
+  await expect(turns.nth(1).getByTestId("msg-agent")).toContainText("ROUND 1 DONE");
+  await expect(page.getByRole("button", { name: "打断" })).toBeVisible();
+  await screenshot(studio.app, "stage-17", "S17-dsh-goal-rounds", page);
+  await page.getByRole("button", { name: "打断" }).click();
+  await expect(page.getByRole("button", { name: "发送" })).toBeVisible({ timeout: 30_000 });
+  await expect(turns.nth(2).getByTestId("turn-fold")).toContainText("已停止");
+  await expect(turns.nth(2).getByTestId("msg-agent")).toContainText("ROUND 2 DONE");
+  await screenshot(studio.app, "stage-17", "S17-dsh-goal-stopped", page);
+});
+
+
+/** An asar archive with no files (its header pickles, as @electron/asar writes them). */
+function emptyAsar(): Buffer {
+  const json = Buffer.from(JSON.stringify({ files: {} }));
+  const header = Buffer.alloc(8 + json.length + ((4 - (json.length % 4)) % 4));
+  header.writeUInt32LE(header.length - 4, 0);
+  header.writeInt32LE(json.length, 4);
+  json.copy(header, 8);
+  const size = Buffer.alloc(8);
+  size.writeUInt32LE(4, 0);
+  size.writeUInt32LE(header.length, 4);
+  return Buffer.concat([size, header]);
+}
 
 test("设置 → 模型: the DSH clone's place, its version and 「检查」 (stage 17)", async () => {
   studio = await launchStudio({ dsh: true });
@@ -84,4 +142,61 @@ test("设置 → 模型: the DSH clone's place, its version and 「检查」 (st
   expect(state.profiles.find((p) => p.id === "dsh-mock")?.runtime).toBe("dsh");
   const choices = await studio.api<{ models: Array<{ id: string }> }>("GET", "/api/profiles/dsh-mock/choices");
   expect(choices.models.map((m) => m.id)).toEqual(["deepseek-official/deepseek-v4-flash", "deepseek-official/deepseek-flash", "deepseek-official/deepseek-v4-pro"]);
+
+  // The desktop app installed in another folder (2026-11-02): chosen here, then back to looking for it.
+  const app = studio.workspace("D-Apps-DeepSeek Harness");
+  mkdirSync(join(app, "resources"), { recursive: true });
+  writeFileSync(join(app, "DeepSeek Harness.exe"), "");
+  // A real (empty) archive: the Host runs on Electron, whose fs takes a broken .asar for missing.
+  writeFileSync(join(app, "resources", "app.asar"), emptyAsar());
+  await section.getByTestId("dsh-desktop-path").fill(join(studio.workspace("nowhere")));
+  await section.getByTestId("dsh-desktop-save").click();
+  await expect(dialog.getByText(/里没有 DeepSeek Harness 桌面版/)).toBeVisible();
+  await section.getByTestId("dsh-desktop-path").fill(app);
+  await section.getByTestId("dsh-desktop-save").click();
+  await expect(section.getByTestId("dsh-desktop")).toContainText(`${app}，你选的文件夹`);
+  await expect(section.getByText("现在用的是桌面版")).toBeVisible();
+  await screenshot(studio.app, "studio", "dsh-desktop-chosen", page);
+  await section.getByTestId("dsh-desktop-clear").click();
+  await expect(section.getByTestId("dsh-desktop")).toContainText("没找到 DeepSeek Harness 桌面版");
+  await expect(section.getByText("现在用的是源码克隆")).toBeVisible();
+});
+
+test("设置 → 模型 → DeepSeek: signs in with the DSH desktop app's account or an API key (2026-11-03)", async () => {
+  // The desktop app's DSH home of this test, never this machine's.
+  const home = mkdtempSync(join(tmpdir(), "amo-e2e-dsh-home-"));
+  try {
+    studio = await launchStudio({ dsh: true, env: { DSH_HOME: home } });
+    const { page } = studio;
+    await page.getByRole("button", { name: "设置" }).click();
+    const dialog = page.getByRole("dialog", { name: "设置" });
+    await dialog.getByRole("tab", { name: "模型" }).click();
+    await dialog.locator('[data-testid="channel-nav"][data-id="dsh-mock"]').click();
+    const section = dialog.getByTestId("dsh-section");
+    // A key is saved here: it is what DeepSeek uses until the account is chosen.
+    await expect(section.getByTestId("dsh-auth-key")).toHaveAttribute("aria-pressed", "true");
+    await expect(section.getByTestId("dsh-key")).toContainText("Key 已保存");
+    await expect(section.getByTestId("dsh-key-input")).toHaveAttribute("type", "password");
+
+    await section.getByTestId("dsh-auth-account").click();
+    await expect(section.getByTestId("dsh-auth-account")).toHaveAttribute("aria-pressed", "true");
+    await expect(section.getByTestId("dsh-account")).toContainText("桌面版还没有登录 DeepSeek 账号");
+    await screenshot(studio.app, "studio", "dsh-auth-signed-out", page);
+    // Signed in in the app: 重新检测 finds it.
+    writeFileSync(join(home, ".credentials.yaml"), ["version: 1", "records:", "  deepseek-account-platform/default:", "    kind: grant", ""].join("\n"));
+    await section.getByTestId("dsh-account-recheck").click();
+    await expect(section.getByTestId("dsh-account")).toContainText("✓ 桌面版已登录 DeepSeek 账号");
+    await expect(section.getByTestId("dsh-account")).toContainText(join(home, ".credentials.yaml"));
+    await screenshot(studio.app, "studio", "dsh-auth-account", page);
+    const choices = await studio.api<{ models: Array<{ id: string }> }>("GET", "/api/profiles/dsh-mock/choices");
+    expect(choices.models.map((m) => m.id)).toEqual(["deepseek-account/deepseek-flash", "deepseek-account/deepseek-v4-pro"]);
+
+    await section.getByTestId("dsh-auth-key").click();
+    await expect(section.getByTestId("dsh-key")).toContainText("Key 已保存");
+    await screenshot(studio.app, "studio", "dsh-auth-key", page);
+  } finally {
+    await studio?.close();
+    studio = undefined;
+    removeTempDir(home);
+  }
 });

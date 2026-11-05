@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { DshStatus, ModelProfile, ProfileChoices, Session, SessionItem, StateSnapshot, Task, Workspace } from "@amo-studio/protocol";
+import type { CredentialStatus, DshStatus, ModelProfile, ProfileChoices, Session, SessionItem, StateSnapshot, Task, Workspace } from "@amo-studio/protocol";
 import { fakeAcpAgent, removeTempDir, TINY_PNG_BASE64 } from "@amo-studio/testkit";
 import { startHost, type RunningHost } from "../../host-process.js";
 import { FakeServers } from "../codex/fake-servers.test-support.js";
@@ -62,6 +62,7 @@ const items = (host: RunningHost, id: string) => call<SessionItem[]>(host, "GET"
 const status = async (host: RunningHost, id: string) => (await call<StateSnapshot>(host, "GET", "/api/state")).sessions.find((s) => s.id === id)?.status;
 const replies = (list: SessionItem[]) => list.filter((i) => i.type === "agent").map((i) => (i.type === "agent" ? i.markdown : ""));
 const idle = (host: RunningHost, id: string) => until(() => status(host, id), (s) => s === "idle");
+const userRow = (list: SessionItem[], text: string) => list.find((i): i is Extract<SessionItem, { type: "user" }> => i.type === "user" && i.text === text);
 
 async function start(host: RunningHost, text: string): Promise<Session> {
   const ws = await call<Workspace>(host, "POST", "/api/workspaces", { path: join(root, "ws") });
@@ -75,8 +76,13 @@ beforeEach(() => {
   mkdirSync(join(root, "ws"));
 });
 
+/** The person's own DSH home (where the desktop app keeps its sign-in); some tests point it at their own. */
+const DSH_HOME = process.env.DSH_HOME;
+
 afterEach(async () => {
   for (const h of running.splice(0)) await h.shutdown();
+  if (DSH_HOME === undefined) delete process.env.DSH_HOME;
+  else process.env.DSH_HOME = DSH_HOME;
   removeTempDir(root);
 });
 
@@ -137,18 +143,57 @@ describe("DSH runtime", () => {
     expect(list.filter((i) => i.type === "approval").map((i) => (i.type === "approval" ? i.state : ""))).toEqual(["accepted", "declined"]);
   });
 
-  it("queues a message sent while a turn runs; stopping ends the turn and drops the queue", async () => {
+  it("makes what a DSH goal does by itself after the prompt turns of their own: running meanwhile, one per round, each ended after its reply (问题 #13)", async () => {
+    const host = await boot({ dshAutoQuietMs: 400 });
+    const s = await start(host, "做到底 [[goal: 2]]");
+    await until(() => items(host, s.id), (l) => replies(l).includes("ROUND 1 DONE"));
+    expect(await status(host, s.id)).toBe("running");
+    await until(() => items(host, s.id), (l) => replies(l).includes("ROUND 2 DONE"));
+    await idle(host, s.id);
+    const list = await items(host, s.id);
+    const turns = list.filter((i) => i.type === "turn");
+    expect(turns.map((t) => (t.type === "turn" ? t.state : ""))).toEqual(["completed", "completed", "completed"]);
+    // Every row has its turn; each round's reply is the last row of its own.
+    expect(list.filter((i) => i.type !== "user" && i.type !== "turn").every((i) => !!i.raw?.turnId)).toBe(true);
+    const repliesOf = (t: SessionItem) => replies(list.filter((i) => t.type === "turn" && i.raw?.turnId === t.turnId));
+    expect(turns.map(repliesOf)).toEqual([["MOCK-DSH: 做到底 [[goal: 2]]"], ["ROUND 1 DONE"], ["ROUND 2 DONE"]]);
+  });
+
+  it("停止 stops a DSH goal going on by itself; a message sent meanwhile ends that turn and starts the person's (问题 #13)", async () => {
+    const host = await boot({ dshAutoQuietMs: 400 });
+    const s = await start(host, "做 [[goal: 1 slow]]");
+    await until(() => items(host, s.id), (l) => l.some((i) => i.type === "tool"));
+    expect(await status(host, s.id)).toBe("running");
+    await call(host, "POST", `/api/sessions/${s.id}/interrupt`);
+    await idle(host, s.id);
+    let list = await items(host, s.id);
+    expect(list.filter((i) => i.type === "turn").map((t) => (t.type === "turn" ? t.state : ""))).toEqual(["completed", "interrupted"]);
+    // DSH's last update while stopping (the call aborted) stays in the stopped turn.
+    expect(list.find((i) => i.type === "tool")).toMatchObject({ status: "failed" });
+
+    await call(host, "POST", `/api/sessions/${s.id}/messages`, { text: "再来 [[goal: 1 slow]]" });
+    await until(() => items(host, s.id), (l) => l.filter((i) => i.type === "tool").length === 2 && l.filter((i) => i.type === "turn").length === 4);
+    expect((await call<{ mode: string }>(host, "POST", `/api/sessions/${s.id}/messages`, { text: "先停一下" })).mode).toBe("start");
+    await until(() => items(host, s.id), (l) => replies(l).includes("MOCK-DSH: 先停一下"));
+    await idle(host, s.id);
+    list = await items(host, s.id);
+    expect(list.filter((i) => i.type === "turn").map((t) => (t.type === "turn" ? t.state : ""))).toEqual(["completed", "interrupted", "completed", "completed", "completed"]);
+  });
+
+  it("queues a message sent while a turn runs (waiting); 停止 ends the turn and the message goes on as the next (2026-11-04)", async () => {
     const host = await boot();
     const s = await start(host, "[[slow]]");
     await until(() => items(host, s.id), (l) => l.some((i) => i.type === "tool"));
     const sent = await call<{ mode: string }>(host, "POST", `/api/sessions/${s.id}/messages`, { text: "还有一件事" });
     expect(sent.mode).toBe("queue");
+    expect(userRow(await items(host, s.id), "还有一件事")).toMatchObject({ delivery: "waiting" });
     await call(host, "POST", `/api/sessions/${s.id}/interrupt`);
+    await until(() => items(host, s.id), (l) => replies(l).includes("MOCK-DSH: 还有一件事"));
     await idle(host, s.id);
     const list = await items(host, s.id);
-    expect(list.find((i) => i.type === "turn")).toMatchObject({ state: "interrupted" });
+    expect(list.filter((i) => i.type === "turn").map((t) => (t.type === "turn" ? t.state : ""))).toEqual(["interrupted", "completed"]);
     expect(list.find((i) => i.type === "tool")).toMatchObject({ status: "failed" });
-    expect(list.some((i) => i.type === "notice" && i.message.includes("排队的 1 条消息没有发出"))).toBe(true);
+    expect(userRow(list, "还有一件事")?.delivery).toBeUndefined();
 
     // A queued message is sent once the turn ends.
     await call(host, "POST", `/api/sessions/${s.id}/messages`, { text: "[[ask: x]]" });
@@ -171,6 +216,24 @@ describe("DSH runtime", () => {
     await call(host, "POST", `/api/sessions/${s.id}/messages`, { text: "[[mcp: canvas_place]]" });
     await until(() => items(host, s.id), (l) => replies(l).length === 2);
     expect(replies(await items(host, s.id))[1]).toContain("NO TOOL canvas_place");
+  });
+
+  it("gives the session's other MCP servers (Studio's and the person's), and a change from its next message", async () => {
+    // The person's Claude Code config, in a dir of the test's own (the Host never reads the real ~/.claude.json here).
+    const claudeDir = join(root, "claude-local");
+    mkdirSync(claudeDir, { recursive: true });
+    writeFileSync(join(claudeDir, ".claude.json"), JSON.stringify({ mcpServers: { figma: { type: "http", url: "https://mcp.figma.com/mcp" }, "amo-relay": { command: "node" } } }));
+    const host = await boot({ localClaudeHome: claudeDir });
+    await call(host, "POST", "/api/mcp/servers", { name: "img", spec: { command: "npx", args: ["img-mcp"], env: { KEY: "k" } } });
+    const s = await start(host, "[[mcp-list]]");
+    await idle(host, s.id);
+    expect(replies(await items(host, s.id))[0]).toBe("MCP-LIST amo:http,figma:http,img:stdio");
+    const changed = await call<{ apply: string; entries: Array<{ name: string; on: boolean }> }>(host, "PUT", `/api/sessions/${s.id}/mcp`, { choices: { figma: false, "amo-relay": true } });
+    expect(changed.apply).toBe("next-message");
+    expect(Object.fromEntries(changed.entries.map((e) => [e.name, e.on]))).toMatchObject({ figma: false, "amo-relay": true, img: true });
+    await call(host, "POST", `/api/sessions/${s.id}/messages`, { text: "[[mcp-list]]" });
+    await until(() => items(host, s.id), (l) => replies(l).length === 2);
+    expect(replies(await items(host, s.id))[1]).toBe("MCP-LIST amo:http,amo-relay:stdio,img:stdio");
   });
 
   it("resumes the DSH session after a Host restart; model, effort and permission go to DSH", async () => {
@@ -444,6 +507,120 @@ describe("DSH runtime", () => {
     const last = replies(await items(host, session.id)).at(-1)!;
     expect(last).toMatch(/sessionId/);
     expect(last).not.toMatch(/"sandbox"/);
+  });
+
+  it("signs in with the DSH desktop app's DeepSeek account when no key is saved: no key, the app's credentials file, the account's models (2026-11-03)", async () => {
+    const appHome = join(root, "desktop-home");
+    mkdirSync(appHome);
+    const file = join(appHome, ".credentials.yaml");
+    writeFileSync(file, "version: 1\nrecords:\n  deepseek-account-platform/default:\n    kind: grant\n");
+    process.env.DSH_HOME = appHome;
+    const host = await boot({ credentials: new StaticCredentialReader({}) });
+    expect(await call<DshStatus>(host, "GET", "/api/dsh")).toMatchObject({ auth: "account", keySaved: false, account: { file, signedIn: true } });
+    const checked = await call<DshStatus>(host, "POST", "/api/dsh/check");
+    expect(checked.check).toMatchObject({ ok: true, message: "可用 · ACP 1 · 2 个型号 · 用桌面版登录的 DeepSeek 账号" });
+    // Only the account's models (DSH also lists the key's route when the app's file holds a key).
+    const choices = await call<ProfileChoices>(host, "GET", "/api/profiles/dsh-deepseek/choices");
+    expect(choices.models.map((m) => m.id)).toEqual(["deepseek-account/deepseek-flash", "deepseek-account/deepseek-v4-pro"]);
+    expect(choices.models[0]).toMatchObject({ isDefault: true });
+
+    const s = await start(host, "[[auth]]");
+    await until(() => items(host, s.id), (l) => replies(l).length === 1);
+    expect(replies(await items(host, s.id))[0]).toBe(`AUTH key=no credentials=${file} model=["deepseek-account","deepseek-flash"]`);
+    await idle(host, s.id);
+    await call(host, "PATCH", `/api/sessions/${s.id}/options`, { model: "deepseek-account/deepseek-v4-pro" });
+    await call(host, "POST", `/api/sessions/${s.id}/messages`, { text: "[[auth]]" });
+    await until(() => items(host, s.id), (l) => replies(l).length === 2);
+    expect(replies(await items(host, s.id))[1]).toBe(`AUTH key=no credentials=${file} model=["deepseek-account","deepseek-v4-pro"]`);
+    await idle(host, s.id);
+
+    // Signed out in the app: a new session says what to do.
+    writeFileSync(file, "version: 1\nrecords: {}\n");
+    expect((await call<DshStatus>(host, "GET", "/api/dsh")).account.signedIn).toBe(false);
+    await expect(call(host, "POST", "/api/tasks", { title: "没登录", workspaceId: s.workspaceId, firstSession: { profileId: "dsh-deepseek", text: "hi" } })).rejects.toThrow(/桌面版还没有登录 DeepSeek 账号/);
+  });
+
+  it("an API key typed in 设置 is saved and given to DSH; 「API Key」 without one says so (2026-11-03)", async () => {
+    process.env.DSH_HOME = join(root, "no-desktop-app");
+    const host = await boot({ credentials: new StaticCredentialReader({}) });
+    expect(await call<DshStatus>(host, "PUT", "/api/dsh", { auth: "key" })).toMatchObject({ auth: "key", keySaved: false });
+    const ws = await call<Workspace>(host, "POST", "/api/workspaces", { path: join(root, "ws") });
+    const task = (text: string) => call<{ task: Task; session: Session }>(host, "POST", "/api/tasks", { title: "DSH 任务", workspaceId: ws.id, firstSession: { profileId: "dsh-deepseek", text } });
+    await expect(task("hi")).rejects.toThrow(/还没有 DeepSeek 的 API Key/);
+
+    const saved = await call<CredentialStatus[]>(host, "PUT", "/api/credentials/deepseek-v4", { secret: "sk-typed" });
+    expect(saved.find((c) => c.id === "deepseek-v4")).toMatchObject({ saved: true, writable: true, usedBy: ["DeepSeek"] });
+    expect(await call<DshStatus>(host, "GET", "/api/dsh")).toMatchObject({ auth: "key", keySaved: true });
+    const { session } = await task("[[endpoint]]");
+    await until(() => items(host, session.id), (l) => replies(l).length === 1);
+    expect(replies(await items(host, session.id))[0]).toMatch(/^ENDPOINT base= key=sk-typed model=\["deepseek-official","deepseek-v4-flash"\]$/);
+  });
+
+  it("立即发送 and Ctrl+Enter: the running turn gives way and the waiting message goes at once (2026-11-04)", async () => {
+    const host = await boot();
+    const s = await start(host, "[[slow]]");
+    await until(() => items(host, s.id), (l) => l.some((i) => i.type === "tool"));
+    await call(host, "POST", `/api/sessions/${s.id}/messages`, { text: "先看这个" });
+    const row = userRow(await items(host, s.id), "先看这个")!;
+    expect(row.delivery).toBe("waiting");
+    await call(host, "POST", `/api/sessions/${s.id}/items/${row.id}/send-now`);
+    await until(() => items(host, s.id), (l) => replies(l).includes("MOCK-DSH: 先看这个"));
+    await idle(host, s.id);
+    expect((await items(host, s.id)).filter((i) => i.type === "turn").map((t) => (t.type === "turn" ? t.state : ""))).toEqual(["interrupted", "completed"]);
+
+    // Ctrl+Enter (`now`) while a turn runs: the same, in one step.
+    await call(host, "POST", `/api/sessions/${s.id}/messages`, { text: "[[slow]]" });
+    await until(() => status(host, s.id), (v) => v === "running");
+    await until(() => items(host, s.id), (l) => l.filter((i) => i.type === "tool").length === 2);
+    expect((await call<{ mode: string }>(host, "POST", `/api/sessions/${s.id}/messages`, { text: "马上读", now: true })).mode).toBe("queue");
+    await until(() => items(host, s.id), (l) => replies(l).includes("MOCK-DSH: 马上读"));
+    await idle(host, s.id);
+  });
+
+  it("a turn that fails, or a process closed after 停止 went unanswered, leaves the waiting messages 没送到; 重新发送 sends them (2026-11-04)", async () => {
+    const host = await boot({ stopGraceMs: 500 });
+    const s = await start(host, "[[fail-after: 800]]");
+    await until(() => items(host, s.id), (l) => l.some((i) => i.type === "tool"));
+    await call(host, "POST", `/api/sessions/${s.id}/messages`, { text: "第二件事" });
+    await until(() => status(host, s.id), (v) => v === "error");
+    const lost = userRow(await items(host, s.id), "第二件事")!;
+    expect(lost.delivery).toBe("unsent");
+    expect(await call<{ mode: string }>(host, "POST", `/api/sessions/${s.id}/items/${lost.id}/resend`)).toMatchObject({ mode: "start" });
+    await until(() => items(host, s.id), (l) => replies(l).includes("MOCK-DSH: 第二件事"));
+    await idle(host, s.id);
+    // The same row went again: no second copy.
+    expect((await items(host, s.id)).filter((i) => i.type === "user" && i.text === "第二件事")).toHaveLength(1);
+    expect(userRow(await items(host, s.id), "第二件事")?.delivery).toBeUndefined();
+
+    // 停止 on a DSH that does not stop: its process is closed, the turn reads as stopped, what waited is 没送到.
+    await call(host, "POST", `/api/sessions/${s.id}/messages`, { text: "[[stuck]]" });
+    await until(() => items(host, s.id), (l) => l.filter((i) => i.type === "tool").length === 2);
+    await call(host, "POST", `/api/sessions/${s.id}/messages`, { text: "第三件事" });
+    await call(host, "POST", `/api/sessions/${s.id}/interrupt`);
+    await idle(host, s.id);
+    const list = await items(host, s.id);
+    expect(list.filter((i) => i.type === "turn").at(-1)).toMatchObject({ state: "interrupted" });
+    expect(list.some((i) => i.type === "notice" && i.message.includes("DSH 还没停下"))).toBe(true);
+    expect(list.some((i) => i.type === "error" && list.indexOf(i) > list.indexOf(userRow(list, "[[stuck]]")!))).toBe(false);
+    expect(userRow(list, "第三件事")).toMatchObject({ delivery: "unsent" });
+  });
+
+  it("a message waiting when the Host stops is 没送到 after the restart, and can be sent again (2026-11-04)", async () => {
+    let host = await boot();
+    const s = await start(host, "[[slow]]");
+    await until(() => items(host, s.id), (l) => l.some((i) => i.type === "tool"));
+    await call(host, "POST", `/api/sessions/${s.id}/messages`, { text: "还没读到" });
+    await running.pop()!.shutdown();
+
+    host = await boot();
+    const list = await items(host, s.id);
+    expect(await status(host, s.id)).toBe("interrupted");
+    expect(list.find((i) => i.type === "turn")).toMatchObject({ state: "interrupted" });
+    const row = userRow(list, "还没读到")!;
+    expect(row.delivery).toBe("unsent");
+    await call(host, "POST", `/api/sessions/${s.id}/items/${row.id}/resend`);
+    await until(() => items(host, s.id), (l) => replies(l).includes("MOCK-DSH: 还没读到"));
+    await idle(host, s.id);
   });
 
   it("fails a turn when DSH fails it", async () => {

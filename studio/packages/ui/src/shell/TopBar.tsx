@@ -3,6 +3,8 @@ import type { Scope } from "../board/Board.js";
 import { scratchpadBridge } from "../scratchpad/bridge.js";
 import { showToast } from "../lib/toast.js";
 import type { AnyViewDef, View } from "./views.js";
+import { RemoteIcon } from "./BackButton.js";
+import { WindowControls } from "./WindowControls.js";
 
 /** Focus window on/off, mirrored from the Electron shell (absent in a plain browser). */
 export function useFocusToggle(): { on: boolean; available: boolean; set(on: boolean): void } {
@@ -16,21 +18,9 @@ export function useFocusToggle(): { on: boolean; available: boolean; set(on: boo
   return { on, available: !!api, set: (next) => void api?.set(next) };
 }
 
-/** 置顶 (stage 14): the workbench window above other windows, mirrored from the Electron shell. */
-export function usePinToggle(): { on: boolean; available: boolean; set(on: boolean): void } {
-  const api = window.amo?.pin;
-  const [on, setOn] = useState(false);
-  useEffect(() => {
-    if (!api) return;
-    void api.get().then(setOn);
-    return api.onChange(setOn);
-  }, [api]);
-  return { on, available: !!api, set: (next) => void api?.set(next) };
-}
-
 /**
- * The top bar, which is also the window's title bar: brand and scope, what needs the person, the marks, scratchpad and
- * Focus windows, and the window buttons. The views' tabs and "+ 新任务" sit in the row below (ViewBar).
+ * The top bar, which is also the window's title bar: brand and scope, what needs the person, the marks, 远程 (its own
+ * page), scratchpad and Focus windows, and the window buttons. The views' tabs and "+ 新任务" sit in the row below (ViewBar).
  */
 export function TopBar({
   onView,
@@ -39,17 +29,20 @@ export function TopBar({
   needs,
   scopeName,
   focus,
-  pin,
   mark = "./icon.svg",
+  remote,
+  duty,
 }: {
+  /** 值守 (2026-10-31): shown once there are items — how many are on, ◐ while one runs; opens the 值守 dialog. */
+  duty?: { on: number; total: number; running: boolean; open(): void };
+  /** 远程 (2026-10-29): the button that opens the remote page (remote/remote.ts remoteButton says what it shows). */
+  remote?: { shown: boolean; label: string; waiting: boolean; sync?: { done: number; total: number }; current: boolean; open(): void };
   /** The top-left icon: 「AMO 娘」's while she is the 桌宠 (focus/mascot.ts), else the app's viewfinder. */
   mark?: string | undefined;
   /** 后退 / 前进 (2026-10-19). */
   nav?: { canBack: boolean; canForward: boolean; go(dir: -1 | 1): void };
   onView(view: View): void;
   focus: { on: boolean; available: boolean; set(on: boolean): void };
-  /** 置顶 (stage 14). */
-  pin?: { on: boolean; available: boolean; set(on: boolean): void };
   /** 书签 (文件标记 before 2026-10-19): the bookmarks window. */
   onMarks?: () => void;
   needs: number;
@@ -59,8 +52,8 @@ export function TopBar({
   return (
     <header className="topbar">
       <div className="brand">
-        <img className="brand-mark" src={mark} alt="" aria-hidden="true" data-testid="brand-mark" />
-        <span className="brand-name">WorkStudio</span>
+        <img className={mark.includes("/mascot/") ? "brand-mark mascot" : "brand-mark"} src={mark} alt="" aria-hidden="true" data-testid="brand-mark" />
+        <span className="brand-name">AMO Studio</span>
         {scopeName && (
           <>
             <span className="brand-sep">/</span>
@@ -97,6 +90,42 @@ export function TopBar({
           书签
         </button>
       )}
+      {duty && duty.total > 0 && (
+        <button
+          type="button"
+          className="tb-btn duty-toggle-btn"
+          title={duty.running ? "值守：有一项正在运行。点开看每一项上次做了什么、下次什么时候" : "值守：到点自动做事的项。点开看每一项上次做了什么、下次什么时候"}
+          onClick={duty.open}
+          data-testid="topbar-duty"
+          data-on={duty.on > 0 || undefined}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <circle cx="8" cy="8.5" r="5.5" />
+            <path d="M8 5.5v3l2 1.5M6.5 1.5h3" />
+          </svg>
+          值守{duty.running ? " ◐" : ""} {duty.on > 0 ? `${duty.on} 项开着` : "都关着"}
+        </button>
+      )}
+      {remote?.shown && (
+        <button
+          type="button"
+          className="tb-btn remote-toggle"
+          aria-current={remote.current ? "page" : undefined}
+          title={remote.sync ? "远程：正在补同步离开这段时间别的电脑上的进展，补完一次显示" : remote.waiting ? "远程：有配对请求、任务请求或对方的回复等你看" : "远程：你的其他设备、授权给它们的任务、在别的设备上跑的任务"}
+          onClick={remote.open}
+          data-testid="topbar-remote"
+          data-syncing={remote.sync ? "" : undefined}
+        >
+          <RemoteIcon />
+          {remote.label}
+          {remote.sync && (
+            <span className="remote-sync-bar" aria-hidden="true" data-testid="topbar-remote-sync">
+              <span style={{ width: `${Math.round((remote.sync.done / Math.max(1, remote.sync.total)) * 100)}%` }} />
+            </span>
+          )}
+          {remote.waiting && <span className="settings-dot" aria-label="有请求或回复等你看" data-testid="topbar-remote-dot" />}
+        </button>
+      )}
       {scratchpad && (
         <button type="button" className="tb-btn" title="打开便签（它是单独的小程序，也可以用它的全局快捷键）" onClick={() => void scratchpad.open().catch((err: unknown) => showToast({ text: err instanceof Error ? err.message : String(err), error: true }))} data-testid="open-scratchpad">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
@@ -124,24 +153,9 @@ export function TopBar({
           <span className="focus-state" aria-hidden="true" />
         </button>
       )}
-      {pin?.available && (
-        <button
-          type="button"
-          className="tb-btn focus-toggle pin-toggle"
-          aria-pressed={pin.on}
-          title={pin.on ? "置顶已开：工作台窗口一直浮在其他窗口上面。点击关闭" : "置顶：让工作台窗口一直浮在其他窗口上面"}
-          onClick={() => pin.set(!pin.on)}
-          data-testid="pin-toggle"
-        >
-          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-            <path className="fill" d="M6 2.5h4l-.6 4.2 2.1 2.3H4.5l2.1-2.3Z" />
-            <path d="M6 2.5h4l-.6 4.2 2.1 2.3H4.5l2.1-2.3ZM8 9v4.5" />
-          </svg>
-          置顶
-          <span className="focus-state" aria-hidden="true" />
-        </button>
-      )}
-      <WindowControls />
+      {/* 置顶 (stage 14) is gone (2026-10-31, 问题 #4: the workbench never needs to float); the viewer and Git Review keep theirs. */}
+      {/* 2026-10-29: × only hides the window; Studio and the sessions go on in the tray (完全退出 is in the tray's menu). */}
+      <WindowControls closeTitle="关闭窗口（Studio 留在托盘里，会话继续；完全退出在托盘图标的右键菜单里）" />
     </header>
   );
 }
@@ -185,38 +199,6 @@ export function ViewBar({
       {search}
       <button type="button" className="btn-primary" onClick={onNew} disabled={disabled} title="新建任务（Ctrl N 在任何页面打开快速启动条）">
         + 新任务
-      </button>
-    </div>
-  );
-}
-
-/** Minimise, maximise / restore and close, drawn by the page in its own style (the window has no system title bar). */
-function WindowControls() {
-  const api = window.amo?.windowControls;
-  const [maximized, setMaximized] = useState(false);
-  useEffect(() => {
-    if (!api) return;
-    void api.isMaximized().then(setMaximized);
-    return api.onMaximized(setMaximized);
-  }, [api]);
-  if (!api) return null;
-  return (
-    <div className="win-controls" role="group" aria-label="窗口">
-      <button type="button" className="win-btn" aria-label="最小化" title="最小化" onClick={api.minimize}>
-        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-          <path d="M0.5 5.5 H9.5" />
-        </svg>
-      </button>
-      <button type="button" className="win-btn" aria-label={maximized ? "还原" : "最大化"} title={maximized ? "还原" : "最大化"} onClick={api.toggleMaximize}>
-        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-          {maximized ? <path d="M2.5 2.5 V0.5 H9.5 V7.5 H7.5 M0.5 2.5 H7.5 V9.5 H0.5 Z" /> : <path d="M0.5 0.5 H9.5 V9.5 H0.5 Z" />}
-        </svg>
-      </button>
-      {/* 2026-10-29: × only hides the window; Studio and the sessions go on in the tray (完全退出 is in the tray's menu). */}
-      <button type="button" className="win-btn close" aria-label="关闭" title="关闭窗口（Studio 留在托盘里，会话继续；完全退出在托盘图标的右键菜单里）" onClick={api.close}>
-        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-          <path d="M0.5 0.5 L9.5 9.5 M9.5 0.5 L0.5 9.5" />
-        </svg>
       </button>
     </div>
   );

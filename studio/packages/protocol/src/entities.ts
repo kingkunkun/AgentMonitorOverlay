@@ -42,6 +42,11 @@ export interface Task {
   /** What the task is about (2026-10-17): on its canvas card and task page; the person and agents write it (TASK_DESCRIPTION_MAX). */
   description?: string;
   /**
+   * 放进待办 with a first sentence (2026-11-05, the user: where did it go, and a new session did not take it): kept here
+   * until the task's first session takes it into its composer (TASK_FIRST_MESSAGE_MAX).
+   */
+  firstMessage?: string;
+  /**
    * 主控 (stage 16, from the stage 15 design): the person marks a task as the one that coordinates its topic (or its
    * project when it is in none). Its sessions get the 主控 role card and may propose tasks and relay messages.
    */
@@ -141,6 +146,11 @@ export interface SessionOptions {
    * person's own Codex config applies); false = chosen off (standard speed is sent). Ignored by other runtimes.
    */
   fast?: boolean;
+  /**
+   * MCP 设置 (2026-11-04): the session's own choices by server name (true on, false off); the rest follow its project and
+   * the global ones. A new session of a task copies them from the task's latest main session.
+   */
+  mcp?: Record<string, boolean>;
 }
 
 /**
@@ -182,7 +192,16 @@ export interface Session {
   createdAt: Timestamp;
   updatedAt: Timestamp;
   archivedAt: Timestamp | null;
+  /**
+   * When its last turn ended (2026-11-04): the status became idle, completed, interrupted or error. Only that writes it,
+   * so Focus's 完成待审核 / 出错 follow it, not updatedAt, which renaming, settings, archiving and restoring move too.
+   * null: no turn has ended yet. Absent: from a Host before it — readers take updatedAt.
+   */
+  endedAt?: Timestamp | null;
 }
+
+/** The statuses a session is in once a turn has ended. */
+export const ENDED_STATUSES: readonly SessionStatus[] = ["idle", "completed", "interrupted", "error"];
 
 /**
  * A Claude session that goes on by itself (stage 15, 2026-10-16). Studio keeps its Claude Code process while this is
@@ -319,6 +338,14 @@ export interface MessageImage {
 }
 
 /**
+ * Where a message stands before the model read it (see the `user` item). `waiting`: sent mid-turn, at the runtime, not
+ * read yet (立即发送, 2026-11-02). `unsent`: its process went (or it could not go in) before the model read it; 重新发送
+ * sends it again. `held` (2026-11-04, plans/message-delivery.md): from an agent or from Studio (中转回复, 值守, 传话,
+ * session_send…), in the session's inbox until the session is free — then it goes in by itself.
+ */
+export type UserDelivery = "waiting" | "unsent" | "held";
+
+/**
  * What a notice offers to do (2026-10-23). `folder-access`: DSH's write sandbox cannot be set up on the session's
  * folder for want of the person's full control of it; POST /api/sessions/:id/folder-access gives it. `state` follows
  * the fix (the row is updated in place).
@@ -348,11 +375,20 @@ export interface FolderAccessStatus {
   scannedAt?: string;
   error?: string;
   backup?: string;
+  /**
+   * An archived project whose folder still has DSH's setup (2026-10-30, the user archived a set-up project and found
+   * it still Low when it came back): listed so it can be put back; only 恢复原来的权限 is offered.
+   */
+  archived?: boolean;
 }
 
 export type SessionItem =
-  /** `images`: pictures sent with the message (stage 11). */
-  | (ItemBase & { type: "user"; text: string; images?: MessageImage[] })
+  /**
+   * `images`: pictures sent with the message (stage 11). `delivery` (立即发送, 2026-11-02): `waiting` — sent while a turn
+   * ran and not read by the model yet (Claude reads it after the next tool call or at the turn's end, Codex at its next
+   * step); `unsent` — its process went before it was read (it can be sent again). Absent: it reached the model.
+   */
+  | (ItemBase & { type: "user"; text: string; images?: MessageImage[]; delivery?: UserDelivery })
   | (ItemBase & { type: "agent"; markdown: string; streaming: boolean })
   /** The model's thinking before or between steps. */
   | (ItemBase & { type: "reasoning"; text: string; streaming: boolean; durationMs?: number })
@@ -512,10 +548,50 @@ export interface Relay {
   error?: string;
 }
 export const RELAY_TEXT_MAX = 20_000;
+
+/**
+ * 会话里用中转 (2026-10-30, plans/relay-in-sessions.md): what a session asked to send through AMO 中转 — a new session
+ * for someone to confirm (ask) or a follow-up in one (followup). Every one waits for the person first, in auto mode too
+ * (it goes to a real person); sent as the person, marked as their AI's (AI 代发).
+ */
+export interface TeamSend {
+  id: Id;
+  /** The Studio session that asked. */
+  sessionId: Id;
+  kind: "ask" | "followup";
+  to: string;
+  title: string;
+  /** followup: the 中转 session; ask: set once sent. */
+  threadId: string | null;
+  body: string;
+  questions: Array<{ text: string; options?: string[] }>;
+  /** Local files to take along (ask). */
+  files: string[];
+  state: "pending" | "sent" | "dismissed" | "failed";
+  createdAt: Timestamp;
+  decidedAt: Timestamp | null;
+  error?: string;
+}
+export const TEAM_SEND_FILES_MAX = 5;
+
+/** A 中转 session one of this computer's sessions sent, as last seen on the team server (「等 X 回复（中转）」). */
+export interface TeamThread {
+  threadId: string;
+  sessionId: Id;
+  title: string;
+  to: string;
+  state: "open" | "returned" | "done";
+  /** When it last went to `to` (open) or came back (returned), ms. */
+  since: number;
+  /** When the last reply went back into the session, ms. */
+  deliveredAt: number | null;
+}
 export const TOPIC_DOC_BODY_MAX = 50_000;
 
 /** The longest task description (characters). */
 export const TASK_DESCRIPTION_MAX = 2000;
+/** A filed task's first sentence: a prompt can be long. */
+export const TASK_FIRST_MESSAGE_MAX = 20_000;
 
 /** A mark on a canvas card, note or group (2026-10-17): its outline takes the colour; what it means is the person's. */
 export type CanvasColor = "red" | "yellow" | "green" | "blue";
@@ -681,7 +757,8 @@ export interface ScheduleProposal {
   decidedAt: Timestamp | null;
 }
 
-/** One step of a task's checklist, from an extension pack's task template (stage 6). */
+/** One step of a task's checklist. They came from extension packs' task templates (stage 6); the packs went on 10-31, so
+ * nothing makes new ones — old tasks keep theirs, readable and tickable (the 11-03 audit: kept as is, plans/cleanup-2026-11.md). */
 export interface ChecklistItem {
   id: Id;
   taskId: Id;
@@ -731,19 +808,6 @@ export interface DecisionRequest {
   answeredAt: Timestamp | null;
 }
 
-/** Who owns a session. */
-export type SessionOwner = { kind: "task"; taskId: Id } | { kind: "topic"; topicId: Id };
-
-export function sessionOwner(s: Pick<Session, "taskId" | "topicId">): SessionOwner {
-  if (s.taskId) return { kind: "task", taskId: s.taskId };
-  if (s.topicId) return { kind: "topic", topicId: s.topicId };
-  throw new Error("session has no owner");
-}
-
-/** Sessions with the same owner (a task's or a topic's). */
-export const sameOwner = (a: Pick<Session, "taskId" | "topicId">, b: Pick<Session, "taskId" | "topicId">) =>
-  (a.taskId ?? null) === (b.taskId ?? null) && (a.topicId ?? null) === (b.topicId ?? null);
-
 /** One quota window of a subscription (e.g. GPT's 5-hour and weekly limits). */
 export interface UsageWindow {
   /** "5 小时", "每周", "Opus 每周"… */
@@ -763,4 +827,9 @@ export interface AccountUsage {
   note: string | null;
   /** When these numbers were read; null when never. */
   updatedAt: Timestamp | null;
+  /**
+   * Claude 多账号 (2026-11-03): which of the Claude subscription's accounts this is; one entry per account, the current
+   * one first. Absent for every other subscription (and for Claude with a single account).
+   */
+  account?: { id: Id; label: string; current: boolean };
 }

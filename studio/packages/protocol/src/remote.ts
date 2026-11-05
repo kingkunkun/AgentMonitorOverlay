@@ -1,17 +1,19 @@
 // 远程 (plans/remote-session.md, step 1, 2026-10-29): this computer as a device on the team server, the devices paired
-// with it, and pairing requests. The Host keeps the connection (features/remote/); 设置 → 远程 and Focus show this.
+// with it, and pairing requests. The Host keeps the connection (features/remote/); the remote page (顶栏「远程」, 设置 → 远程 until 2026-10-29) and Focus show this.
 // Needs the AMO platform's login (%APPDATA%\AMO\account.json): Studio has no login of its own.
 
 import type { ApprovalDecision } from "./api.js";
 import type { Id, Session, SessionItem, TaskColumn, Timestamp } from "./entities.js";
 import type { QuestionReply } from "./questions.js";
+import { composeGitReviewMessage } from "./gitreview.js";
 
 /**
  * off: the Host was started without remote (tests, the Reviewer); no-account: nobody logged in in the AMO platform;
+ * disabled: logged in, but the person has not turned remote on (2026-10-30: off until they do, per account);
  * connecting / online / offline (retrying at retryAt); unauthorized: the server no longer takes the login;
  * server-old: the team server has no devices channel yet; replaced: another program connected as this device.
  */
-export type RemoteConnectionState = "off" | "disabled" | "no-account" | "connecting" | "online" | "offline" | "unauthorized" | "server-old" | "replaced";
+export type RemoteConnectionState = "off" | "no-account" | "disabled" | "connecting" | "online" | "offline" | "unauthorized" | "server-old" | "replaced";
 
 export interface RemoteConnection {
   state: RemoteConnectionState;
@@ -55,7 +57,13 @@ export interface RemoteIncomingRequest {
 /** A request this computer sent. Allowed ones become a peer and leave this list. */
 export interface RemoteOutgoingRequest {
   id: string;
+  /** The account asked. */
   to: string;
+  /**
+   * 2026-10-29 (远程页的配对弹窗): the one device of that account asked, picked from its online devices — only it may
+   * answer. Absent: any device of the account (asked by account name, or an older team server).
+   */
+  toDevice?: { device: string; name: string };
   state: "pending" | "refused";
   /** The device that refused it. */
   answeredBy: string | null;
@@ -64,6 +72,11 @@ export interface RemoteOutgoingRequest {
 }
 
 export interface RemoteState {
+  /**
+   * 2026-10-30 (the user: 默认关闭，手动开启才开，未登录无法开启): whether the person turned remote on for the account
+   * logged in now. Off, this computer does not connect to the team server as a device; pairs and grants are kept.
+   */
+  enabled: boolean;
   /** This computer (device.json); null until the Host made it (it does when it starts remote). */
   device: RemoteDevice | null;
   /** The AMO platform's login, without the key. */
@@ -80,6 +93,39 @@ export interface RemoteState {
   taskRequests: RemoteTaskRequest[];
   /** Step 4, as B: what this computer asked paired devices to run, and their answers (until put away). */
   asks: RemoteTaskRequest[];
+  /** 远端允许的项目 (plans/remote-page-and-new-task.md 4.1, 2026-10-29): where paired devices may create tasks here. */
+  allowedProjects: RemoteAllowedProjects;
+  /** 安全 (2026-10-29): whether a task a paired device creates here starts at once or waits for a yes here. */
+  security: RemoteSecurity;
+  /**
+   * As B (2026-11-01, the user: 重连后先读条，一次性同步好): paired devices whose granted tasks this computer is catching
+   * up on after being away, once it has taken more than a moment; empty otherwise. Optional: an older Host has none.
+   */
+  syncing?: RemoteSyncing[];
+}
+
+/** One paired device's tasks being brought up to date here: `done` of `total` tasks; `taskId` the one under way. */
+export interface RemoteSyncing {
+  account: string;
+  device: string;
+  name: string;
+  done: number;
+  total: number;
+  taskId: Id | null;
+}
+
+/** Another device of this computer's own account, connected to the team server now (远程页的配对弹窗, 2026-10-29). */
+export interface RemoteOnlineDevice {
+  device: string;
+  name: string;
+  /** Since when it is connected. */
+  since: Timestamp;
+}
+
+export interface RemoteOnlineDevices {
+  devices: RemoteOnlineDevice[];
+  /** false: the team server cannot list them yet (its relay service is older); pairing by account name still works. */
+  supported: boolean;
 }
 
 export interface RemotePingResult {
@@ -141,7 +187,7 @@ export const REMOTE_PERMISSIONS = ["read-only", "write", "full"] as const;
 export type RemotePermission = (typeof REMOTE_PERMISSIONS)[number];
 export const REMOTE_PERMISSION_LABEL: Record<RemotePermission, string> = { "read-only": "只读", write: "可以改文件", full: "完全放开" };
 
-/** On A: 远端允许的默认配置 (设置 → 远程). */
+/** On A: 远端允许的默认配置 (远程页 → 远程设置). */
 export interface RemoteAllowed {
   /**
    * A's model profiles sessions started from a paired device may use. Empty: only those the task's own sessions already
@@ -192,14 +238,22 @@ export const REMOTE_KINDS = {
   task: "rt.task",
   /** B → A: a session's items after `since` (its last seq), in pieces. {sessionId, since} → RemoteItemsAnswer */
   items: "rt.items",
-  /** B → A: a message to a session. {sessionId, text} → {mode} */
+  /** B → A: a message to a session; `now`: 立即发送 (2026-11-02; an older A ignores it and queues). {sessionId, text, now?} → {mode} */
   send: "rt.send",
+  /** B → A (立即发送, 2026-11-02): a waiting message of the session goes to the model now. {sessionId, itemId} → {ok} */
+  sendNow: "rt.sendNow",
+  /** B → A (2026-11-02): a message the session's process never read goes again. {sessionId, itemId} → {mode} */
+  resend: "rt.resend",
   /** B → A: an approval answered; the first answer (here or on A) counts. {sessionId, approvalId, decision} → {ok} */
   approve: "rt.approve",
   /** B → A: a question answered. {sessionId, itemId, reply} → {ok} */
   answer: "rt.answer",
   /** B → A: stop the session's turn. {sessionId} → {ok} */
   interrupt: "rt.interrupt",
+  /** B → A (2026-10-30): a new name for the task ({taskId, title}) or one of its sessions ({sessionId, title}). → {ok} */
+  rename: "rt.rename",
+  /** B → A (2026-10-30): archive one session (its branches with it), or restore it. {sessionId, archived} → {ok} */
+  archive: "rt.archive",
   /** B → A: a new session in the task, on an allowed model. {taskId, profileId (A's), text?} → {session} */
   start: "rt.start",
   /**
@@ -213,6 +267,37 @@ export const REMOTE_KINDS = {
   withdraw: "rt.withdraw",
   /** B → A: B archived its copy of a granted task — the grant ends, A stops telling B about it. {taskId} → {ok} */
   drop: "rt.drop",
+  /** B → A (新任务页的远程模式, 2026-10-29): where B may create a task on A and on which models. {} → RemoteCatalog */
+  catalog: "rt.catalog",
+  /**
+   * B → A: create a task there now (no one on A says yes: 远端允许的项目 and 远端允许的模型 limit it), granted to B,
+   * its session started with `text`. RemoteCreateAsk → RemoteCreateAnswer
+   */
+  create: "rt.create",
+  /**
+   * B → A (2026-10-29 evening): one piece of a file B sends along with a message, a new session or a task it creates
+   * there — a picture or any file. The command that carries the message then names it (RemoteUpload). RemoteUploadAsk →
+   * {received}
+   */
+  upload: "rt.upload",
+  /**
+   * B → A (2026-10-31, the user: 「远程控制端可能看到被控端的模板」): the prompt templates a granted task's composer
+   * offers there (A's global ones and its project's). {taskId} → {templates: PromptTemplate[]}
+   */
+  templates: "rt.templates",
+  /**
+   * B → A (2026-10-31, 问题 #1: the new-task page's 「在别的设备上」 had no @): the templates a task created there from
+   * the catalog would offer — A's global ones, and the picked project's (`workspaceId`, one of the allowed; null: the
+   * common folder, global ones only). {workspaceId} → {templates: PromptTemplate[]}. Lower case: the server forwards
+   * only kinds of [a-z0-9._-] (FRAME_KIND_RE).
+   */
+  createTemplates: "rt.create-templates",
+  /**
+   * B → A (远程 Reviewer, plans/remote-reviewer.md, 2026-11-02): one read of the Reviewer on a granted task — its 查看包,
+   * the Git Review of its project, a file a pack names — as B's Reviewer asked its own Host for it. A checks it against
+   * the grant and the task's folder. RemoteViewAsk → RemoteViewAnswer
+   */
+  view: "rt.view",
   /** A → B: the answer to a command (`re` is its id). */
   ok: "rt.ok",
   /** A → B: something about a granted task changed (RemotePush). */
@@ -257,15 +342,18 @@ export interface RemoteCommandBodies {
   "rt.list": Record<string, never>;
   "rt.task": { taskId: Id };
   "rt.items": { sessionId: Id; since: number };
-  "rt.send": { sessionId: Id; text: string };
+  "rt.send": { sessionId: Id; text: string; uploads?: RemoteUpload[] };
   "rt.approve": { sessionId: Id; approvalId: string; decision: ApprovalDecision };
   "rt.answer": { sessionId: Id; itemId: Id; reply: QuestionReply };
   "rt.interrupt": { sessionId: Id };
-  "rt.start": { taskId: Id; profileId: Id; text?: string };
+  "rt.start": { taskId: Id; profileId: Id; text?: string; uploads?: RemoteUpload[] };
   "rt.file": RemoteFileAsk;
   "rt.request": RemoteTaskRequestAsk;
   "rt.withdraw": { requestId: string };
   "rt.drop": { taskId: Id };
+  "rt.catalog": Record<string, never>;
+  "rt.create": RemoteCreateAsk;
+  "rt.upload": RemoteUploadAsk;
 }
 
 /** A → B, unasked. B checks seq: a gap (or anything it cannot place) makes it ask for what it missed. */
@@ -281,7 +369,17 @@ export type RemotePush =
   /** Streaming text of an agent item (not stored on its own on either side). */
   | { type: "delta"; sessionId: Id; itemId: Id; append: string }
   /** Step 4: A's person answered one of B's requests. */
-  | { type: "request"; request: RemoteTaskRequest };
+  | { type: "request"; request: RemoteTaskRequest }
+  /**
+   * 2026-10-30 (the user: B's new-task page kept the old projects after A saved 远端允许的项目): what B may pick creating
+   * a task on A changed — sent to a device that asked for it (rt.catalog) since A's Host started. An older B ignores it.
+   */
+  | { type: "catalog"; catalog: RemoteCatalog }
+  /**
+   * 远程 Reviewer (2026-11-02): an agent of the task opened a 查看包 (`packId`, at `itemId`) or a Review of the task's
+   * project (`review`) for the person, in a turn this device's message started: it shows here. An older B ignores it.
+   */
+  | { type: "open"; taskId: Id; sessionId: Id; packId?: Id; itemId?: Id; review?: import("./gitreview.js").ReviewOpenTarget };
 
 // ---- Step 3 (2026-10-29): B looks at a remote task's files ---------------------------------------------------------
 // A link in a remote task's conversation opens in B's viewer: B's Host asks A for the file (rt.file), A checks it is under
@@ -293,6 +391,39 @@ export type RemotePush =
 export const REMOTE_FILE_MAX_BYTES = 20 * 1024 * 1024;
 /** One piece of a file (base64 in a frame of at most 1 MB). */
 export const REMOTE_FILE_CHUNK = 512 * 1024;
+// ---- 2026-10-29 evening (the user): B sends pictures and files to A ----------------------------------------------
+// With a message in a remote task, a new session there, or a task B creates on A. B's Host sends each file in pieces
+// (rt.upload) before the command; A keeps them as attachments of its own (pictures as pictures the model sees, other
+// files in its attachments folder, named in the message's 引用文件 block with A's path). Pieces nobody claims go after
+// an hour. An older A does not know rt.upload: B says to update it.
+
+/** Biggest file B may send A (as a picture attached here). */
+export const REMOTE_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
+/** Biggest total one message, session or task may carry. */
+export const REMOTE_UPLOAD_TOTAL_BYTES = 60 * 1024 * 1024;
+
+/** B → A: a piece of a file, at `offset` of `size` bytes (base64). The first piece starts it, the last ends it. */
+export interface RemoteUploadAsk {
+  /** B's id for it (up_…). */
+  uploadId: string;
+  name: string;
+  size: number;
+  offset: number;
+  data: string;
+}
+
+/** A file B sent, named in the command that carries it. */
+export interface RemoteUpload {
+  uploadId: string;
+  name: string;
+  /** A picture the model sees (its type); absent: a file A lists in the message's 引用文件 block. */
+  mime?: string;
+  /** A marked range and note of the file, kept in the block. */
+  startLine?: number | null;
+  endLine?: number | null;
+  note?: string;
+}
+
 /** How paths name A's task folder for B (instead of A's own path, which has the user's name in it). */
 export const REMOTE_TASK_FOLDER = "任务文件夹";
 /** How paths name the task's attachments (pictures sent in its conversation) for B. */
@@ -382,8 +513,38 @@ export interface RemoteFetchedFile {
   key: string;
 }
 
+// ---- 远程 Reviewer (plans/remote-reviewer.md, 2026-11-02): B looks at a remote task's 查看包 and Review --------------
+// B's Reviewer windows on a remote task talk to their own Host as usual, through `/api/remote/view/<task>/…` instead of
+// `/api/…`; B's Host passes each read on to A (rt.view) and keeps the answer, shown again (said to be old) while A is
+// away. A answers only what the Reviewer reads — the task's packs, git of the task's project (read only), files a pack
+// names or the changes list — checked against the grant and the task's folder (links and junctions resolved first).
+// Paths in the answers name the task's folder (任务文件夹/…), never A's own. Comments stay on B.
+
+/** B → A: one Reviewer read. */
+export interface RemoteViewAsk {
+  taskId: Id;
+  /** The route as B's Reviewer asked it: `GET` or `POST`, `/api/workspaces/<A's id>/git/status`, its query and body. */
+  method: string;
+  path: string;
+  query?: Record<string, string>;
+  body?: unknown;
+  /** A later piece of a big answer: the id the first piece gave and where to go on. */
+  piece?: { id: string; offset: number };
+}
+
+/** A → B: the answer as JSON (UTF-8, base64), whole or in pieces; `id` with the first piece when more follow. */
+export interface RemoteViewAnswer {
+  size: number;
+  offset: number;
+  data: string;
+  id?: string;
+}
+
+/** Biggest Reviewer answer B takes from A (a big diff). */
+export const REMOTE_VIEW_MAX_BYTES = 20 * 1024 * 1024;
+
 // ---- Step 4 (2026-10-29): B asks A to run a task ------------------------------------------------------------------
-// B writes a title and what to do (the first message); A's person sees it on Focus and in 设置 → 远程, picks the
+// B writes a title and what to do (the first message); A's person sees it on Focus and on the remote page, picks the
 // project, topic and model (from 远端允许的模型) and allows it — A makes the task, starts its session with that message
 // and grants it to B — or refuses it, saying why. Only while A is online: the team server keeps no requests.
 
@@ -413,6 +574,13 @@ export interface RemoteTaskRequest {
   taskId?: Id;
   createdAt: Timestamp;
   answeredAt?: Timestamp;
+  /**
+   * 安全 (2026-10-29): a task the device created from its new-task page that waits for a yes here — where it goes and the
+   * model, as picked there (the accept dialog starts from them). Absent: a request (the device only wrote what to do).
+   */
+  preset?: { workspaceId: Id | null; topicId: Id | null; profileId: Id };
+  /** What B sent along with it (kept on A until it is allowed or refused): pictures by A's attachment id, files by A's path. */
+  attached?: { images: Array<{ id: Id; name: string }>; files: Array<{ id: Id; path: string; name: string; startLine?: number | null; endLine?: number | null; note?: string }> };
 }
 
 /** On A: what allowing a request needs — where the task goes and the model its session runs on. */
@@ -420,6 +588,93 @@ export interface RemoteAcceptInput {
   workspaceId: Id;
   topicId?: Id | null;
   profileId: Id;
+}
+
+// ---- 远程创建 (plans/remote-page-and-new-task.md 4.1, 2026-10-29): B creates a task on A from its new-task page ----------
+// The user (10-29): nobody on A says yes; A's 远程设置 limits it instead — 远端允许的项目 (and whether 「不选项目（公共
+// 文件夹）」 is allowed) beside 远端允许的模型. Nothing ticked there: remote create is not available. B asks A for what it
+// may pick (rt.catalog), then creates (rt.create): A makes the task, grants it to B and starts its session with the
+// first sentence — the same path an allowed request (step 4) takes.
+
+/** On A: 远端允许的项目. Neither a project nor `common`: paired devices cannot create tasks here. */
+export interface RemoteAllowedProjects {
+  /** A's projects (workspace ids) paired devices may create tasks in. */
+  workspaceIds: Id[];
+  /** Whether 「不选项目（公共文件夹）」 is allowed too. */
+  common: boolean;
+}
+
+export const NO_REMOTE_PROJECTS: RemoteAllowedProjects = { workspaceIds: [], common: false };
+
+/** Whether a paired device may create tasks on this computer at all. */
+export const remoteCreateOpen = (p: RemoteAllowedProjects | null | undefined): boolean => !!p && (p.workspaceIds.length > 0 || p.common);
+
+/** A → B: what B may pick creating a task on A (rt.catalog). Ids are A's own. */
+export interface RemoteCatalog {
+  /** A's device name. */
+  name: string;
+  /** A's live topics, most recently worked in first; `workspaceIds`: its projects (编辑专题's 常用项目 and its tasks'), only allowed ones. */
+  topics: Array<{ id: Id; title: string; workspaceIds: Id[]; lastUsed: Timestamp | null }>;
+  /** Only the allowed projects, most recently worked in first. */
+  projects: Array<{ id: Id; name: string; lastUsed: Timestamp | null }>;
+  /** 「不选项目（公共文件夹）」 allowed. */
+  allowCommon: boolean;
+  /** 远端允许的模型 (A's ids, with A's names for them), the default first; usable ones only. */
+  models: Array<{ id: Id; label: string }>;
+  /** 安全 (2026-10-29): what B creates waits for a yes on A (absent from an older A: it starts at once). */
+  confirm?: boolean;
+}
+
+/** B → A: the task to create (rt.create). */
+export interface RemoteCreateAsk {
+  /** Empty: from the first sentence, as here. */
+  title?: string;
+  /** The first sentence: the session's first message. */
+  text: string;
+  topicId: Id | null;
+  /** null: no project (the common folder), when A allows it. */
+  workspaceId: Id | null;
+  /** One of A's 远端允许的模型 (A's id). */
+  profileId: Id;
+  /** Pictures and files sent before it (rt.upload). */
+  uploads?: RemoteUpload[];
+}
+
+/**
+ * A → B: the task made (B's copy has the same id). `error`: the task is there and granted, but its session did not start.
+ * `waiting` (安全, 2026-10-29): nothing made yet — A's 远程设置 → 安全 wants a yes there first; the request A keeps
+ * (`taskId` is then null; an older B, which does not know `waiting`, finds the request in its list after a reconnect).
+ */
+export interface RemoteCreateAnswer {
+  taskId: Id | null;
+  sessionId: Id | null;
+  error?: string;
+  waiting?: RemoteTaskRequest;
+}
+
+// ---- 安全 (2026-10-29, the user): who may start tasks here without a yes ------------------------------------------
+// A paired device logged in with this computer's own account is the person's other computer: what it creates starts at
+// once (as 远程创建 did from the start). A device of another account: what it creates waits for a yes here (Focus, 远程),
+// like a request — unless the person turns that off. Requests and tasks granted from here are not affected.
+
+/** `run`: starts at once. `confirm`: waits for a yes on this computer. */
+export type RemoteStart = "run" | "confirm";
+
+export interface RemoteSecurity {
+  /** Devices logged in with this computer's account. */
+  sameAccount: RemoteStart;
+  /** Devices of other accounts. */
+  otherAccount: RemoteStart;
+}
+
+export const DEFAULT_REMOTE_SECURITY: RemoteSecurity = { sameAccount: "run", otherAccount: "confirm" };
+
+/** How a task created from `account`'s device starts here. */
+export const remoteStartFor = (security: RemoteSecurity, own: string | null | undefined, account: string): RemoteStart => (own && own === account ? security.sameAccount : security.otherAccount);
+
+/** On B: POST /api/remote/create's answer. `copied`: the copy is on this computer already (else it follows shortly). */
+export interface RemoteCreateResult extends RemoteCreateAnswer {
+  copied: boolean;
 }
 
 // ---- Wrapping up step 2 (2026-10-29): A while it is used from another device -------------------------------------
@@ -446,4 +701,19 @@ export function remoteQuitNote(inUse: ReadonlyArray<{ name: string; tasks: numbe
   if (!inUse.length) return null;
   const n = inUse.reduce((sum, x) => sum + x.tasks, 0);
   return `有 ${n} 个任务正被 ${inUse.map((x) => x.name).join("、")} 远程使用，退出后那边会暂停。`;
+}
+
+/**
+ * 远程 Reviewer 的批注 (2026-11-02, the user): what the controlling computer wrote on a remote task's files and changes
+ * (kept there, never sent to the task's computer as comments). Copied out (`copy`), the paths start at 任务文件夹/ —
+ * never that computer's own folder, which has its user's name in it — and the project is named by that computer;
+ * sent to the task's conversation (发到对话), they are as its session reads them, relative to the task's folder.
+ */
+export function composeRemoteReviewMessage(comments: Parameters<typeof composeGitReviewMessage>[0], device: string, copy: boolean): string {
+  if (!copy) return composeGitReviewMessage(comments, REMOTE_TASK_FOLDER);
+  const under = (p: string) => (p === REMOTE_TASK_FOLDER || p.startsWith(`${REMOTE_TASK_FOLDER}/`) ? p : `${REMOTE_TASK_FOLDER}/${p.replace(/\\/g, "/").replace(/^\.?\//, "")}`);
+  return composeGitReviewMessage(
+    comments.map((c) => ({ ...c, path: under(c.path), ...(c.passage?.source ? { passage: { ...c.passage, source: under(c.passage.source) } } : {}) })),
+    device ? `${device} 上的${REMOTE_TASK_FOLDER}` : REMOTE_TASK_FOLDER,
+  );
 }

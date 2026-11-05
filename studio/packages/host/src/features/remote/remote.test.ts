@@ -134,6 +134,8 @@ async function host(name: string, server: string, account: string | null, key = 
   const events: RemoteState[] = [];
   service.on("event", (e) => e.type === "remote.updated" && events.push(e.remote));
   service.remote.start({ env, protector: fake, watchMs: 30, backoff: new Backoff({ baseMs: 30, maxMs: 120 }), pingTimeoutMs: 2000 });
+  // Off until turned on (2026-10-30).
+  if (account) await service.remote.setEnabled(true);
   cleanups.push(() => {
     service.remote.stop();
     store.close();
@@ -150,28 +152,35 @@ describe("remote between two Hosts", () => {
     const a = await host("A-PC", url, null);
     expect(a.state()).toMatchObject({ account: null, connection: { state: "no-account" }, device: { name: "A-PC" } });
     await expect(a.remote.requestPair("笔记本的我")).rejects.toThrow("在 AMO 平台里登录后才能用远程功能");
+    // Not logged in: it cannot be turned on (2026-10-30).
+    await expect(a.remote.setEnabled(true)).rejects.toThrow("在 AMO 平台里登录后才能打开远程功能");
     await saveAccount({ server: url, name: "台式机的我", key: keys["台式机的我"]! }, { env: a.env, protector: fake });
-    await until(a.state, online, "online after login");
-    expect(a.state().account).toEqual({ server: url, name: "台式机的我" });
+    // Logged in, still off until the person turns it on: not on the server as a device.
+    await until(a.state, (s) => s.connection.state === "disabled", "disabled after login");
+    expect(a.state()).toMatchObject({ enabled: false, account: { server: url, name: "台式机的我" } });
+    await expect(a.remote.requestPair("笔记本的我")).rejects.toThrow("远程功能没有打开");
+    await a.remote.setEnabled(true);
+    await until(a.state, online, "online once turned on");
+    expect(a.state().enabled).toBe(true);
+    // Turned off: off the server at once.
+    await a.remote.setEnabled(false);
+    expect(a.state().connection.state).toBe("disabled");
+    await a.remote.setEnabled(true);
+    await until(a.state, online, "online again");
     // Logged out in the platform: off the server again.
     rmSync(join(a.home, "account.json"));
     await until(a.state, (s) => s.connection.state === "no-account", "no-account after logout");
+    // Another account logging in on this computer starts with it off; the same one again finds it on.
+    await saveAccount({ server: url, name: "笔记本的我", key: keys["笔记本的我"]! }, { env: a.env, protector: fake });
+    await until(a.state, (s) => s.connection.state === "disabled" && s.account?.name === "笔记本的我", "off for another account");
+    await saveAccount({ server: url, name: "台式机的我", key: keys["台式机的我"]! }, { env: a.env, protector: fake });
+    await until(a.state, online, "on again for the account that turned it on");
   });
 
   it("pairs B with A, tests the connection both ways, and an unpairing on A reaches B", async () => {
     const { url, keys } = await relayService();
     const a = await host("A-PC", url, "台式机的我", keys["台式机的我"]);
     await until(a.state, online, "online");
-    // 关闭远程: off the server, and it stays off when the Host starts remote again.
-    expect(a.remote.setDisabled(true).connection.state).toBe("disabled");
-    await new Promise((r) => setTimeout(r, 200));
-    expect(a.state().connection.state).toBe("disabled");
-    a.remote.stop();
-    a.remote.start({ env: a.env, protector: fake, watchMs: 30, backoff: new Backoff({ baseMs: 30, maxMs: 120 }) });
-    await new Promise((r) => setTimeout(r, 300));
-    expect(a.state().connection.state).toBe("disabled");
-    expect(a.remote.setDisabled(false).connection.state).not.toBe("disabled");
-    await until(a.state, online, "online after 开启远程");
   });
 
   it("pairs B with A, tests the connection both ways, and an unpairing on A reaches B", async () => {
@@ -211,6 +220,35 @@ describe("remote between two Hosts", () => {
     expect(ended.peers).toEqual([]);
     await until(b.state, (s) => s.peers.length === 0, "B loses the pair");
     await expect(b.remote.ping(peerOfB)).rejects.toThrow("没有和这台设备配对");
+  });
+
+  it("lists the account's other online devices, and pairs with the one picked (only it is asked)", async () => {
+    const { url, keys } = await relayService();
+    const key = keys["台式机的我"]!;
+    const a = await host("A-PC", url, "台式机的我", key);
+    const b = await host("B-PC", url, "台式机的我", key);
+    const c = await host("C-PC", url, "台式机的我", key);
+    await until(a.state, online, "A online");
+    await until(b.state, online, "B online");
+    await until(c.state, online, "C online");
+    const listed = await b.remote.onlineDevices();
+    expect(listed.supported).toBe(true);
+    expect(listed.devices.map((d) => d.name).sort()).toEqual(["A-PC", "C-PC"]);
+    expect(Date.parse(listed.devices[0]!.since)).toBeGreaterThan(0);
+
+    const sent = await b.remote.requestPair("台式机的我", a.state().device!.id);
+    expect(sent.outgoing).toMatchObject([{ to: "台式机的我", toDevice: { device: a.state().device!.id, name: "A-PC" }, state: "pending" }]);
+    const asked = await until(a.state, (s) => s.incoming.length === 1, "A sees the request");
+    expect(asked.incoming[0]).toMatchObject({ name: "B-PC" });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(c.state().incoming).toEqual([]);
+    await a.remote.answer(asked.incoming[0]!.id, true);
+    await until(b.state, (s) => s.peers.length === 1 && s.outgoing.length === 0, "B gets the pair");
+
+    // Not connected: nothing to list.
+    b.remote.stop();
+    b.remote.start({ env: b.env, protector: fake, watchMs: 30, backoff: new Backoff({ baseMs: 30, maxMs: 120 }) });
+    await expect(b.remote.onlineDevices()).rejects.toThrow(/没有连上团队服务器|在 AMO 平台里登录/);
   });
 
   it("an approval made while B was away reaches B when it is back; a refusal stays until B puts it away", async () => {

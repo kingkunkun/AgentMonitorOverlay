@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { readStored, writeStored } from "../lib/stored.js";
 
 // 工作步骤展示 (DSH's transcript view): how much of the work the conversation shows. Stored per install, like the theme.
 
@@ -8,7 +9,7 @@ export const TRANSCRIPT_VIEW_LABELS: Record<TranscriptView, string> = { compact:
 export const TRANSCRIPT_VIEW_HINTS: Record<TranscriptView, string> = {
   compact: "只看每段工作的类别，不显示思考预览",
   standard: "工作过程收成一行标题，运行中显示正在做什么",
-  detailed: "运行中的工作逐条展开，完成后收起",
+  detailed: "每一轮的过程都摊开：中间的回复、思考、各段工作的标题；运行中的工作逐条展开",
   verbose: "所有工作逐条展开，完成后也不收起",
 };
 
@@ -16,20 +17,12 @@ const KEY = "amo.transcriptView";
 const EVENT = "amo:transcript-view";
 
 export function transcriptView(): TranscriptView {
-  try {
-    const v = localStorage.getItem(KEY);
-    return v === "compact" || v === "detailed" || v === "verbose" || v === "standard" ? v : "standard";
-  } catch {
-    return "standard";
-  }
+  const v = readStored(KEY);
+  return v === "compact" || v === "detailed" || v === "verbose" || v === "standard" ? v : "standard";
 }
 
 export function setTranscriptView(view: TranscriptView): void {
-  try {
-    localStorage.setItem(KEY, view);
-  } catch {
-    // private profile: still applies until reload
-  }
+  writeStored(KEY, view);
   window.dispatchEvent(new CustomEvent(EVENT, { detail: view }));
 }
 
@@ -55,20 +48,10 @@ export function useTranscriptView(): TranscriptView {
 const SEND_KEY = "amo.scrollOnSend";
 const SEND_EVENT = "amo:scroll-on-send";
 
-export function scrollOnSend(): boolean {
-  try {
-    return localStorage.getItem(SEND_KEY) !== "off";
-  } catch {
-    return true;
-  }
-}
+export const scrollOnSend = (): boolean => readStored(SEND_KEY) !== "off";
 
 export function setScrollOnSend(on: boolean): void {
-  try {
-    localStorage.setItem(SEND_KEY, on ? "on" : "off");
-  } catch {
-    // private profile: still applies until reload
-  }
+  writeStored(SEND_KEY, on ? "on" : "off");
   window.dispatchEvent(new CustomEvent(SEND_EVENT, { detail: on }));
 }
 

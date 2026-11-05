@@ -1,11 +1,10 @@
-import { buildSessionTree, isCommon, RUNTIME_LABELS, taskWhere, topicWorkspaceIds, type Id, type ModelProfile, type Session, type SessionNode, type SessionStatus, type Task, type TaskColumn, type Topic } from "@amo-studio/protocol";
+import { buildSessionTree, isCommon, mostUrgentStatus, RUNTIME_LABELS, taskWhere, topicWorkspaceIds, type Id, type ModelProfile, type Session, type SessionNode, type SessionStatus, type Task, type TaskColumn, type Topic } from "@amo-studio/protocol";
 import type { HostService } from "../service.js";
 import type { McpCaller } from "./tools.js";
 
 // What agents read through the AMO MCP: plain structures, no coordinates, no full transcripts. Read-only by design;
 // writing tools come in stage 5.
 
-const URGENCY: SessionStatus[] = ["awaiting-approval", "awaiting-answer", "awaiting-review", "error", "running", "idle", "completed"];
 const EXCERPT = 300;
 
 export class NotFoundError extends Error {}
@@ -31,7 +30,7 @@ export class ReadModel {
 
   private status(taskId: Id): SessionStatus | null {
     const live = this.live(taskId);
-    return URGENCY.find((u) => live.some((s) => s.status === u)) ?? null;
+    return mostUrgentStatus(live);
   }
 
   private where(task: Task): string {
@@ -180,34 +179,6 @@ export class ReadModel {
       recentNotes: notes.filter((n) => n.kind === "progress").slice(-5).map((n) => ({ text: n.text, by: author(n.sessionId), at: n.createdAt })),
       sessions: this.live(t.id).map((s) => ({ id: s.id, kind: s.kind, parentId: s.parentId, title: s.title, status: s.status, model: this.model(s.profileId) })),
     };
-  }
-
-  /**
-   * Extension packs of one workspace (id or name) or of all of them: what each offers (documents, task templates,
-   * session presets), not the contents. Packs with errors are listed with their errors.
-   */
-  packList(workspace?: string) {
-    const all = this.store.listWorkspaces();
-    const list = workspace ? all.filter((w) => w.id === this.workspaceId(workspace)) : all;
-    return {
-      packs: list.flatMap((w) =>
-        this.service.extensions.packs(w.id).map((p) => ({
-          workspace: { id: w.id, name: w.name },
-          pack: p.dirName,
-          title: p.manifest?.title ?? null,
-          ...(p.manifest?.description ? { description: p.manifest.description } : {}),
-          ...(p.errors.length ? { errors: p.errors } : {}),
-          docs: p.manifest?.docs.map((d) => ({ id: d.id, title: d.title, ...(d.summary ? { summary: d.summary } : {}) })) ?? [],
-          templates: p.manifest?.templates.map((t) => ({ id: t.id, title: t.title, steps: t.steps.length })) ?? [],
-          presets: p.manifest?.presets.map((x) => ({ id: x.id, title: x.title })) ?? [],
-        })),
-      ),
-    };
-  }
-
-  /** One pack document's text. */
-  packDoc(workspace: string, pack: string, doc: string) {
-    return this.service.extensions.packDoc(this.workspaceId(workspace), pack, doc);
   }
 
   /** The task's sessions as a tree, each with an excerpt of its latest reply. */

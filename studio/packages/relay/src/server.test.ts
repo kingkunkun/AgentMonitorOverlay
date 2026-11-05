@@ -1,11 +1,12 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { get as httpGet, type IncomingHttpHeaders } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gzipSync } from "node:zlib";
+import { crc32, deflateRawSync, gunzipSync, gzipSync, inflateRawSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { RelayClient, RelayClientError, type RelaySettings } from "./client.js";
@@ -13,7 +14,8 @@ import { createRelayMcp } from "./mcp.js";
 import type { RelayEvent } from "./protocol.js";
 import { acceptsGzip, startRelayServer, type RelayServer } from "./server.js";
 import { RelayStore } from "./store.js";
-import { usagePrompt } from "./usage.js";
+import { newRepliesText, usagePrompt } from "./usage.js";
+import { takeInbox } from "./inbox.js";
 import { DeviceHub } from "./devices.js";
 import { CLOSE_REPLACED, DEVICE_CHANNEL_VERSION, PAIR_REQUEST_DAYS, type DeviceEvent, type PairRequest, type PeerView } from "./devices-protocol.js";
 
@@ -76,6 +78,101 @@ describe("relay service", () => {
     await expect(again.me()).rejects.toMatchObject({ status: 401 });
   });
 
+  it("the admin page: its own password; renames an account live (its sockets reconnect as the new name), resets a password, turns an account off", async () => {
+    const { url, coder } = await service();
+    const admin = (method: string, path: string, body?: unknown, pw = "admin-pw") =>
+      fetch(`${url}${path}`, { method, headers: { "content-type": "application/json", "x-amo-admin": pw }, ...(body ? { body: JSON.stringify(body) } : {}) }).then(async (r) => ({ status: r.status, body: (await r.json()) as Record<string, unknown> }));
+    const page = await fetch(`${url}/admin`);
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain("测试组 · 管理");
+    // No password set yet: says how to set one; then a wrong one is refused.
+    expect(await admin("GET", "/api/admin/members")).toMatchObject({ status: 403, body: { message: expect.stringContaining("admin-password") } });
+    store!.setAdminPassword("admin-pw");
+    expect((await admin("GET", "/api/admin/members", undefined, "wrong")).status).toBe(401);
+    const list = await admin("GET", "/api/admin/members");
+    expect(list.body).toMatchObject({ service: "测试组", invite: true });
+    expect((list.body.members as Array<{ name: string }>).map((m) => m.name)).toEqual(["策划小王", "程序老李"]);
+
+    const live = await events(url, coder.key!);
+    expect((await live.next()).type).toBe("hello");
+    const closed = new Promise<number>((ok) => live.ws.once("close", (code) => ok(code)));
+    expect(await admin("POST", "/api/admin/rename", { from: "程序老李", to: "lee" })).toMatchObject({ status: 200, body: { from: "程序老李", to: "lee" } });
+    expect(await closed).toBe(1012);
+    // The same key, now as lee.
+    expect((await coder.me()).name).toBe("lee");
+    const again = await events(url, coder.key!);
+    expect(await again.next()).toMatchObject({ type: "hello", me: "lee" });
+    expect((await admin("POST", "/api/admin/rename", { from: "lee", to: "策划小王" })).status).toBe(409);
+
+    const reset = await admin("POST", "/api/admin/password", { name: "lee" });
+    expect(reset.body.password).toMatch(/^[a-z2-9]{8}$/);
+    await expect(coder.me()).rejects.toMatchObject({ status: 401 });
+    const lee = new RelayClient(url, (await new RelayClient(url).login("lee", String(reset.body.password))).key);
+    expect((await admin("POST", "/api/admin/disable", { name: "lee", disabled: true })).status).toBe(200);
+    await expect(lee.me()).rejects.toMatchObject({ status: 401 });
+    await expect(new RelayClient(url).login("lee", String(reset.body.password))).rejects.toMatchObject({ status: 403 });
+    await admin("POST", "/api/admin/disable", { name: "lee", disabled: false });
+    expect((await new RelayClient(url).login("lee", String(reset.body.password))).name).toBe("lee");
+    // 维护者 (2026-11-03): nobody until set here; then 问题页 lets them see everyone's issues.
+    const maintainerOf = async () => ((await admin("GET", "/api/admin/members")).body.members as Array<{ name: string; maintainer: boolean }>).find((m) => m.name === "lee")?.maintainer;
+    expect(await maintainerOf()).toBe(false);
+    expect((await admin("POST", "/api/admin/maintainer", { name: "lee", maintainer: true })).status).toBe(200);
+    expect(await maintainerOf()).toBe(true);
+    expect(store!.isMaintainer("lee")).toBe(true);
+    await admin("POST", "/api/admin/maintainer", { name: "lee", maintainer: false });
+    expect(await maintainerOf()).toBe(false);
+    expect((await admin("POST", "/api/admin/maintainer", { name: "nobody", maintainer: true })).status).toBe(404);
+
+    // The admin password itself, changed from the page: too short is refused; then the old one stops working.
+    expect((await admin("POST", "/api/admin/admin-password", { password: "ab" })).status).toBe(400);
+    expect(await admin("POST", "/api/admin/admin-password", { password: "new-admin-pw" })).toMatchObject({ status: 200, body: { ok: true } });
+    expect((await admin("GET", "/api/admin/members")).status).toBe(401);
+    expect((await admin("GET", "/api/admin/members", undefined, "new-admin-pw")).status).toBe(200);
+  });
+
+  it("the admin page sets the registration passphrase: needed once set, open again once cleared; the page's one wins over --passphrase", async () => {
+    store = new RelayStore(":memory:");
+    const filesDir = mkdtempSync(join(tmpdir(), "relay-files-"));
+    closers.push(() => rmSync(filesDir, { recursive: true, force: true }));
+    server = await startRelayServer({ store, filesDir, host: "127.0.0.1", port: 0, name: "测试组" });
+    const url = server.url;
+    store.setAdminPassword("admin-pw");
+    const admin = (method: string, path: string, body?: unknown) =>
+      fetch(`${url}${path}`, { method, headers: { "content-type": "application/json", "x-amo-admin": "admin-pw" }, ...(body ? { body: JSON.stringify(body) } : {}) }).then(async (r) => ({ status: r.status, body: (await r.json()) as Record<string, unknown> }));
+    const anon = new RelayClient(url);
+    // Open to start with.
+    expect(await anon.health()).toMatchObject({ invite: false });
+    expect((await admin("GET", "/api/admin/members")).body).toMatchObject({ invite: false });
+    const early = await anon.register("早来的", "pw-early");
+    expect((await admin("POST", "/api/admin/passphrase", { passphrase: "ab" })).status).toBe(400);
+    expect(await admin("POST", "/api/admin/passphrase", { passphrase: "芝麻开门" })).toMatchObject({ status: 200, body: { invite: true } });
+    expect(await anon.health()).toMatchObject({ invite: true });
+    expect((await admin("GET", "/api/admin/members")).body).toMatchObject({ invite: true });
+    await expect(anon.register("路人", "pw-lu")).rejects.toMatchObject({ status: 401 });
+    await expect(anon.register("路人", "pw-lu", { passphrase: "错的" })).rejects.toMatchObject({ status: 401 });
+    expect((await anon.register("新人", "pw-new", { passphrase: "芝麻开门" })).name).toBe("新人");
+    // Accounts already there are untouched.
+    expect((await new RelayClient(url, early.key).me()).name).toBe("早来的");
+    expect((await anon.login("早来的", "pw-early")).name).toBe("早来的");
+    // Cleared: open again.
+    expect(await admin("POST", "/api/admin/passphrase", { passphrase: "" })).toMatchObject({ status: 200, body: { invite: false } });
+    expect(await anon.health()).toMatchObject({ invite: false });
+    expect((await anon.register("路人", "pw-lu")).name).toBe("路人");
+
+    // A service started with --passphrase: the page's one replaces it while set; cleared, the started one is back.
+    await server.close();
+    server = await startRelayServer({ store, passphrase: "启动口令", filesDir, host: "127.0.0.1", port: 0, name: "测试组" });
+    const url2 = server.url;
+    const anon2 = new RelayClient(url2);
+    const admin2 = (body: unknown) => fetch(`${url2}/api/admin/passphrase`, { method: "POST", headers: { "content-type": "application/json", "x-amo-admin": "admin-pw" }, body: JSON.stringify(body) }).then((r) => r.json() as Promise<Record<string, unknown>>);
+    expect(await admin2({ passphrase: "页面口令" })).toMatchObject({ invite: true });
+    await expect(anon2.register("甲", "pw-jia", { passphrase: "启动口令" })).rejects.toMatchObject({ status: 401 });
+    expect((await anon2.register("甲", "pw-jia", { passphrase: "页面口令" })).name).toBe("甲");
+    expect(await admin2({ passphrase: null })).toMatchObject({ invite: true });
+    await expect(anon2.register("乙", "pw-yi")).rejects.toMatchObject({ status: 401 });
+    expect((await anon2.register("乙", "pw-yi", { passphrase: "启动口令" })).name).toBe("乙");
+  });
+
   it("hands out the client: landing page, content, downloads, never outside its folder", async () => {
     const dir = mkdtempSync(join(tmpdir(), "relay-public-"));
     closers.push(() => rmSync(dir, { recursive: true, force: true }));
@@ -122,6 +219,18 @@ describe("relay service", () => {
     expect((await get(`/platform/objects/${sha}`, null)).status).toBe(401);
     expect(await (await get("/api/platform/channels")).json()).toEqual({ stable: { notes: "0.9.0" }, test: { notes: "0.9.0" } });
     expect(await (await get("/api/platform/tools/notes/0.9.0")).json()).toEqual(manifest);
+    // 2026-11-03: minified and gzipped to a client that takes it; its summary without the file list.
+    const raw = await new Promise<{ encoding: string | undefined; body: Buffer }>((ok, fail) => {
+      httpGet(`${url}/api/platform/tools/notes/0.9.0`, { headers: { authorization: `Bearer ${key}`, "accept-encoding": "gzip" } }, (res) => {
+        const parts: Buffer[] = [];
+        res.on("data", (c: Buffer) => parts.push(c));
+        res.on("end", () => ok({ encoding: res.headers["content-encoding"], body: Buffer.concat(parts) }));
+      }).on("error", fail);
+    });
+    expect(raw.encoding).toBe("gzip");
+    expect(gunzipSync(raw.body).toString()).toBe(JSON.stringify(manifest));
+    expect(await (await get("/api/platform/tools/notes/0.9.0/summary")).json()).toEqual({ tool: "notes", name: "AMO Notes", version: "0.9.0", builtAt: 1, exe: "AMO Notes.exe", notes: "- 第一版", fileCount: 1, size: body.length });
+    expect((await get("/api/platform/tools/notes/0.9.1/summary")).status).toBe(404);
     const obj = await get(`/platform/objects/${sha}`);
     expect(obj.headers.get("content-type")).toBe("application/octet-stream");
     expect(await obj.text()).toBe(body);
@@ -144,6 +253,145 @@ describe("relay service", () => {
     const zip = await get("/downloads/AMO-Platform-win.zip", null);
     expect(zip.headers.get("content-disposition")).toContain("attachment");
     expect(await zip.text()).toBe("zip");
+  });
+
+  it("hands out the Android app's newest build to people signed in (2026-10-31), and on the landing page to anyone (2026-11-02)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "relay-platform-"));
+    closers.push(() => rmSync(dir, { recursive: true, force: true }));
+    const { url, plannerSettings } = await service(undefined, { platformDir: dir });
+    const key = plannerSettings.key;
+    const get = (p: string, k: string | null = key) => fetch(`${url}${p}`, { headers: k ? { authorization: `Bearer ${k}` } : {} });
+    expect(await (await get("/api/platform/android")).json()).toMatchObject({ error: "not_found", message: "服务器上还没有发布安卓版" });
+    // Nothing published: no Android link on the page, its download is not there.
+    expect(await (await get("/", null)).text()).not.toContain("下载 Android 版");
+    expect((await get("/downloads/android/latest.apk", null)).status).toBe(404);
+
+    mkdirSync(join(dir, "android"));
+    const apk = "PK fake apk";
+    const latest = { version: "0.1.1", versionCode: 2, file: "AMO-Studio-Android-0.1.1.apk", size: apk.length, sha256: createHash("sha256").update(apk).digest("hex"), notes: "- 能自己更新", publishedAt: "2026-10-31T12:00:00.000Z" };
+    writeFileSync(join(dir, "android", latest.file), apk);
+    writeFileSync(join(dir, "android", "latest.json"), JSON.stringify(latest));
+    writeFileSync(join(dir, "channels.json"), "{}");
+    expect((await get("/api/platform/android", null)).status).toBe(401);
+    expect((await get(`/platform/android/${latest.file}`, null)).status).toBe(401);
+    expect(await (await get("/api/platform/android")).json()).toEqual(latest);
+    const res = await get(`/platform/android/${latest.file}?key=${encodeURIComponent(key)}`, null);
+    expect(res.headers.get("content-type")).toBe("application/vnd.android.package-archive");
+    expect(res.headers.get("content-length")).toBe(String(apk.length));
+    expect(await res.text()).toBe(apk);
+    // The landing page offers the newest build to anyone (2026-11-02): a phone installs it before signing in.
+    const landing = await (await get("/", null)).text();
+    expect(landing).toContain("下载 Android 版 0.1.1");
+    expect(landing).toContain('href="/downloads/android/latest.apk"');
+    const open = await get("/downloads/android/latest.apk", null);
+    expect(open.status).toBe(200);
+    expect(open.headers.get("content-type")).toBe("application/vnd.android.package-archive");
+    expect(await open.text()).toBe(apk);
+    expect((await get("/platform/android/AMO-Studio-Android-0.1.0.apk")).status).toBe(404);
+    for (const p of ["/platform/android/latest.json", "/platform/android/..%2Fchannels.json", "/platform/android/.hidden.apk"]) expect((await get(p)).status, p).toBe(400);
+    // latest.json naming a file that is not there: as if nothing was published.
+    writeFileSync(join(dir, "android", "latest.json"), JSON.stringify({ ...latest, file: "gone.apk" }));
+    expect((await get("/api/platform/android")).status).toBe(404);
+    expect((await get("/downloads/android/latest.apk", null)).status).toBe(404);
+  });
+
+  it("makes a version's whole zip from its objects, goes on with Range, and the download page's comes from the newest platform (2026-11-03)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "relay-platform-"));
+    closers.push(() => rmSync(dir, { recursive: true, force: true }));
+    const put = (name: string, data: Buffer) => {
+      mkdirSync(join(dir, "objects", name.slice(0, 2)), { recursive: true });
+      writeFileSync(join(dir, "objects", name.slice(0, 2), name), data);
+    };
+    const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
+    // Three ways an object is kept: gzipped by Node (no name in the header), gzipped by macOS gzip (FNAME), as it is.
+    const exe = Buffer.from("MZ the program ".repeat(20_000));
+    const pkg = Buffer.from(JSON.stringify({ name: "amo-platform", version: "0.9.21" }));
+    const png = randomBytes(5000);
+    put(`${sha(exe)}.gz`, gzipSync(exe));
+    const named = Buffer.concat([Buffer.from([0x1f, 0x8b, 8, 8, 0, 0, 0, 0, 0, 3]), Buffer.from("0004abc\0"), deflateRawSync(pkg), Buffer.alloc(8)]);
+    named.writeUInt32LE(crc32(pkg), named.length - 8);
+    named.writeUInt32LE(pkg.length, named.length - 4);
+    put(`${sha(pkg)}.gz`, named);
+    put(sha(png), png);
+    const files = [
+      { path: "AMO Platform.exe", size: exe.length, sha256: sha(exe) },
+      { path: "resources/app/package.json", size: pkg.length, sha256: sha(pkg) },
+      { path: "resources/app/图标.png", size: png.length, sha256: sha(png) },
+      { path: "resources/app/same.png", size: png.length, sha256: sha(png) },
+    ];
+    mkdirSync(join(dir, "tools", "platform"), { recursive: true });
+    for (const v of ["0.9.20", "0.9.21"]) writeFileSync(join(dir, "tools", "platform", `${v}.json`), JSON.stringify({ tool: "platform", name: "AMO 平台", version: v, builtAt: Date.UTC(2026, 10, 3, 12, 0, 0), exe: "AMO Platform.exe", notes: "", files }));
+    writeFileSync(join(dir, "channels.json"), JSON.stringify({ stable: { platform: "0.9.20" }, test: { platform: "0.9.21" } }));
+    mkdirSync(join(dir, "downloads"));
+    writeFileSync(join(dir, "downloads", "AMO-Platform-win.zip"), "the old one put by hand");
+    const { url, plannerSettings } = await service(undefined, { platformDir: dir });
+    const key = plannerSettings.key;
+    const get = (p: string, headers: Record<string, string> = { authorization: `Bearer ${key}` }) => fetch(`${url}${p}`, { headers });
+
+    expect((await get("/platform/zip/platform/0.9.21", {})).status).toBe(401);
+    expect((await get("/platform/zip/platform/0.9.99")).status).toBe(404);
+    const res = await get("/platform/zip/platform/0.9.21");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-disposition")).toContain("AMO-Platform-win-0.9.21.zip");
+    const etag = res.headers.get("etag")!;
+    const zip = Buffer.from(await res.arrayBuffer());
+    expect(zip.length).toBe(Number(res.headers.get("content-length")));
+
+    // Read back by its central directory, each entry unpacked and checked against its CRC-32.
+    const eocd = zip.lastIndexOf(Buffer.from([0x50, 0x4b, 5, 6]));
+    const count = zip.readUInt16LE(eocd + 10);
+    let at = zip.readUInt32LE(eocd + 16);
+    const got: Record<string, Buffer> = {};
+    for (let i = 0; i < count; i++) {
+      expect(zip.readUInt32LE(at)).toBe(0x02014b50);
+      const method = zip.readUInt16LE(at + 10);
+      const crc = zip.readUInt32LE(at + 16);
+      const csize = zip.readUInt32LE(at + 20);
+      const nameLen = zip.readUInt16LE(at + 28);
+      const local = zip.readUInt32LE(at + 42);
+      const name = zip.subarray(at + 46, at + 46 + nameLen).toString("utf8");
+      const dataAt = local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28);
+      const data = zip.subarray(dataAt, dataAt + csize);
+      const content = method === 8 ? inflateRawSync(data) : Buffer.from(data);
+      expect(crc32(content), name).toBe(crc);
+      got[name] = content;
+      at += 46 + nameLen;
+    }
+    expect(Object.keys(got)).toEqual(["AMO Platform/", "AMO Platform/AMO Platform.exe", "AMO Platform/resources/app/package.json", "AMO Platform/resources/app/图标.png", "AMO Platform/resources/app/same.png"]);
+    expect(got["AMO Platform/AMO Platform.exe"]!.equals(exe)).toBe(true);
+    expect(got["AMO Platform/resources/app/package.json"]!.equals(pkg)).toBe(true);
+    expect(got["AMO Platform/resources/app/图标.png"]!.equals(png)).toBe(true);
+
+    // What the platform unpacks it with: Windows' own tar (bsdtar).
+    const tar = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe");
+    if (process.platform === "win32" && existsSync(tar)) {
+      const out = mkdtempSync(join(tmpdir(), "relay-zip-out-"));
+      closers.push(() => rmSync(out, { recursive: true, force: true }));
+      writeFileSync(join(out, "p.zip"), zip);
+      execFileSync(tar, ["-xf", join(out, "p.zip"), "-C", out]);
+      expect(readFileSync(join(out, "AMO Platform", "AMO Platform.exe")).equals(exe)).toBe(true);
+      expect(readFileSync(join(out, "AMO Platform", "resources", "app", "图标.png")).equals(png)).toBe(true);
+    }
+
+    // A broken download goes on where it stopped; another version of the zip (If-Range) starts again.
+    const rest = await get("/platform/zip/platform/0.9.21", { authorization: `Bearer ${key}`, range: "bytes=1000-", "if-range": etag });
+    expect(rest.status).toBe(206);
+    expect(Buffer.concat([zip.subarray(0, 1000), Buffer.from(await rest.arrayBuffer())]).equals(zip)).toBe(true);
+    expect((await get("/platform/zip/platform/0.9.21", { authorization: `Bearer ${key}`, range: "bytes=1000-", "if-range": '"zip-other"' })).status).toBe(200);
+
+    // The download page: the newest published platform, made the same way, without signing in; not the one put by hand.
+    const landing = await (await get("/", {})).text();
+    expect(landing).toContain("0.9.21");
+    const page = await get("/downloads/AMO-Platform-win.zip", {});
+    expect(page.headers.get("content-disposition")).toContain("AMO-Platform-win-0.9.21.zip");
+    expect(Buffer.from(await page.arrayBuffer()).equals(zip)).toBe(true);
+
+    // An object missing on the server: said, not a broken zip.
+    rmSync(join(dir, "objects", sha(png).slice(0, 2), sha(png)));
+    writeFileSync(join(dir, "tools", "platform", "0.9.20.json"), JSON.stringify({ tool: "platform", name: "AMO 平台", version: "0.9.20", builtAt: 2, exe: "AMO Platform.exe", notes: "", files }));
+    const broken = await get("/platform/zip/platform/0.9.20");
+    expect(broken.status).toBe(409);
+    expect(await broken.json()).toMatchObject({ message: expect.stringContaining("打不成完整包") });
   });
 
   it("sends an object stored gzipped as gzip to a client that takes it, and unpacked to one that does not", async () => {
@@ -296,7 +544,7 @@ describe("relay service", () => {
     expect(client.getInstructions()!.length).toBeLessThan(400);
     const names = (await client.listTools()).tools.map((t) => t.name);
     expect(names).not.toContain("relay_ask");
-    expect(names).toHaveLength(14);
+    expect(names).toHaveLength(15);
     const text = (r: unknown) => ((r as { content: Array<{ text: string }> }).content[0]?.text ?? "");
 
     expect(text(await client.callTool({ name: "relay_people", arguments: {} }))).toContain("程序老李");
@@ -365,6 +613,45 @@ describe("relay service", () => {
     expect(text(await client.callTool({ name: "relay_task_get", arguments: { taskId } }))).toContain(`- designdoc.md v2 · fileId ${again2.id}`);
     const notJoined = await createRelayMcp({ settings: () => null });
     expect(notJoined).toBeTruthy();
+  });
+
+  it("relay inbox (2026-10-30): one conversation takes back at once only the sessions it sent, each from its last word on, and not twice", async () => {
+    const { planner, coder, plannerSettings } = await service();
+    const ask = (title: string, conv: string) => planner.ask({ to: "程序老李", title, body: `问${title}`, questions: [{ text: `${title}怎么做` }], via: { kind: "ai", client: "test", conv } });
+    const [one, two, other] = [await ask("甲", "conv-a"), await ask("乙", "conv-a"), await ask("丙", "conv-b")];
+    expect(one.thread.request?.conv).toBe("conv-a");
+    const is = (c: string) => (x: string) => x === c;
+    expect(await takeInbox(planner, "策划小王", is("conv-a"))).toEqual([]);
+    for (const t of [one, two, other]) await coder.send(t.thread.id, { kind: "reply", answers: [{ questionId: "q1", text: `答${t.thread.title}` }] });
+
+    const got = await takeInbox(planner, "策划小王", is("conv-a"));
+    expect(got.map((i) => i.thread.title).sort()).toEqual(["乙", "甲"]);
+    expect(got.every((i) => i.fresh.some((m) => m.kind === "reply") && i.fresh.every((m) => m.kind !== "request"))).toBe(true);
+    expect(got.every((i) => i.thread.request?.pickedAt !== null)).toBe(true);
+    const first = got.find((i) => i.thread.title === "甲")!;
+    expect(newRepliesText(first.thread, first, "x")).toContain("**甲怎么做** → 答甲");
+    expect(newRepliesText(first.thread, first, "x")).not.toContain("问甲");
+    // Taken: not again; the other conversation's still waits for it.
+    expect(await takeInbox(planner, "策划小王", is("conv-a"))).toEqual([]);
+    expect((await takeInbox(planner, "策划小王", is("conv-b"))).map((i) => i.thread.title)).toEqual(["丙"]);
+    // Carried on from another conversation: the session is that one's now.
+    await planner.send(one.thread.id, { kind: "text", body: "再问一句", pass: true, via: { kind: "ai", conv: "conv-c" } });
+    expect((await planner.threads()).find((t) => t.id === one.thread.id)?.request?.conv).toBe("conv-c");
+
+    // The MCP: its own mark on what it sends; relay_inbox takes those.
+    const mcp = await createRelayMcp({ settings: () => plannerSettings, conv: "conv-m" });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "claude-code", version: "1" });
+    await Promise.all([mcp.connect(a), client.connect(b)]);
+    closers.push(() => client.close());
+    const text = (r: unknown) => ((r as { content: Array<{ text: string }> }).content[0]?.text ?? "");
+    const asked = text(await client.callTool({ name: "relay_session_open", arguments: { to: "程序老李", title: "丁", body: "问丁", questions: [{ text: "丁怎么做" }] } }));
+    const threadId = /threadId: (\S+)/.exec(asked)![1]!;
+    expect((await coder.threads()).find((t) => t.id === threadId)?.request?.conv).toBe("conv-m");
+    expect(text(await client.callTool({ name: "relay_inbox", arguments: {} }))).toBe("这个对话发出的会话还没有新回复。");
+    await coder.send(threadId, { kind: "reply", answers: [{ questionId: "q1", text: "答丁" }] });
+    expect(text(await client.callTool({ name: "relay_inbox", arguments: {} }))).toContain("**丁怎么做** → 答丁");
+    expect(text(await client.callTool({ name: "relay_inbox", arguments: {} }))).toBe("这个对话发出的会话还没有新回复。");
   });
 });
 
@@ -515,6 +802,43 @@ describe("devices", () => {
     expect((await devicesCall(url, a, "GET", `/api/devices/pair?device=${A.device}`)).body).toMatchObject({ incoming: [] });
   });
 
+  it("lists the account's other online devices; a request to one of them is that device's alone", async () => {
+    const { url, a, b } = await two();
+    const A2 = { account: A.account, device: "d_aaaa22222222" };
+    const A3 = { account: A.account, device: "d_aaaa33333333" };
+    expect((await devicesCall(url, a, "GET", "/api/devices/online?device=x")).status).toBe(400);
+    expect((await devicesCall(url, a, "GET", `/api/devices/online?device=${A.device}`)).body).toEqual({ devices: [] });
+    const d2 = await device(url, a, A2.device, "笔记本");
+    await d2.next("hello");
+    const d3 = await device(url, a, A3.device, "家里的电脑");
+    await d3.next("hello");
+    // Another account's device is never listed.
+    await (await device(url, b, B.device, "别人的")).next("hello");
+    const listed = await devicesCall<{ devices: Array<{ device: string; name: string; since: number }> }>(url, a, "GET", `/api/devices/online?device=${A.device}`);
+    expect(listed.body.devices.map((d) => [d.device, d.name]).sort()).toEqual([
+      [A2.device, "笔记本"],
+      [A3.device, "家里的电脑"],
+    ]);
+    expect(listed.body.devices[0]!.since).toBeGreaterThan(0);
+    // The asking device is left out even when it is connected itself.
+    expect((await devicesCall<{ devices: Array<{ device: string }> }>(url, a, "GET", `/api/devices/online?device=${A2.device}`)).body.devices.map((d) => d.device)).toEqual([A3.device]);
+
+    // A (not connected) asks 笔记本 only: 笔记本 hears of it and may answer; 家里的电脑 neither.
+    expect((await devicesCall(url, a, "POST", "/api/devices/pair", { device: A.device, deviceName: "台式机", to: A.account, toDevice: A.device })).status).toBe(400);
+    const asked = await devicesCall<{ request: PairRequest }>(url, a, "POST", "/api/devices/pair", { device: A.device, deviceName: "台式机", to: A.account, toDevice: A2.device });
+    expect(asked.body.request).toMatchObject({ to: A.account, toDevice: { device: A2.device, name: "笔记本" } });
+    expect(await d2.next("pair-request")).toMatchObject({ request: { id: asked.body.request.id } });
+    expect((await devicesCall(url, a, "GET", `/api/devices/pair?device=${A2.device}`)).body).toMatchObject({ incoming: [{ id: asked.body.request.id }] });
+    expect((await devicesCall(url, a, "GET", `/api/devices/pair?device=${A3.device}`)).body).toMatchObject({ incoming: [] });
+    expect((await devicesCall(url, a, "POST", `/api/devices/pair/${asked.body.request.id}/answer`, { device: A3.device, deviceName: "家里的电脑", allow: true })).body).toMatchObject({ message: "这个配对请求是发给「笔记本」的" });
+    // Asking the account as a whole is another request beside it.
+    const whole = await devicesCall<{ request: PairRequest }>(url, a, "POST", "/api/devices/pair", { device: A.device, deviceName: "台式机", to: A.account });
+    expect(whole.body.request).toMatchObject({ toDevice: null });
+    expect(whole.body.request.id).not.toBe(asked.body.request.id);
+    const answered = await devicesCall<{ pair: PeerView }>(url, a, "POST", `/api/devices/pair/${asked.body.request.id}/answer`, { device: A2.device, deviceName: "笔记本", allow: true });
+    expect(answered.body.pair).toMatchObject({ peer: { ...A, name: "台式机" }, role: "owner" });
+  });
+
   it("drops a device that stops answering pings, and a second socket of a device replaces the first", async () => {
     const { url, a, b } = await two({ deviceHeartbeatMs: 40, deviceDeadMs: 200 });
     const r = (await devicesCall<{ request: PairRequest }>(url, b, "POST", "/api/devices/pair", { device: B.device, deviceName: "笔记本", to: A.account })).body.request;
@@ -551,7 +875,8 @@ describe("usage prompt", () => {
     const p = usagePrompt({ me: "小王", members: [{ name: "小王", role: "" }, { name: "老李", role: "程序" }], cli: "amo-relay" });
     expect(p).toContain("- 老李（程序）");
     expect(p).not.toContain("- 小王");
-    expect(p).toContain("`relay ask --json <文件>`");
+    expect(p).toContain("`relay ask --json <文件> --conv <标记>`");
+    expect(p).toContain("`relay inbox --conv <标记>`");
     expect(p).toContain('PowerShell 写 `& "amo-relay" people`');
     expect(p).not.toContain("newtask");
     expect(p).toContain("`relay put <本机文件> --thread <threadId>`");

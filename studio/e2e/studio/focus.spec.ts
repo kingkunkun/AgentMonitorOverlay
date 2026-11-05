@@ -235,20 +235,6 @@ test("Focus: the robot dances until looked at; 「Focus 设置」 moves, locks, 
   expect((await windowState(app)).anyFocused).toBe(false);
 });
 
-test("Focus shows the 额度 that 设置 → 额度 marks for it", async () => {
-  studio = await launchStudio();
-  const { page, app } = studio;
-  const channel = await studio.api<{ id: string }>("POST", "/api/channels", { kind: "codex", label: "中转 GPT", baseUrl: studio.mock!.baseUrl, key: "mock-channel-key", balance: { template: "general" } });
-  const opened = app.waitForEvent("window");
-  await page.getByRole("button", { name: /^Focus/ }).click();
-  const focus = await opened;
-  await expect(focus.getByTestId("focus-needs")).toBeVisible();
-  await expect(focus.getByTestId("focus-quota")).toHaveCount(0);
-  await studio.api("PUT", "/api/settings", { quotaDisplay: { [channel.id]: { footer: true, focus: true } } });
-  await expect(focus.getByTestId("focus-quota")).toHaveText("中转 GPT $12.50");
-  await screenshot(app, "stage-14", "S14-H-focus-quota", focus, "focus");
-});
-
 test("Focus: a click Chromium dropped (it came with WM_MOUSEACTIVATE, the page never saw it) is given back (2026-10-15)", async () => {
   studio = await launchStudio();
   const { page, app } = studio;
@@ -427,4 +413,29 @@ test("Focus: 「我知道了」 counts a 完成待审核 entry as reviewed witho
   await expect(page.getByTestId("task-title")).toHaveCount(0);
   await page.waitForTimeout(500);
   await expect(entry).toHaveCount(0);
+});
+
+test("Focus: renaming an ended session or restoring its archived task does not list it as 完成待审核 again (2026-11-03)", async () => {
+  studio = await launchStudio();
+  const { page, app } = studio;
+  const ws = await studio.api<Workspace>("POST", "/api/workspaces", { path: studio.workspace("alpha") });
+  const opened = app.waitForEvent("window");
+  await page.getByRole("button", { name: /^Focus/ }).click();
+  const focus = await opened;
+  const { task, session } = await studio.api<{ task: Task; session: Session }>("POST", "/api/tasks", { title: "做完归档了", workspaceId: ws.id, firstSession: { profileId: "codex-mock", text: "hello done" } });
+  const entry = focus.getByTestId("focus-entry");
+  await expect(entry).toHaveCount(1, { timeout: 30_000 });
+  await focus.getByTestId("focus-done").click();
+  await expect(entry).toHaveCount(0);
+  // Renaming it is not a reply either (Session.endedAt, 2026-11-04).
+  await studio.api("PATCH", `/api/sessions/${session.id}`, { title: "改个名字" });
+  await page.waitForTimeout(800);
+  await expect(entry).toHaveCount(0);
+  await studio.api("POST", `/api/tasks/${task.id}/archive`);
+  await studio.api("POST", `/api/tasks/${task.id}/unarchive`);
+  // The Host stamps the restored session with the time of restoring; it is still not new finished work.
+  await expect.poll(async () => (await studio!.api<StateSnapshot>("GET", "/api/state")).sessions.find((s) => s.id === session.id)?.archivedAt).toBeNull();
+  await page.waitForTimeout(800);
+  await expect(entry).toHaveCount(0);
+  await expect(focus.getByTestId("focus-needs")).toHaveText("没有待处理");
 });

@@ -80,6 +80,8 @@ async function pairedStudios(prefix: string): Promise<{ a: Studio; b: Studio }> 
   studios.push(a);
   const b = await launchStudio({ env: { AMO_HOME: await home("笔记本的我", keyB, "B 笔记本") } });
   studios.push(b);
+  // 远程 is off until turned on (2026-10-30).
+  await Promise.all([a, b].map((x) => x.api("PUT", "/api/remote/enabled", { enabled: true })));
   await until(() => b.api<RemoteState>("GET", "/api/remote"), (s) => s.connection.state === "online", "B online");
   await until(() => a.api<RemoteState>("GET", "/api/remote"), (s) => s.connection.state === "online", "A online");
   await b.api("POST", "/api/remote/pair", { account: "台式机的我" });
@@ -141,7 +143,8 @@ test("B opens a remote task's Markdown, HTML and pictures: fetched from A with a
   // What would be this computer's copy is not offered: VS Code, Explorer, 书签; 改动 is off.
   await expect(viewer.getByTestId("viewer-reveal")).toHaveCount(0);
   await expect(viewer.getByTestId("viewer-mode-changes")).toBeDisabled();
-  await expect(viewer.getByTestId("passage-notes")).toContainText("远程任务的文件只能看");
+  // 远程 Reviewer (2026-11-02): a file of the task's folder takes comments here (kept on B).
+  await expect(viewer.getByTestId("passage-notes")).toContainText("选中文字，点「批注」写意见");
   await screenshot(b.app, "studio", "remote-viewer-markdown", viewer, "viewer");
 
   // The big picture: 「正在从 A 台式机 取文件…」 with how far it came, then the picture.

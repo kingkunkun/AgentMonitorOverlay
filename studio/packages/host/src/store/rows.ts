@@ -30,6 +30,7 @@ export function toTask(r: Row): Task {
     topicId: strOrNull(r.topic_id),
     column: str(r.column_name) as TaskColumn,
     ...(typeof r.description === "string" && r.description ? { description: r.description } : {}),
+    ...(typeof r.first_message === "string" && r.first_message ? { firstMessage: r.first_message } : {}),
     ...(Number(r.lead) === 1 ? { lead: true } : {}),
     ...(Number(r.relay_auto) === 1 ? { relayAuto: true } : {}),
     ...parseRemote(r.remote),
@@ -90,6 +91,7 @@ export function toSession(r: Row): Session {
     createdAt: str(r.created_at),
     updatedAt: str(r.updated_at),
     archivedAt: strOrNull(r.archived_at),
+    endedAt: strOrNull(r.ended_at),
   };
 }
 
@@ -111,6 +113,11 @@ function parseOptions(v: unknown): SessionOptions {
     const out: SessionOptions = {};
     for (const k of ["model", "effort", "permission"] as const) if (typeof o[k] === "string" && o[k]) out[k] = o[k] as string;
     if (typeof o.fast === "boolean") out.fast = o.fast;
+    // MCP 设置 (2026-11-04): the session's own choices by server name.
+    if (o.mcp && typeof o.mcp === "object" && !Array.isArray(o.mcp)) {
+      const mcp = Object.fromEntries(Object.entries(o.mcp as Record<string, unknown>).filter(([, x]) => typeof x === "boolean")) as Record<string, boolean>;
+      if (Object.keys(mcp).length) out.mcp = mcp;
+    }
     return out;
   } catch {
     return {};

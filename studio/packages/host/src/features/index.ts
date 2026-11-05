@@ -4,6 +4,7 @@ import type { AmoTool, ToolContext } from "../mcp/tool-kit.js";
 import { projectsRoutes } from "./projects/routes.js";
 import { projectsTools } from "./projects/mcp.js";
 import { configRoutes } from "./config/routes.js";
+import { claudeAccountsRoutes } from "./claudeaccounts/routes.js";
 import { tasksRoutes } from "./tasks/routes.js";
 import { tasksTools } from "./tasks/mcp.js";
 import { topicsRoutes } from "./topics/routes.js";
@@ -19,8 +20,10 @@ import { canvasTools } from "./canvas/mcp.js";
 import { canvasReviewRoutes } from "./canvasreview/routes.js";
 import { canvasReviewTools } from "./canvasreview/mcp.js";
 import { reviewRoutes } from "./review/routes.js";
-import { packsRoutes } from "./packs/routes.js";
-import { packsTools } from "./packs/mcp.js";
+import { promptTemplatesRoutes } from "./prompttemplates/routes.js";
+import { promptTemplatesTools } from "./prompttemplates/mcp.js";
+import { mcpRoutes } from "./mcp/routes.js";
+import { mcpTools } from "./mcp/mcp.js";
 import { attachmentsRoutes } from "./attachments/routes.js";
 import { scratchpadRoutes } from "./scratchpad/routes.js";
 import { gitReviewRoutes } from "./gitreview/routes.js";
@@ -46,6 +49,11 @@ import { dshRoutes } from "./dsh/routes.js";
 import { maintenanceRoutes } from "./maintenance/routes.js";
 import { statsRoutes } from "./stats/routes.js";
 import { remoteRoutes } from "./remote/routes.js";
+import { teamRelayRoutes } from "./teamrelay/routes.js";
+import { teamRelayTools } from "./teamrelay/mcp.js";
+import { issuesTools } from "./issues/mcp.js";
+import { dutyRoutes } from "./duty/routes.js";
+import { dutyTools } from "./duty/mcp.js";
 
 /**
  * Every Host feature (features/<name>/): its service class lives on HostService, its routes and MCP tools are listed
@@ -62,6 +70,7 @@ export interface HostFeature {
 export const FEATURES: readonly HostFeature[] = [
   { name: "projects", routes: projectsRoutes, tools: projectsTools },
   { name: "config", routes: configRoutes },
+  { name: "claudeaccounts", routes: claudeAccountsRoutes },
   { name: "channels", routes: channelsRoutes },
   { name: "dsh", routes: dshRoutes },
   { name: "tasks", routes: tasksRoutes, tools: tasksTools },
@@ -72,7 +81,8 @@ export const FEATURES: readonly HostFeature[] = [
   { name: "canvas", routes: canvasRoutes, tools: canvasTools },
   { name: "canvasreview", routes: canvasReviewRoutes, tools: canvasReviewTools },
   { name: "review", routes: reviewRoutes },
-  { name: "packs", routes: packsRoutes, tools: packsTools },
+  { name: "prompttemplates", routes: promptTemplatesRoutes, tools: promptTemplatesTools },
+  { name: "mcp", routes: mcpRoutes, tools: mcpTools },
   { name: "attachments", routes: attachmentsRoutes },
   { name: "scratchpad", routes: scratchpadRoutes },
   { name: "gitreview", routes: gitReviewRoutes, tools: gitReviewTools },
@@ -90,4 +100,7 @@ export const FEATURES: readonly HostFeature[] = [
   { name: "maintenance", routes: maintenanceRoutes },
   { name: "stats", routes: statsRoutes },
   { name: "remote", routes: remoteRoutes },
+  { name: "teamrelay", routes: teamRelayRoutes, tools: teamRelayTools },
+  { name: "duty", routes: dutyRoutes, tools: dutyTools },
+  { name: "issues", routes: () => [], tools: issuesTools },
 ];

@@ -1,16 +1,24 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { createReadStream, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { createReadStream, existsSync, mkdirSync, rmSync, statSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
+import { basename, join } from "node:path";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { pipeline } from "node:stream";
 import { createGunzip } from "node:zlib";
 import { WebSocketServer, type WebSocket } from "ws";
-import { PLATFORM_ZIP, PlatformFiles, SHA256, TOOL_ID, VERSION } from "./platform.js";
-import { PublicFiles, landingPage, sendFile, sendHtml } from "./public.js";
+import { APK_NAME, PLATFORM_ZIP, PlatformFiles, SHA256, TOOL_ID, VERSION } from "./platform.js";
+import { ANDROID_DOWNLOAD, PublicFiles, landingPage, sendFile, sendHtml, sendRanged } from "./public.js";
+import { sendZip } from "./platform-zip.js";
+import { MIRROR_TOOLS, type MirrorTool, type ToolMirror } from "./mirror.js";
+import { adminPage } from "./admin-page.js";
+import { ServerMonitor } from "./monitor.js";
+import { issuesPage } from "./issues-page.js";
+import { IssueStore } from "./issues.js";
 import { MAX_FILE_BYTES, RELAY_APP, RELAY_VERSION, TICK_MS, type RelayFile, type Health, type Member, type Message, type RelayEvent, type SessionAction, type Thread } from "./protocol.js";
 import { RelayError, type RelayStore } from "./store.js";
 import { checkDeviceId, checkDeviceName, DeviceHub } from "./devices.js";
+import { checkTodoDevice, TodoStore } from "./todo.js";
 import { DEVICE_CHANNEL_VERSION, MAX_DEVICE_FRAME } from "./devices-protocol.js";
 
 // The relay service (plans/relay.md): HTTP for everything, /ws to push new messages and who is online. People register
@@ -19,7 +27,8 @@ import { DEVICE_CHANNEL_VERSION, MAX_DEVICE_FRAME } from "./devices-protocol.js"
 // cookie, is the credential — so the desktop client's pages, loaded from disk, reach it. It also hands out the client
 // (public.ts): / is the page to send people, /client/ and /app/ the client's content, /downloads/ its zip. With a
 // platform dir it also hands out the AMO platform's tools to people signed in (platform.ts): /api/platform/channels,
-// /api/platform/tools/<tool>/<version> and /platform/objects/<sha256>.
+// /api/platform/tools/<tool>/<version> and /platform/objects/<sha256>; and the Android app's newest build,
+// /api/platform/android and /platform/android/<name>.apk (2026-10-31).
 
 export interface RelayServerOptions {
   store: RelayStore;
@@ -33,6 +42,8 @@ export interface RelayServerOptions {
   port?: number;
   /** Where uploaded files are kept (one file per upload, named by its id); none = no files. */
   filesDir?: string;
+  /** Screenshots not on any issue are removed once this old (ms); default a week. Tests set it shorter. */
+  orphanImageMs?: number;
   /** The AMO platform's files (platform.ts: channels, manifests, objects); none = the platform calls answer 404. */
   platformDir?: string;
   /** How often to look for a newer client build (default 5 s) and to send a tick (default TICK_MS). Tests shorten them. */
@@ -41,6 +52,14 @@ export interface RelayServerOptions {
   /** Devices (devices.ts): how often each is pinged (default 15 s) and how long unanswered means gone (default 60 s). */
   deviceHeartbeatMs?: number;
   deviceDeadMs?: number;
+  /** The service's data folder: its size is shown on the admin page's 服务器状态, and the 24-hour curve is kept there
+   *  (monitor.json); none = the curve only in memory. */
+  dataDir?: string;
+  /** How often 服务器状态 takes a point (default 5 min). Tests shorten it. */
+  monitorEveryMs?: number;
+  /** 工具镜像 (mirror.ts, 2026-11-03: Claude Code, Codex): their admin calls and, for people signed in, their files;
+   *  none = 404. Started and closed by whoever made them (bin.ts). */
+  mirrors?: Partial<Record<MirrorTool, ToolMirror>>;
 }
 
 export interface RelayServer {
@@ -139,6 +158,32 @@ export async function startRelayServer(opts: RelayServerOptions): Promise<RelayS
   const serviceName = opts.name?.trim() || "AMO 中转";
   const files = new PublicFiles(opts.publicDir);
   const platform = new PlatformFiles(opts.platformDir);
+  /** A version's whole zip; an object missing or damaged on the server is said as such (409), not a crash. */
+  const platformZip = async (tool: string, version: string) => {
+    try {
+      return await platform.zipOf(tool, version);
+    } catch (err) {
+      throw new RelayError("conflict", `服务器上 ${tool} ${version} 打不成完整包：${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  const mirrorList = () => MIRROR_TOOLS.flatMap((t) => (opts.mirrors?.[t] ? [opts.mirrors[t]] : []));
+  const mirrorOf = (tool: unknown): ToolMirror => {
+    const m = MIRROR_TOOLS.includes(tool as MirrorTool) ? opts.mirrors?.[tool as MirrorTool] : undefined;
+    if (!m) throw new RelayError("not_found", `这个服务没有开${typeof tool === "string" && tool ? ` ${tool.slice(0, 40)} 的` : ""}镜像`);
+    return m;
+  };
+  // 问题页 (2026-10-31, plans/issues.md): its tables in the same database.
+  const issues = new IssueStore(store.db);
+  // Screenshots pasted for a report that was never sent: gone after a week, the bytes with them (2026-11-04, the 11-03
+  // audit). At start and every 6 hours.
+  const pruneImages = () => {
+    for (const id of issues.pruneOrphanImages(opts.orphanImageMs ?? 7 * 24 * 3600_000)) if (opts.filesDir) rmSync(join(opts.filesDir, id), { force: true });
+  };
+  pruneImages();
+  const pruneTimer = setInterval(pruneImages, 6 * 3600_000);
+  pruneTimer.unref?.();
+  // 待办 (2026-11-01, plans/todo.md): every account's todo lists, in the same database.
+  const todo = new TodoStore(store.db);
   const sockets = new Map<string, Set<WebSocket>>();
   const lastSeen = new Map<string, number>();
   const waiters = new Set<Waiter>();
@@ -149,6 +194,14 @@ export async function startRelayServer(opts: RelayServerOptions): Promise<RelayS
     isMember: (n) => store.members().some((m) => m.name === n),
     ...(opts.deviceHeartbeatMs ? { heartbeatMs: opts.deviceHeartbeatMs } : {}),
     ...(opts.deviceDeadMs ? { deadMs: opts.deviceDeadMs } : {}),
+  });
+
+  // 服务器状态 (monitor.ts, 2026-10-31): a point every 5 minutes, the rest worked out when the admin page asks.
+  const monitor = new ServerMonitor({
+    file: opts.dataDir ? join(opts.dataDir, "monitor.json") : undefined,
+    dirs: [{ label: "数据", path: opts.dataDir }, { label: "平台发布", path: opts.platformDir }, { label: "客户端", path: opts.publicDir }],
+    counts: () => ({ people: sockets.size, devices: devices.liveCount }),
+    ...(opts.monitorEveryMs ? { everyMs: opts.monitorEveryMs } : {}),
   });
 
   const members = (): Member[] =>
@@ -223,17 +276,26 @@ export async function startRelayServer(opts: RelayServerOptions): Promise<RelayS
     return name;
   };
 
+  // Registering takes a passphrase when the admin page set one (kept in the store, hashed) or the service was started with
+  // --passphrase / AMO_RELAY_PASSPHRASE. The page's one wins when both exist, so the page is what decides once it's used.
+  const inviteNeeded = () => store.hasPassphrase() || !!opts.passphrase;
+  const passphraseOk = (given: unknown): boolean => {
+    if (store.hasPassphrase()) return store.passphraseMatches(given);
+    if (opts.passphrase) return typeof given === "string" && samePassphrase(given, opts.passphrase);
+    return true;
+  };
+
   async function route(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
     // HEAD is answered as GET; Node leaves the body out.
     const method = req.method === "HEAD" ? "GET" : (req.method ?? "GET");
     const path = url.pathname;
     if (method === "GET" && path === "/api/health") {
-      const health: Health = { app: RELAY_APP, version: RELAY_VERSION, name: serviceName, invite: !!opts.passphrase, client: files.manifest()?.version ?? null, shell: files.shell(), devices: DEVICE_CHANNEL_VERSION };
+      const health: Health = { app: RELAY_APP, version: RELAY_VERSION, name: serviceName, invite: inviteNeeded(), client: files.manifest()?.version ?? null, shell: files.shell(), devices: DEVICE_CHANNEL_VERSION };
       return send(res, 200, health);
     }
     if (method === "POST" && path === "/api/register") {
       const body = await readJson(req);
-      if (opts.passphrase && (typeof body.passphrase !== "string" || !samePassphrase(body.passphrase, opts.passphrase))) throw new RelayError("unauthorized", "邀请口令不对");
+      if (!passphraseOk(body.passphrase)) throw new RelayError("unauthorized", "邀请口令不对");
       const joined = store.register(body.name, body.password, body.role);
       pushMembers();
       return send(res, 200, joined);
@@ -242,8 +304,107 @@ export async function startRelayServer(opts: RelayServerOptions): Promise<RelayS
       const body = await readJson(req);
       return send(res, 200, store.login(body.name, body.password));
     }
+    // The admin page (2026-10-29, the user: a plain page for the LAN, no AMO login): its own password, set on the service
+    // machine (`amo-relay admin-password`), sent with every call as x-amo-admin.
+    if (method === "GET" && path === "/admin") return sendHtml(res, adminPage(serviceName));
+    // 问题页 (2026-10-31): the page is plain; what it shows and does takes the team account (/api/issues below).
+    if (method === "GET" && path === "/issues") return sendHtml(res, issuesPage(serviceName));
+    if (path.startsWith("/api/admin/")) {
+      if (!store.hasAdminPassword()) throw new RelayError("forbidden", "还没有设管理密码：在服务器上运行 amo-relay admin-password（或在开发机上 npm run relay:mac -- admin-password）");
+      if (!store.adminPasswordMatches(req.headers["x-amo-admin"])) {
+        // A guess costs a moment.
+        await new Promise((r) => setTimeout(r, 600));
+        throw new RelayError("unauthorized", "管理密码不对");
+      }
+      const kick = (name: string) => {
+        for (const ws of sockets.get(name) ?? []) ws.close(1012, "account changed");
+        devices.dropAccount(name);
+      };
+      if (method === "GET" && path === "/api/admin/members") {
+        const online = new Map(members().map((m) => [m.name, m]));
+        return send(res, 200, { service: serviceName, invite: inviteNeeded(), members: store.adminMembers().map((m) => ({ ...m, online: !!online.get(m.name)?.online, lastSeen: online.get(m.name)?.lastSeen ?? 0 })) });
+      }
+      if (method === "GET" && path === "/api/admin/mirror") {
+        if (!mirrorList().length) throw new RelayError("not_found", "这个服务没有开工具镜像");
+        return send(res, 200, { tools: mirrorList().map((m) => m.adminView()) });
+      }
+      if (method === "GET" && path === "/api/admin/monitor") {
+        return send(res, 200, { everyMs: monitor.intervalMs, now: await monitor.now(), history: monitor.history() });
+      }
+      const body = await readJson(req);
+      if (method === "POST" && path === "/api/admin/rename") {
+        const done = store.renameMember(body.from, body.to);
+        kick(done.from);
+        pushMembers();
+        return send(res, 200, done);
+      }
+      if (method === "POST" && path === "/api/admin/password") {
+        const password = typeof body.password === "string" && body.password ? body.password : Array.from({ length: 8 }, () => "abcdefghjkmnpqrstuvwxyz23456789"[randomBytes(1)[0]! % 31]).join("");
+        store.setPassword(body.name, password);
+        kick(String(body.name));
+        return send(res, 200, { name: body.name, password });
+      }
+      // 维护者 (2026-11-03, the user): sees every issue on 问题页 and reviews the others' reports.
+      if (method === "POST" && path === "/api/admin/maintainer") {
+        store.setMaintainer(body.name, body.maintainer !== false);
+        return send(res, 200, { ok: true });
+      }
+      if (method === "POST" && path === "/api/admin/disable") {
+        store.setDisabled(body.name, body.disabled !== false);
+        if (body.disabled !== false) kick(String(body.name));
+        pushMembers();
+        return send(res, 200, { ok: true });
+      }
+      // The admin password itself, from the page (2026-10-29, the user asked): the current one already checked above.
+      if (method === "POST" && path === "/api/admin/admin-password") {
+        store.setAdminPassword(body.password);
+        return send(res, 200, { ok: true });
+      }
+      // The registration passphrase (2026-10-29, the user asked): empty clears it; logins already made are untouched.
+      if (method === "POST" && path === "/api/admin/passphrase") {
+        store.setPassphrase(typeof body.passphrase === "string" ? body.passphrase : null);
+        return send(res, 200, { invite: inviteNeeded() });
+      }
+      // 工具镜像 (mirror.ts): a card per tool on the admin page; the body says which tool.
+      if (path.startsWith("/api/admin/mirror")) {
+        const mirror = mirrorOf(body.tool);
+        const { tool: _tool, ...settings } = body as Record<string, unknown>;
+        if (method === "POST" && path === "/api/admin/mirror/settings") {
+          mirror.saveSettings(settings);
+          return send(res, 200, mirror.adminView());
+        }
+        if (method === "POST" && path === "/api/admin/mirror/check") {
+          if (!mirror.settings().enabled) throw new RelayError("conflict", `${mirror.source.name} 镜像关着：先打开它`);
+          // Answered at once; the page follows the check by asking again. A failure is the check's own (status.error).
+          mirror.checkNow().catch(() => undefined);
+          return send(res, 200, mirror.adminView());
+        }
+      }
+      throw new RelayError("not_found", "没有这个管理操作");
+    }
     // The AMO platform's files (platform.ts, plans/amo-lan-platform.md): for people signed in; objects also take ?key=,
     // so a download can be a plain URL.
+    // 工具镜像 (mirror.ts, 2026-11-03), for people signed in like the platform's files: what is ready (/api/platform/mirror/
+    // <tool>), a ready version's own file (Claude Code: Anthropic's manifest) and its platform files with Range (a broken
+    // download goes on).
+    if (method === "GET" && (path.startsWith("/api/platform/mirror/") || path.startsWith("/platform/mirror/"))) {
+      auth(req, url);
+      const api = path.startsWith("/api/");
+      const [tool = "", ...parts] = path.slice(api ? "/api/platform/mirror/".length : "/platform/mirror/".length).split("/");
+      const mirror = mirrorOf(tool);
+      if (api && !parts.length) return send(res, 200, mirror.platformView());
+      if (!api && parts.length === 2) {
+        const file = mirror.metaFile(parts[0]!, parts[1]!);
+        if (!file) throw new RelayError("not_found", `镜像里没有 ${parts.join(" ")}`);
+        return sendFile(res, file);
+      }
+      if (!api && parts.length === 3) {
+        const got = mirror.file(parts[0]!, parts[1]!);
+        if (!got || basename(got.path) !== parts[2]) throw new RelayError("not_found", `镜像里没有 ${parts.join(" ")}`);
+        return sendRanged(req, res, got.path, got.size);
+      }
+      throw new RelayError("not_found", `没有这个接口：${method} ${path}`);
+    }
     if (method === "GET" && (path.startsWith("/api/platform/") || path.startsWith("/platform/"))) {
       auth(req, url);
       if (!platform.dir) throw new RelayError("not_found", "这个服务没有放 AMO 平台的文件：启动时用 --platform-dir 或环境变量 AMO_RELAY_PLATFORM_DIR 指定平台目录");
@@ -255,14 +416,46 @@ export async function startRelayServer(opts: RelayServerOptions): Promise<RelayS
         }
       };
       if (path === "/api/platform/channels") return send(res, 200, platform.channels());
-      const tm = /^\/api\/platform\/tools\/([^/]+)\/([^/]+)$/.exec(path);
+      // The Android app updates itself from here (2026-10-31, the user).
+      if (path === "/api/platform/android") {
+        const latest = platform.androidLatest();
+        if (!latest) throw new RelayError("not_found", "服务器上还没有发布安卓版");
+        return send(res, 200, latest);
+      }
+      const am = /^\/platform\/android\/([^/]+)$/.exec(path);
+      if (am) {
+        const name = part(am[1]!);
+        if (!APK_NAME.test(name)) throw new RelayError("bad_request", `安装包的名字不对：${name}`);
+        const file = platform.apk(name);
+        if (!file) throw new RelayError("not_found", `服务器上没有 ${name}`);
+        return sendFile(res, file, true);
+      }
+      // A version's manifest, or (/summary, 2026-11-03) all of it but the file list: what the platform shows. The
+      // manifest goes minified, gzipped to a client that takes it (Studio's: 2.3 MB as written, 0.53 MB so).
+      const tm = /^\/api\/platform\/tools\/([^/]+)\/([^/]+)(\/summary)?$/.exec(path);
       if (tm) {
         const [tool, version] = [part(tm[1]!), part(tm[2]!)];
         if (!TOOL_ID.test(tool)) throw new RelayError("bad_request", `工具名不对：${tool}`);
         if (!VERSION.test(version)) throw new RelayError("bad_request", `版本号不对：${version}`);
-        const file = platform.manifest(tool, version);
-        if (!file) throw new RelayError("not_found", `${tool} 还没有发布 ${version}`);
-        return sendFile(res, file);
+        const served = platform.manifestServed(tool, version);
+        if (!served) throw new RelayError("not_found", `${tool} 还没有发布 ${version}`);
+        if (tm[3]) return send(res, 200, served.summary);
+        const gzipped = acceptsGzip(req.headers["accept-encoding"]);
+        const body = gzipped ? served.gzip : served.json;
+        res.writeHead(200, { "content-type": "application/json; charset=utf-8", "content-length": String(body.length), vary: "accept-encoding", ...(gzipped ? { "content-encoding": "gzip" } : {}) });
+        res.end(body);
+        return;
+      }
+      // A version's whole program as one zip (platform-zip.ts, 2026-11-03): the platform's 更新 page falls back on it when
+      // the update file by file does not go through. Range and If-Range, so a broken download goes on.
+      const zm = /^\/platform\/zip\/([^/]+)\/([^/]+)$/.exec(path);
+      if (zm) {
+        const [tool, version] = [part(zm[1]!), part(zm[2]!)];
+        if (!TOOL_ID.test(tool)) throw new RelayError("bad_request", `工具名不对：${tool}`);
+        if (!VERSION.test(version)) throw new RelayError("bad_request", `版本号不对：${version}`);
+        const zip = await platformZip(tool, version);
+        if (!zip) throw new RelayError("not_found", `${tool} 还没有发布 ${version}`);
+        return sendZip(req, res, zip.layout, zip.filename);
       }
       const om = /^\/platform\/objects\/([^/]+)$/.exec(path);
       if (om) {
@@ -289,10 +482,24 @@ export async function startRelayServer(opts: RelayServerOptions): Promise<RelayS
       throw new RelayError("not_found", `没有这个接口：${method} ${path}`);
     }
     if (method === "GET" && !path.startsWith("/api/")) {
-      // The platform's own zip: in downloads/ beside the client's, or in the platform dir (which deploy leaves alone).
-      const platformZip = files.file("downloads", PLATFORM_ZIP) ?? platform.zip();
-      if (path === "/" || path === "/index.html") return sendHtml(res, landingPage(serviceName, files.manifest(), files.downloads().filter((f) => f.name !== PLATFORM_ZIP), platformZip ? { size: statSync(platformZip).size } : null));
-      if (path === `/downloads/${PLATFORM_ZIP}` && platformZip) return sendFile(res, platformZip, true);
+      // The platform's own zip (2026-11-03, the user: each release updates the page's too): made from the newest
+      // published platform; only when none is published, the one put by hand (downloads/ beside the client's, or in the
+      // platform dir).
+      const newest = platform.dir ? platform.newestPlatform() : null;
+      const made = newest && (path === "/" || path === "/index.html" || path === `/downloads/${PLATFORM_ZIP}`) ? await platformZip("platform", newest).catch(() => null) : null;
+      const platformZipFile = made ? null : (files.file("downloads", PLATFORM_ZIP) ?? platform.zip());
+      // The Android app's newest build, for anyone on the page (2026-11-02, the user: a phone installs it from here without
+      // signing in; it pairs only after signing in). Updates still go through /platform/android/ (signed in).
+      const android = platform.dir ? platform.androidLatest() : null;
+      const pageZip = made ? { size: made.layout.size, version: newest! } : platformZipFile ? { size: statSync(platformZipFile).size } : null;
+      if (path === "/" || path === "/index.html") return sendHtml(res, landingPage(serviceName, files.manifest(), files.downloads().filter((f) => f.name !== PLATFORM_ZIP), pageZip, android));
+      if (path === `/downloads/${PLATFORM_ZIP}` && made) return sendZip(req, res, made.layout, `AMO-Platform-win-${newest}.zip`);
+      if (path === `/downloads/${PLATFORM_ZIP}` && platformZipFile) return sendFile(res, platformZipFile, true);
+      if (path === ANDROID_DOWNLOAD) {
+        const file = android ? platform.apk(android.file) : null;
+        if (!file) throw new RelayError("not_found", "服务器上还没有发布安卓版");
+        return sendFile(res, file, true);
+      }
       if (path === "/app" || path === "/client") {
         res.writeHead(302, { location: `${path}/` });
         res.end();
@@ -322,13 +529,64 @@ export async function startRelayServer(opts: RelayServerOptions): Promise<RelayS
     }
     if (method === "GET" && path === "/api/members") return send(res, 200, { members: members() });
 
+    // 问题页 (2026-10-31, plans/issues.md): issues, their entries and screenshots, 发布打包. Studio's 值守 reads and
+    // answers them with the person's account (`ai` marks what its AI wrote).
+    if (path === "/api/issues" || path.startsWith("/api/issues/")) {
+      // 维护者 (2026-11-03): who asks decides what they see and may do.
+      const who = { name: me, maintainer: store.isMaintainer(me) };
+      if (method === "GET" && path === "/api/issues") {
+        const after = Number(url.searchParams.get("after") ?? 0);
+        return send(res, 200, issues.list(who, Number.isFinite(after) && after > 0 ? after : undefined));
+      }
+      if (method === "POST" && path === "/api/issues") return send(res, 200, { issue: issues.create(who, (await readJson(req)) as never) });
+      if (method === "POST" && path === "/api/issues/images") {
+        if (!opts.filesDir) throw new RelayError("bad_request", "这个服务没有开文件存储，不能传截图");
+        const data = await readRaw(req, MAX_FILE_BYTES);
+        if (!data.length) throw new RelayError("bad_request", "图片是空的");
+        const id = `ii_${randomBytes(8).toString("hex")}`;
+        const image = issues.addImage(me, { id, name: url.searchParams.get("name"), type: url.searchParams.get("type") || req.headers["content-type"], size: data.length });
+        mkdirSync(opts.filesDir, { recursive: true });
+        await writeFile(join(opts.filesDir, id), data);
+        return send(res, 200, { image });
+      }
+      const im = /^\/api\/issues\/images\/(ii_[0-9a-f]{16})$/.exec(path);
+      if (im && method === "GET") {
+        const image = issues.image(who, im[1]!);
+        const where = opts.filesDir ? join(opts.filesDir, image.id) : null;
+        if (!where || !existsSync(where)) throw new RelayError("not_found", "图片的内容不在了");
+        res.writeHead(200, { "content-type": image.type, "content-length": String(image.size), "cache-control": "private, max-age=31536000, immutable", "x-content-type-options": "nosniff", "content-security-policy": "sandbox" });
+        createReadStream(where).pipe(res);
+        return;
+      }
+      if (method === "POST" && path === "/api/issues/release") {
+        const body = await readJson(req);
+        return send(res, 200, { release: issues.requestRelease(who, body.on !== false) });
+      }
+      if (method === "POST" && path === "/api/issues/release/done") {
+        const body = await readJson(req);
+        return send(res, 200, issues.released(who, body.version, body.numbers));
+      }
+      // `npm run release` says where its test build is (2026-10-31): the page shows it.
+      if (method === "POST" && path === "/api/issues/release/build") return send(res, 200, { release: issues.reportBuild(me, (await readJson(req)) as never) });
+      const nm = /^\/api\/issues\/(\d+)(\/entries)?$/.exec(path);
+      if (nm) {
+        const number = Number(nm[1]);
+        if (method === "GET" && !nm[2]) return send(res, 200, { issue: issues.get(who, number) });
+        if (method === "POST" && nm[2]) return send(res, 200, { issue: issues.addEntry(who, number, (await readJson(req)) as never) });
+        if (method === "PATCH" && !nm[2]) return send(res, 200, { issue: issues.update(who, number, (await readJson(req)) as never) });
+      }
+      throw new RelayError("not_found", `没有这个接口：${method} ${path}`);
+    }
+
     // Devices (devices-protocol.ts): pairing requests and pairs, each call naming the calling device of this account.
-    if (path === "/api/devices/pair" || path === "/api/devices/pairs" || path === "/api/devices/unpair" || path.startsWith("/api/devices/pair/")) {
+    if (path === "/api/devices/pair" || path === "/api/devices/pairs" || path === "/api/devices/unpair" || path === "/api/devices/online" || path.startsWith("/api/devices/pair/")) {
       const body = method === "GET" || method === "DELETE" ? {} : await readJson(req);
       const device = checkDeviceId(method === "GET" || method === "DELETE" ? url.searchParams.get("device") : body.device);
       const self = { account: me, device };
       const named = () => ({ ...self, name: checkDeviceName(body.deviceName) });
-      if (method === "POST" && path === "/api/devices/pair") return send(res, 200, { request: devices.requestPair(named(), body.to) });
+      if (method === "POST" && path === "/api/devices/pair") return send(res, 200, { request: devices.requestPair(named(), body.to, body.toDevice) });
+      // 远程页的配对弹窗 (2026-10-29): the account's other devices online now, to pick one to pair with.
+      if (method === "GET" && path === "/api/devices/online") return send(res, 200, { devices: devices.onlineDevices(self) });
       if (method === "GET" && path === "/api/devices/pair") return send(res, 200, devices.requests(self));
       if (method === "GET" && path === "/api/devices/pairs") return send(res, 200, { pairs: devices.pairs(self) });
       if (method === "POST" && path === "/api/devices/unpair") return send(res, 200, { ok: true, removed: devices.unpair(self, body.peerAccount, body.peerDevice) });
@@ -339,6 +597,15 @@ export async function startRelayServer(opts: RelayServerOptions): Promise<RelayS
         return send(res, 200, { ok: true });
       }
       throw new RelayError("not_found", `没有这个接口：${method} ${path}`);
+    }
+    // 待办 (todo-protocol.ts): the account's lists, each call naming the calling device.
+    if (method === "GET" && path === "/api/todo") {
+      const device = checkTodoDevice(url.searchParams.get("device"), url.searchParams.get("deviceName"));
+      return send(res, 200, todo.snapshot(me, device, Number(url.searchParams.get("since") ?? 0)));
+    }
+    if (method === "POST" && path === "/api/todo/ops") {
+      const body = await readJson(req);
+      return send(res, 200, todo.apply(me, checkTodoDevice(body.device, body.deviceName), body.ops));
     }
     if (method === "GET" && path === "/api/threads") return send(res, 200, { threads: store.threadsFor(me) });
     if (method === "POST" && path === "/api/threads/direct") {
@@ -416,7 +683,7 @@ export async function startRelayServer(opts: RelayServerOptions): Promise<RelayS
       if (!data.length) throw new RelayError("bad_request", "文件是空的");
       const id = `f_${randomBytes(8).toString("hex")}`;
       mkdirSync(opts.filesDir, { recursive: true });
-      writeFileSync(join(opts.filesDir, id), data);
+      await writeFile(join(opts.filesDir, id), data);
       let file;
       try {
         const type = url.searchParams.get("type") || String(req.headers["content-type"] ?? "") || "application/octet-stream";
@@ -633,9 +900,11 @@ export async function startRelayServer(opts: RelayServerOptions): Promise<RelayS
       closing = true;
       clearInterval(watchClient);
       clearInterval(tick);
+      clearInterval(pruneTimer);
       for (const w of [...waiters]) w.done([]);
       for (const set of sockets.values()) for (const ws of set) ws.terminate();
       devices.close();
+      monitor.close();
       wss.close();
       deviceWss.close();
       server.closeAllConnections();

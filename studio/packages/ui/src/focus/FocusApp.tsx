@@ -3,26 +3,27 @@ import { remoteHeldTasks, type Session, type StateSnapshot } from "@amo-studio/p
 import { useHostState } from "../host/useHostState.js";
 import { needsPerson } from "../lib/status.js";
 import { noteFocusJump } from "../lib/focusJump.js";
-import { hangsUnderOf, interruptedSince, noteSeen, runningSubs, subsByParent, unseenSessions, useSessionSeen } from "../lib/sessionSeen.js";
+import { hangsUnderOf, interruptedSince, noteSeen, runningSubs, subsByParent, unseenSessions, useSessionSeen, withGrants } from "../lib/sessionSeen.js";
 import { DecisionCard, useOpenDecisions } from "../collab/DecisionPanel.js";
 import { usePendingProposals } from "../planning/ProposalsPanel.js";
 import { useTaskPlans } from "../taskplans/TaskPlans.js";
 import { RelayCard, useRelays } from "../relays/Relays.js";
+import { TeamSendCard, useTeamSends } from "../teamrelay/TeamRelay.js";
 import { useWaitingQuestionList } from "../canvas/useCallouts.js";
-import { useSettings } from "../settings/SettingsDialog.js";
+import { useSettings } from "../settings/useSettings.js";
 import { ANGRY_AFTER_MS, attentionKeys, longestWait, PASSTHROUGH_INTERACTIVE, pruneSeen, trackFirstSeen, readFocusLocked, readFocusPassthrough, shouldAlert, writeFocusLocked, writeFocusPassthrough } from "./attention.js";
 import { PixelBot, type BotMood } from "./PixelBot.js";
-import { FocusQuota } from "./FocusQuota.js";
 import { usePetSkin } from "./petSkin.js";
 import { FocusEntry, isToReview, summary, TO_REVIEW } from "./FocusEntry.js";
 import { PinButton, PinnedEntry, WAITING_SUBS, WorkingEntry } from "./FocusWorking.js";
-import { PINNED_KEY, pinnedSession, SUBS_OPEN_KEY } from "./pins.js";
+import { StatusWord } from "./StatusWord.js";
+import { ALSO_MINE_KEY, PINNED_KEY, pinnedSession, SUBS_OPEN_KEY } from "./pins.js";
 import { useStoredIds } from "../lib/storedIds.js";
 import { historyRows, readHistory, updateHistory, writeHistory, type Attention, type FocusRecord } from "./history.js";
 import { relativeTime, SESSION_LOOK } from "../lib/status.js";
 import { FocusSettings, ICON, type SettingItem } from "./FocusSettings.js";
 import { useWindowShape } from "./windowShape.js";
-import { useRemote } from "../settings/remote.js";
+import { useRemote } from "../remote/remote.js";
 import { FocusPairRequest } from "./FocusPairRequest.js";
 import { FocusTaskRequest } from "./FocusTaskRequest.js";
 import "./focus.css";
@@ -69,6 +70,8 @@ export function FocusApp() {
   const plans = useTaskPlans(host.kind === "ready" ? host.link : NO_LINK).filter((p) => p.state === "open");
   // 传话 (stage 16): answered here in place, like an approval.
   const relays = useRelays(host.kind === "ready" ? host.link : NO_LINK).filter((r) => r.state === "pending");
+  // 会话里用中转 (2026-10-30): a session wants to ask someone on the team; it waits for the person.
+  const teamSends = useTeamSends(host.kind === "ready" ? host.link : null).filter((s) => s.state === "pending");
   // 画布审阅 (2026-10-27): topics whose canvas has questions waiting for the person, oldest question first.
   const questionsByTopic = useWaitingQuestionList(host.kind === "ready" ? host.link : null);
   // 远程 (2026-10-29): someone asks to pair with this computer — answered here, like an approval.
@@ -85,7 +88,10 @@ export function FocusApp() {
     return () => clearInterval(t);
   }, [remote?.grants.length]);
   const held = remoteHeldTasks(remote, clock);
-  const mine = (s: Session) => !s.taskId || !held.has(s.taskId);
+  // 2026-11-02 (问题 #8): 进行中 and the 运行中 count follow this too — the device that sent the work is the one watching
+  // it; 「我也关心」 on the task page (ALSO_MINE_KEY) keeps a task listed here as usual.
+  const alsoMine = useStoredIds(ALSO_MINE_KEY);
+  const mine = (s: Session) => !s.taskId || !held.has(s.taskId) || alsoMine.has(s.taskId);
   const canvasAsks = Object.entries(questionsByTopic)
     .filter(([topicId]) => host.kind !== "ready" || host.state.topics.some((t) => t.id === topicId && !t.archivedAt))
     .map(([topicId, w]) => ({ topicId, ...w }))
@@ -131,8 +137,10 @@ export function FocusApp() {
   // A right-click on the title row (a window drag area) only reaches the main process, which passes it on.
   useEffect(() => window.amo?.focus?.onContextMenu?.(() => setPop(true)), []);
 
-  const seenData = useSessionSeen();
+  const seenHere = useSessionSeen();
   const live = host.kind === "ready" ? host.state : null;
+  // A granted task's sessions: what they had before the grant is not to review here (lib/sessionSeen.ts withGrants).
+  const seenData = live ? withGrants(seenHere, live.tasks, live.sessions) : seenHere;
   // 置顶 and which sessions show their subagents (2026-10-21); forgotten once their task or session is gone.
   const pins = useStoredIds(PINNED_KEY);
   const subsOpen = useStoredIds(SUBS_OPEN_KEY);
@@ -140,6 +148,8 @@ export function FocusApp() {
   const liveSessionsId = live ? live.sessions.filter((s) => !s.archivedAt).map((s) => s.id).join("|") : null;
   // eslint-disable-next-line react-hooks/exhaustive-deps -- follows the ids by content
   useEffect(() => void (liveTasksId !== null && pins.keepOnly(new Set(liveTasksId.split("|")))), [liveTasksId]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- follows the ids by content
+  useEffect(() => void (liveTasksId !== null && alsoMine.keepOnly(new Set(liveTasksId.split("|")))), [liveTasksId]);
   // eslint-disable-next-line react-hooks/exhaustive-deps -- follows the ids by content
   useEffect(() => void (liveSessionsId !== null && subsOpen.keepOnly(new Set(liveSessionsId.split("|")))), [liveSessionsId]);
   const subs = live ? subsByParent(live.sessions) : new Map<string, Session[]>();
@@ -150,7 +160,7 @@ export function FocusApp() {
   // title folded it). Opening it here no longer counts as seeing it.
   const list = [...waiting, ...finished];
   const asks = live ? decisions.filter((d) => live.sessions.some((s) => s.id === d.sessionId && !s.archivedAt)) : [];
-  const keys = attentionKeys([...waiting, ...finished], asks.map((d) => d.id), [...proposals.map((p) => p.id), ...plans.map((p) => p.id), ...relays.map((r) => r.id), ...canvasAsks.map((q) => q.first.id), ...pairAsks.map((r) => r.id), ...taskAsks.map((r) => r.id)]);
+  const keys = attentionKeys([...waiting, ...finished], asks.map((d) => d.id), [...proposals.map((p) => p.id), ...plans.map((p) => p.id), ...relays.map((r) => r.id), ...teamSends.map((s) => s.id), ...canvasAsks.map((q) => q.first.id), ...pairAsks.map((r) => r.id), ...taskAsks.map((r) => r.id)]);
   const keysId = keys.join("|");
   // Forget what was handled, so it alerts again if it comes back.
   // eslint-disable-next-line react-hooks/exhaustive-deps -- follows the keys by content
@@ -181,7 +191,7 @@ export function FocusApp() {
   const reviewKeys = new Set(attentionKeys(toReview, [], []));
   // Green when everything new is finished work to look at.
   const calm = alerting && keys.every((k) => seen.has(k) || reviewKeys.has(k));
-  const things = waiting.length + finished.length + asks.length + proposals.length + plans.length + relays.length + canvasAsks.length + pairAsks.length + taskAsks.length - toReview.length;
+  const things = waiting.length + finished.length + asks.length + proposals.length + plans.length + relays.length + teamSends.length + canvasAsks.length + pairAsks.length + taskAsks.length - toReview.length;
 
   // How long the oldest unacknowledged thing has waited; the clock ticks while something does.
   const firstSeen = useRef<Map<string, number>>(new Map());
@@ -244,8 +254,8 @@ export function FocusApp() {
   }
 
   const { state, link } = host;
-  const needs = waiting.length + finished.length + asks.length + proposals.length + plans.length + relays.length + canvasAsks.length + pairAsks.length + taskAsks.length;
-  const running = state.sessions.filter((s) => !s.archivedAt && s.status === "running").length;
+  const needs = waiting.length + finished.length + asks.length + proposals.length + plans.length + relays.length + teamSends.length + canvasAsks.length + pairAsks.length + taskAsks.length;
+  const running = state.sessions.filter((s) => !s.archivedAt && s.status === "running" && mine(s)).length;
   // 置顶 (2026-10-21): one session of each pinned task, on top; listed nowhere else. Its task's other sessions do not
   // show under 进行中 either (10-22).
   const pinned = pins.ids.flatMap((id) => {
@@ -259,7 +269,7 @@ export function FocusApp() {
   // waiting for subagents of its own (2026-10-21).
   const under = hangsUnderOf(state.sessions);
   const working = state.sessions
-    .filter((s) => !s.archivedAt && s.kind !== "sub" && !under(s) && (s.status === "running" || runningSubs(s.id, subs).length > 0) && !needsPerson(s.status) && !pinnedTask(s))
+    .filter((s) => !s.archivedAt && s.kind !== "sub" && !under(s) && (s.status === "running" || runningSubs(s.id, subs).length > 0) && !needsPerson(s.status) && !pinnedTask(s) && mine(s))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const shown = list.filter((s) => !isPinned(s));
   const openId = open && shown.some((s) => s.id === open) ? open : shown[0] && shown[0].id !== folded ? shown[0].id : null;
@@ -359,7 +369,6 @@ export function FocusApp() {
             {compact ? ICON.expand : ICON.collapse}
           </button>
         </div>
-        <FocusQuota link={link} settings={settings} profiles={state.profiles} />
         {!compact && (needs > 0 || working.length > 0 || pinned.length > 0) && (
           <div className="focus-list" onClickCapture={acknowledge}>
             {/* A click here acknowledges the alert, on click rather than on press: the robot going away lets the panel
@@ -414,9 +423,9 @@ export function FocusApp() {
             )}
             {proposals.length > 0 && (
               // A proposal needs its prompt read (and maybe edited): only the count here, handled on the board.
-              <div className="focus-entry" data-testid="focus-proposals">
+              <div className="focus-entry" data-tone="att" data-testid="focus-proposals">
                 <button type="button" className="focus-row" onClick={() => void window.amo?.openInWorkbench?.({ taskId: "" })}>
-                  <span className="dot" style={{ background: "var(--attention)" }} />
+                  <StatusWord tone="att" word="提案" />
                   <span className="focus-row-text">
                     <span className="focus-title">{proposals.length} 条调度提案</span>
                     <span className="focus-sub">在工作台处理</span>
@@ -426,9 +435,9 @@ export function FocusApp() {
             )}
             {canvasAsks.map((q) => (
               // A question an agent pinned on a canvas card: the workbench opens that canvas with the oldest one open.
-              <div key={q.topicId} className="focus-entry" data-testid="focus-canvas-ask">
+              <div key={q.topicId} className="focus-entry" data-tone="att" data-testid="focus-canvas-ask">
                 <button type="button" className="focus-row" onClick={() => void window.amo?.openInWorkbench?.({ topicId: q.topicId, calloutId: q.first.id })} title="在工作台打开这个专题的画布，并打开最早的那个问题">
-                  <span className="dot" style={{ background: "var(--attention)" }} />
+                  <StatusWord tone="att" word="提问" />
                   <span className="focus-row-text">
                     <span className="focus-title">
                       画布问题 · {state.topics.find((t) => t.id === q.topicId)?.title ?? "专题"}
@@ -446,15 +455,23 @@ export function FocusApp() {
               <FocusTaskRequest key={r.id} link={link} request={r} />
             ))}
             {relays.map((r) => (
-              <div key={r.id} className="focus-entry open" data-testid="focus-relay">
+              <div key={r.id} className="focus-entry open" data-tone="att" data-testid="focus-relay">
                 <RelayCard link={link} relay={r} tasks={state.tasks} className="focus-detail focus-relay" />
               </div>
             ))}
+            {teamSends.map((s) => {
+              const taskId = state.sessions.find((x) => x.id === s.sessionId)?.taskId;
+              return (
+                <div key={s.id} className="focus-entry open" data-tone="att" data-testid="focus-teamsend">
+                  <TeamSendCard link={link} send={s} from={state.tasks.find((t) => t.id === taskId)?.title || undefined} className="focus-detail focus-teamsend teamsend-card" />
+                </div>
+              );
+            })}
             {plans.map((p) => (
               // Read and changed on the 主控's task page (or its topic's canvas): here only that it waits.
-              <div key={p.id} className="focus-entry" data-testid="focus-plan">
+              <div key={p.id} className="focus-entry" data-tone="att" data-testid="focus-plan">
                 <button type="button" className="focus-row" onClick={() => void window.amo?.openInWorkbench?.({ ...(p.fromTaskId ? { taskId: p.fromTaskId } : {}), sessionId: p.fromSessionId })}>
-                  <span className="dot" style={{ background: "var(--attention)" }} />
+                  <StatusWord tone="att" word="拆分" />
                   <span className="focus-row-text">
                     <span className="focus-title">拆任务提案 · {p.tasks.length} 个任务</span>
                     <span className="focus-sub">{state.tasks.find((t) => t.id === p.fromTaskId)?.title || "主控"} · {p.summary.split("\n")[0]}</span>
@@ -465,7 +482,7 @@ export function FocusApp() {
             {asks.map((d) => {
               const s = state.sessions.find((x) => x.id === d.sessionId)!;
               return (
-                <div key={d.id} className="focus-entry open" data-testid="focus-decision">
+                <div key={d.id} className="focus-entry open" data-tone="att" data-testid="focus-decision">
                   <DecisionCard
                     link={link}
                     decision={d}
@@ -513,10 +530,10 @@ export function FocusApp() {
                 // 置顶 from here too (10-22), while the task is there.
                 const task = s?.taskId ? state.tasks.find((t) => t.id === s.taskId && !t.archivedAt) : undefined;
                 return (
-                  <div key={`${r.key}@${r.at}`} className="focus-entry" data-testid="focus-history-entry" data-handled={handled ? "" : undefined}>
+                  <div key={`${r.key}@${r.at}`} className="focus-entry" data-tone={handled ? "wait" : "att"} data-testid="focus-history-entry" data-handled={handled ? "" : undefined}>
                     <div className="focus-row-line">
                       <button type="button" className="focus-row" disabled={!s} onClick={() => goToDeal(r.sessionId, r.taskId)} title={s ? "在工作台打开" : undefined}>
-                        <span className="dot" style={{ background: handled ? "var(--text-faint)" : "var(--attention)" }} />
+                        <StatusWord tone={handled ? "done" : "att"} word={handled ? "已办" : "未办"} />
                         <span className="focus-row-text">
                           <span className="focus-title">{name}</span>
                           <span className="focus-sub">

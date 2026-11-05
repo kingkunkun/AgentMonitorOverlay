@@ -1,5 +1,6 @@
 import { RUNTIME_LABELS, type ModelProfile } from "@amo-studio/protocol";
 import { pickDirectory } from "../folders/FolderPicker.js";
+import { readStored, writeStored } from "./stored.js";
 
 /** "Codex · DeepSeek", "Codex · GPT", "Claude · GLM", "DSH · DeepSeek" — the account behind a model. */
 export function profileLabel(p: ModelProfile): string {
@@ -14,20 +15,8 @@ export function shortModel(p: ModelProfile | undefined): string {
 const LAST_PROFILE_KEY = "amo.lastProfile";
 const LAST_WORKSPACE_KEY = "amo.lastWorkspace";
 
-function read(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-function write(key: string, value: string): void {
-  try {
-    localStorage.setItem(key, value);
-  } catch {
-    // per-viewer convenience only
-  }
-}
+const read = readStored;
+const write = (key: string, value: string): void => writeStored(key, value);
 
 /**
  * What the model pickers offer: the profiles not hidden in 设置 → 模型 and able to start sessions (a DSH profile needs
@@ -42,6 +31,18 @@ export function defaultProfile(all: readonly ModelProfile[]): ModelProfile | und
   const profiles = pickable(all);
   const last = read(LAST_PROFILE_KEY);
   return profiles.find((p) => p.id === last) ?? profiles.find((p) => p.provider) ?? profiles[0] ?? all[0];
+}
+/**
+ * The pick a form should switch to once its model is hidden in 设置 → 模型 (or can no longer start sessions), or `null`
+ * to leave it. 2026-11-03 (问题 #14, the user): the default was chosen once, when the form opened, so hiding Codex left
+ * Codex picked on 新建任务 and 新会话 until Studio restarted. An empty pick (profiles not loaded yet) takes the default too.
+ */
+export function repick(all: readonly ModelProfile[], id: string): string | null {
+  if (!all.length) return null;
+  const p = all.find((x) => x.id === id);
+  if (p && !p.hidden && !p.unavailable) return null;
+  const next = defaultProfile(all)?.id ?? "";
+  return next !== id ? next : null;
 }
 export const rememberProfile = (id: string) => write(LAST_PROFILE_KEY, id);
 export const lastWorkspace = () => read(LAST_WORKSPACE_KEY);

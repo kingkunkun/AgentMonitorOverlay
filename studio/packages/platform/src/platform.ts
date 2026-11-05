@@ -1,17 +1,25 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { amoHome, AccountError, clearAccount, fetchProfile, login, logout, platformFile, programsFile, readAccount, readJsonFile, register, serverInfo, updateProfile, type Account, type Env, type Protector } from "@amo-studio/account";
 import { PlatformClient } from "./client.js";
 import { entryOldFiles, entryVersion, refreshEntry, type EntryRefresh } from "./entry.js";
 import { Installer, type InstallProgress, type ProgramsFile } from "./installer.js";
-import { channelVersion, compareVersions, PlatformError, type Channels, type Manifest } from "./manifest.js";
+import { packageSource, unpackedRoot, unpackZip } from "./package-install.js";
+import { discard } from "./remove.js";
+import { channelVersion, compareVersions, PlatformError, type Channels, type ManifestSummary } from "./manifest.js";
 import { planLaunch, startDetached, startEnv, type LaunchSpec } from "./launch.js";
+import { NOTES_SETTINGS_ARG, NOTES_TODO_ARG, QUIT_ARG, TOGGLE_ARG, type TrayClick, type TrayState } from "./tray.js";
 import { rootDrive, rootWritable, type RootDrive } from "./root-check.js";
 import { currentExe, entryExe, loginItemExe, restartArgs, SELF, selfPlace, selfStanding, type SelfPlace } from "./self-update.js";
 import { channelFromArgs, readSettings, updateSettings } from "./settings.js";
-import { foldersInUse, runningExePaths, stopStudio, studioHealth, studioRestart, waitForExit, type StudioHealth, type StudioStop } from "./system.js";
-import { CLAUDE_INSTALL_COMMAND, downloadUrl, EnvironmentChecker, studioSdkClaudeCodeVersion } from "./environment.js";
-import type { EnvironmentView } from "./environment-view.js";
+import { inFolder, Launched, logTiming, ownRunningFile, pidAlive, readOwnRunning, type RunningRecord } from "./running.js";
+import { foldersInUse, killProcess, QUIT_SINCE, runningExePaths, runningVersions, stopStudio, studioHealth, studioHostPid, studioRestart, waitForExit, type StudioHealth, type StudioStop } from "./system.js";
+import { CLAUDE_INSTALL_COMMAND, downloadUrl, EnvironmentChecker, latestVersion, runUpdate, studioSdkClaudeCodeVersion, updatePlan, type UpdatePlan, type UpdateRun } from "./environment.js";
+import type { EnvFrom, EnvironmentView, EnvItemView, EnvTaskView, EnvUpdateResult } from "./environment-view.js";
+import { claudeSources, installClaude } from "./claude-install.js";
+import { codexSources, installCodex } from "./codex-install.js";
+import { InstallError, SOURCE_NAME, type InstallProgress as EnvInstallProgress, type InstallRunner } from "./tool-mirror.js";
+import { firstOnPath } from "@amo-studio/locate";
 import type { Channel, OpenResult, PlatformCalls, PlatformView, ProfilePatch, ProfileSaveResult, RegisterForm, RegisterResult, RootView, SelfView, ServerCheck, TaskView, ToolView } from "./view.js";
 
 // AMO 平台's state and actions, without Electron (main.ts wires it to the window, the tray and the dialogs; the tests
@@ -50,7 +58,18 @@ export interface PlatformOptions {
   fetch?: typeof fetch;
   /** Exe paths of running processes (tests hand in their own). */
   runningPaths?: () => Promise<string[]>;
-  launch?: (spec: LaunchSpec) => Promise<void>;
+  /** 用完整包's download: Electron's net.fetch in the app (another network stack than the update's); tests: `fetch`. */
+  packageFetch?: typeof fetch;
+  /** 用完整包's unpacking (default: Windows' tar). */
+  unpack?: (zip: string, dir: string) => Promise<void>;
+  /** Starts a tool; the pid of what it started, when known (running.ts's layer 2). */
+  launch?: (spec: LaunchSpec) => Promise<number | void>;
+  /** 环境's 更新 (tests stand in for npm and claude update). */
+  runUpdate?: (plan: UpdatePlan, env: Record<string, string>) => Promise<UpdateRun>;
+  /** 环境's Claude Code 安装 / 更新: what runs `<exe> install <version>` (tests stand in for it). */
+  claudeRun?: InstallRunner;
+  /** 环境's Codex 安装 / 更新: what runs npm (`cache add`, `install -g`; tests stand in for it). */
+  npmRun?: InstallRunner;
   /** The running platform's program; null or absent when it runs from the sources (development: no self-updates). */
   selfExe?: string | null;
   /** 重启平台: starts `spec` and ends this process (main.ts; tests record it). */
@@ -63,10 +82,21 @@ export interface PlatformOptions {
   stopStudio?: (dataDir: string) => Promise<StudioStop>;
   /** 重启 Studio: waits for the old processes to end, returns those still running (system.ts's waitForExit). */
   waitForExit?: (pids: readonly number[], timeoutMs: number) => Promise<number[]>;
+  /** 重启 Studio: ends an old shell that hangs after its Host stopped (system.ts's killProcess). */
+  killProcess?: (pid: number) => void;
 }
 
 /** How long 重启 Studio waits for the old Studio and its Host to end (closing sessions and app-servers takes a moment). */
 const STUDIO_STOP_WAIT_MS = 60_000;
+/** Its shell (the windows) usually ends within 2 s; one still there this long after its Host is gone is ended. */
+const STUDIO_SHELL_GRACE_MS = 10_000;
+const RESTARTING = "正在重启 Studio，等它做完再试。";
+/** 关闭 waits this long for the processes known to be the tool to end (Studio asks first when sessions are at work). */
+const CLOSE_WAIT_MS = 30_000;
+/** 打开 looks this long for the tool's own record (running.ts) before asking Windows. */
+const OPEN_WAIT_MS = 8_000;
+/** Coming forward asks the server again only after this long (what runs on the machine is asked every time). */
+export const FOCUS_RECHECK_MS = 60_000;
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
@@ -75,14 +105,19 @@ export class Platform implements PlatformCalls {
   private account: Account | null = null;
   private client: PlatformClient | null = null;
   private channels: Channels | null = null;
-  private readonly manifests = new Map<string, Manifest>();
+  /** What is shown of each version offered: its summary, not the whole manifest (2026-11-03). */
+  private readonly manifests = new Map<string, ManifestSummary>();
   private connection: PlatformView["connection"] = { state: "idle", message: null };
+  /** When the server last answered the channels (0: not since the login or the start). */
+  private lastServerCheck = 0;
   private running: Record<string, boolean> = {};
   private studio: StudioHealth = { hostUp: false, sessions: null, version: null };
   /** 重启 Studio is under way. */
   private studioRestarting = false;
   private readonly tasks = new Map<string, TaskView>();
   private readonly results = new Map<string, ToolView["result"]>();
+  /** What the platform started (running.ts's layer 2). */
+  private readonly launched: Launched;
   private loginError: string | null = null;
   private loggingIn = false;
   private profile: PlatformView["profile"] = { state: "idle", data: null, message: null };
@@ -104,10 +139,12 @@ export class Platform implements PlatformCalls {
     // Everything in the platform's own folder (self-update.ts's root, 2026-10-28), not in AppData.
     this.place = selfPlace(options.selfExe ?? null, options.env);
     this.rootView = { path: this.place.root, writable: true, drive: "unknown" };
+    this.launched = new Launched(options.env);
     this.installer = new Installer({
       appsDir: join(this.place.root, "apps"),
       programsFile: programsFile(options.env),
       isRunning: async (tool) => (await this.checkRunning([tool]))[tool] === true,
+      runningPaths: () => (this.options.runningPaths ?? runningExePaths)(),
     });
   }
 
@@ -194,6 +231,8 @@ export class Platform implements PlatformCalls {
       root: { ...this.rootView },
       dirs: { root: this.place.root, apps: this.installer.appsDir, studioData: settings.studioDataDir, settings: amoHome(this.options.env) },
       openAtLogin: settings.openAtLogin,
+      theme: settings.theme,
+      envTask: this.envTask ? { ...this.envTask } : null,
     };
   }
 
@@ -213,9 +252,14 @@ export class Platform implements PlatformCalls {
       })
       .catch(() => undefined);
     if (this.rootView.writable) {
+      try {
+        this.installer.emptyTrash();
+      } catch {
+        // the next start
+      }
       for (const tool of this.installer.tools()) {
         try {
-          this.installer.repair(tool);
+          await this.installer.repair(tool);
         } catch {
           // a folder in use: left for the next time
         }
@@ -403,17 +447,43 @@ export class Platform implements PlatformCalls {
 
   // ---- server and machine
 
+  /** Layer 3 (running.ts): every process's exe — also a helper left in the folder; what installing and removing go by. */
   private async checkRunning(ids: string[]): Promise<Record<string, boolean>> {
     const paths = await (this.options.runningPaths ?? runningExePaths)();
     const inUse = foldersInUse(paths, ids.map((id) => this.installer.toolDir(id)));
     return Object.fromEntries(ids.map((id, i) => [id, inUse[i] === true]));
   }
 
-  /** Asks the server for the channels and their manifests, and the machine which tools run. */
-  async refresh(): Promise<void> {
+  /** Layers 1 and 2 (running.ts): the processes known to be this tool, alive and run from its folder. */
+  private knownProcesses(tool: string, folderOf = tool): RunningRecord[] {
+    let dir: string;
+    try {
+      dir = this.installer.toolDir(folderOf);
+    } catch {
+      return [];
+    }
+    const own = readOwnRunning(ownRunningFile(tool, this.options.env, readSettings(this.options.env).studioDataDir));
+    const all = [...(own ? [own] : []), ...this.launched.alive(tool)].filter((r) => inFolder(r.exe, dir) && pidAlive(r.pid));
+    return all.filter((r, i) => all.findIndex((o) => o.pid === r.pid) === i);
+  }
+
+  /** The cards' 正在运行: what layers 1 and 2 know runs, Windows asked only about the rest. */
+  private async quickRunning(ids: string[]): Promise<Record<string, boolean>> {
+    const known = Object.fromEntries(ids.map((id) => [id, this.knownProcesses(id).length > 0]));
+    const rest = ids.filter((id) => !known[id]);
+    return rest.length ? { ...known, ...(await this.checkRunning(rest)) } : known;
+  }
+
+  /**
+   * Asks the server for the channels and their manifests, and the machine which tools run. 2026-10-30 (the user: every
+   * time the window came forward it read 正在连接 and 更新到 went grey): with an answer already in hand it asks again in
+   * the background — the page keeps the last answer, its buttons usable, until a new one comes or the server fails —
+   * and `focus` (the window coming forward) asks the server only when the last answer is older than FOCUS_RECHECK_MS.
+   */
+  async refresh(opts: { focus?: boolean } = {}): Promise<void> {
     const local = async () => {
       const ids = this.toolIds();
-      const [running, studio] = await Promise.all([this.checkRunning(ids), studioHealth(readSettings(this.options.env).studioDataDir, this.options.fetch)]);
+      const [running, studio] = await Promise.all([this.quickRunning(ids), studioHealth(readSettings(this.options.env).studioDataDir, this.options.fetch)]);
       this.running = running;
       this.studio = studio;
     };
@@ -423,7 +493,13 @@ export class Platform implements PlatformCalls {
       this.changed();
       return;
     }
-    this.connection = { state: "checking", message: null };
+    if (opts.focus === true && this.channels && this.connection.state === "online" && Date.now() - this.lastServerCheck < FOCUS_RECHECK_MS) {
+      await local();
+      this.changed();
+      return;
+    }
+    // 正在连接 only while there is nothing to show yet (the first time, after a login, or after it failed).
+    if (!this.channels || this.connection.state !== "online") this.connection = { state: "checking", message: null };
     // The profile (账号, and the face at the foot of the pages) alongside; its failure does not stop the tools.
     const profile = this.account ? this.readProfile(this.account) : null;
     this.changed();
@@ -435,7 +511,7 @@ export class Platform implements PlatformCalls {
         // The platform's own manifest too: its notes are shown under 平台更新.
         if (!v || this.manifests.has(`${id}@${v}`)) continue;
         try {
-          this.manifests.set(`${id}@${v}`, await client.manifest(id, v));
+          this.manifests.set(`${id}@${v}`, await client.summary(id, v));
         } catch (err) {
           if (err instanceof PlatformError && err.code === "unauthorized") throw err;
           // One broken manifest does not hide the other tools; installing that one says what is wrong.
@@ -444,6 +520,7 @@ export class Platform implements PlatformCalls {
       if (this.client !== client) return;
       this.channels = channels;
       this.connection = { state: "online", message: null };
+      this.lastServerCheck = Date.now();
     } catch (err) {
       if (this.client !== client) return;
       const text = this.failed(err);
@@ -470,7 +547,7 @@ export class Platform implements PlatformCalls {
       this.changed();
     }
     // Asking Windows what runs takes a moment (PowerShell): the result is shown first, the running marks follow.
-    this.running = await this.checkRunning(this.toolIds()).catch(() => this.running);
+    this.running = await this.quickRunning(this.toolIds()).catch(() => this.running);
     this.changed();
   }
 
@@ -534,16 +611,151 @@ export class Platform implements PlatformCalls {
   }
 
   async open(tool: string): Promise<OpenResult> {
-    const plan = planLaunch(tool, this.programs()[tool], { studioDataDir: readSettings(this.options.env).studioDataDir, env: this.options.env, name: this.toolName(tool).replace(/（独立版）$/, ""), server: this.account?.server ?? null });
-    if (!plan.ok) return plan;
-    try {
-      await (this.options.launch ?? startDetached)(plan.spec);
-    } catch (err) {
-      return { ok: false, reason: "failed", message: `没能打开：${message(err)}` };
+    // The tray's 打开 too (the card greys its button): a second Studio beside the old one still quitting (2026-11-05).
+    if (tool === "studio" && this.studioRestarting) return { ok: false, reason: "failed", message: RESTARTING };
+    return this.openNow(tool);
+  }
+
+  private openNow(tool: string): Promise<OpenResult> {
+    return tool === "notes" ? this.startNotes([]) : this.start(tool, []);
+  }
+
+  /**
+   * 关闭 (a tool's card, the tray, 2026-10-29): the tool's exe again with --amo-quit; its running instance quits its own
+   * way — Studio asks first when sessions are at work or a device uses its tasks, as its own 完全退出 does. A tool that
+   * is not running quits at once.
+   */
+  async close(tool: string): Promise<OpenResult> {
+    if (tool === "studio" && this.studioRestarting) return { ok: false, reason: "failed", message: RESTARTING };
+    // An older tool, started before it knew --amo-quit, only comes to the front (2026-10-29, the user: 关闭 opened Studio
+    // 0.9.7): said instead, with where it quits on its own. 便签 started through Studio is Studio's exe.
+    const exeOf = tool === "notes" && !this.programs().notes && this.programs().studio ? "studio" : tool;
+    const started = Date.now();
+    // The processes known to be it (running.ts, 2026-11-04): they say which version runs, and 关闭 waits for them.
+    const known = this.knownProcesses(tool, exeOf);
+    const since = QUIT_SINCE[exeOf];
+    if (since) {
+      // 2026-10-30 (the user: 关闭 said Studio was 0.9.7 while 0.9.13 ran): any exe in an old version folder counted — a
+      // helper it carries (Claude Code's exe), 便签 through an older Studio. Now only the tool's own exe counts, and Studio
+      // says itself which version started it (/api/health), which is the one that gets --amo-quit. Windows is asked only
+      // when nothing knows the running one (2026-11-04: it took 1.8 s of each 关闭).
+      let old: string[];
+      if (known.length) old = runningVersions(known.map((k) => k.exe), this.installer.toolDir(exeOf)).filter((v) => compareVersions(v, since) < 0);
+      else {
+        const health = exeOf === "studio" && tool === "studio" ? await studioHealth(readSettings(this.options.env).studioDataDir, this.options.fetch).catch(() => null) : null;
+        const exe = basename(this.programs()[exeOf]?.exe ?? "").toLowerCase();
+        const paths = health?.hostUp && health.version ? [] : await (this.options.runningPaths ?? runningExePaths)().catch(() => [] as string[]);
+        const said = health?.hostUp && health.version && /^\d+\.\d+\.\d+$/.test(health.version) ? [health.version] : [];
+        old = [...said, ...runningVersions(exe ? paths.filter((p) => basename(p).toLowerCase() === exe) : paths, this.installer.toolDir(exeOf))].filter((v) => compareVersions(v, since) < 0);
+      }
+      if (old.length) {
+        const name = this.toolName(tool).replace(/（独立版）$/, "");
+        const where = exeOf === "studio" && tool === "studio" ? "Studio 托盘图标的右键「完全退出」" : `它自己托盘图标的右键「退出」`;
+        return { ok: false, reason: "failed", message: `正在运行的 ${name} 是 ${old[0]} 打开的，这个版本还不认识平台的「关闭」，这次请用${where}。更新到 ${since} 以后再从平台打开的，就能在这里关了。` };
+      }
     }
-    // It takes a moment to show up among the processes.
-    setTimeout(() => void this.checkRunning(this.toolIds()).then((r) => ((this.running = r), this.changed())).catch(() => undefined), 2000);
+    const r = await (tool === "notes" ? this.startNotes([QUIT_ARG]) : this.start(tool, [QUIT_ARG]));
+    if (r.ok) void this.settleClose(tool, known.map((k) => k.pid), started);
+    return r;
+  }
+
+  /**
+   * After 关闭 (2026-11-04, the user: slow): with the processes known, 正在关闭… at once and the card follows them the
+   * moment they end; Windows is asked afterwards only for what may still run from the folder (Studio's Host, a helper).
+   * Nothing known: as before, Windows asked after 4 s.
+   */
+  private async settleClose(tool: string, pids: number[], started: number): Promise<void> {
+    if (!pids.length) {
+      setTimeout(() => void this.quickRunning(this.toolIds()).then((r) => ((this.running = r), this.changed())).catch(() => undefined), 4000);
+      return;
+    }
+    // Studio's Host quits with its shell: waited for too.
+    const host = tool === "studio" ? studioHostPid(readSettings(this.options.env).studioDataDir) : null;
+    const wait = host && !pids.includes(host) ? [...pids, host] : pids;
+    this.results.set(tool, { tone: "busy", text: tool === "studio" ? "正在关闭…（有会话在跑时，Studio 会先问你）" : "正在关闭…" });
+    this.changed();
+    const left = await (this.options.waitForExit ?? waitForExit)(wait, CLOSE_WAIT_MS);
+    if (this.results.get(tool)?.tone === "busy") this.results.delete(tool);
+    logTiming(this.options.env, `关闭 ${tool}：${left.length ? `${CLOSE_WAIT_MS / 1000} 秒后进程 ${left.join("、")} 还在` : "已退出"}，用时 ${Date.now() - started} ms`);
+    if (!left.length) this.running = { ...this.running, [tool]: false };
+    this.changed();
+    const after = await this.quickRunning([tool]).catch(() => null);
+    if (after) {
+      this.running = { ...this.running, ...after };
+      this.changed();
+    }
+  }
+
+  /** 显示 / 隐藏便签 (the tray). */
+  async toggleNotes(): Promise<OpenResult> {
+    return this.startNotes([TOGGLE_ARG]);
+  }
+
+  /** 便签's 待办 window or its settings (the tray, 2026-11-01). */
+  async openNotes(what: "todo" | "settings"): Promise<OpenResult> {
+    return this.startNotes([what === "todo" ? NOTES_TODO_ARG : NOTES_SETTINGS_ARG]);
+  }
+
+  /** 便签's 使用待办 (2026-11-01): its own settings file (constraint 1), on unless it says false. */
+  notesTodo(): boolean {
+    const env = this.options.env ?? process.env;
+    const home = env.AMO_NOTES_HOME || (env.APPDATA ? join(env.APPDATA, "AMO Notes") : null);
+    if (!home) return true;
+    return readJsonFile<{ useTodo?: unknown }>(join(home, "settings.json"))?.useTodo !== false;
+  }
+
+  /** 便签: its own install, else through Studio, which carries it (`AMO Studio.exe --amo-app=notes`). */
+  private startNotes(args: string[]): Promise<OpenResult> {
+    const programs = this.programs();
+    if (programs.notes || !programs.studio) return this.start("notes", args);
+    return this.start("studio", ["--amo-app=notes", ...args]);
+  }
+
+  /** Whether 便签 can be had at all (installed, or through Studio). */
+  notesAvailable(): boolean {
+    const programs = this.programs();
+    return !!(programs.notes || programs.studio);
+  }
+
+  private async start(tool: string, args: string[]): Promise<OpenResult> {
+    const plan = planLaunch(tool, this.programs()[tool], { studioDataDir: readSettings(this.options.env).studioDataDir, env: this.options.env, name: this.toolName(tool).replace(/（独立版）$/, ""), server: this.account?.server ?? null, args });
+    if (!plan.ok) return plan;
+    let pid: number | void;
+    try {
+      pid = await (this.options.launch ?? startDetached)(plan.spec);
+    } catch (err) {
+      return { ok: false, reason: "failed", message: `没能${args.includes(QUIT_ARG) ? "关闭" : "打开"}：${message(err)}` };
+    }
+    // 关闭's wait is close()'s. What was started is remembered (layer 2): a tool already running gets the arguments and
+    // the one started ends, which the record then says by itself.
+    if (args.includes(QUIT_ARG)) return { ok: true };
+    const as = args.includes("--amo-app=notes") ? "notes" : tool;
+    if (typeof pid === "number") this.launched.record(as, { pid, exe: plan.spec.file });
+    if (this.knownProcesses(as).length && !this.running[as]) {
+      this.running = { ...this.running, [as]: true };
+      this.changed();
+    }
+    // It takes a moment to show up among the processes (a tool that says so itself is known by then).
+    setTimeout(() => void this.quickRunning(this.toolIds()).then((r) => ((this.running = r), this.changed())).catch(() => undefined), 2000);
     return { ok: true };
+  }
+
+  /** What the tray menu shows (tray.ts). */
+  trayState(): TrayState {
+    const studio = this.view().tools.find((t) => t.id === "studio");
+    return {
+      tools: this.installedTools(),
+      notes: this.notesAvailable(),
+      notesTodo: this.notesAvailable() && this.notesTodo(),
+      studioRestart: studio?.studio?.restart === "ready",
+      studioVersion: studio?.installed ?? null,
+      click: readSettings(this.options.env).trayClick,
+    };
+  }
+
+  async setTrayClick(to: TrayClick): Promise<void> {
+    updateSettings({ trayClick: to }, this.options.env);
+    this.changed();
   }
 
   /** Studio's card: its Host asked again (cheap: two small files and a local request), without the server or Windows. */
@@ -573,6 +785,10 @@ export class Platform implements PlatformCalls {
     this.studioRestarting = true;
     this.results.delete("studio");
     this.changed();
+    // How long each step took (2026-11-04, the user: 重启 felt slow), in platform.log.
+    const started = Date.now();
+    const steps: string[] = [];
+    const step = (name: string) => steps.push(`${name} ${Date.now() - started} ms`);
     try {
       const stop = await (this.options.stopStudio ?? ((dir: string) => stopStudio(dir, this.options.fetch)))(dataDir);
       if (!stop.ok) {
@@ -580,21 +796,56 @@ export class Platform implements PlatformCalls {
         else done("error", stop.reason === "unsupported" ? `${stop.message}关掉它要在任务管理器里结束，或者重启电脑。` : stop.message);
         return;
       }
-      const left = await (this.options.waitForExit ?? waitForExit)(stop.pids, STUDIO_STOP_WAIT_MS);
+      step("后台答应关闭");
+      const wait = this.options.waitForExit ?? waitForExit;
+      let left = await wait(stop.pids, STUDIO_SHELL_GRACE_MS);
+      // The Host may take longer (closing sessions' processes): the rest of the minute for it.
+      if (stop.host !== undefined && left.includes(stop.host)) {
+        await wait([stop.host], Math.max(0, started + STUDIO_STOP_WAIT_MS - Date.now()));
+        left = await wait(left, 0);
+      }
+      step("旧进程退出");
+      // 2026-11-05 (the user's 重启 to 0.9.39): the old shell (0.9.36) closed its windows and helpers, let go of its
+      // single-instance lock and then never ended. With its Host gone it holds nothing — the sessions live in the Host,
+      // its windows are closed — so it is ended rather than leaving the person to the task manager.
+      let forced = false;
+      if (stop.shell !== undefined && left.includes(stop.shell) && !(stop.host !== undefined && left.includes(stop.host))) {
+        (this.options.killProcess ?? killProcess)(stop.shell);
+        forced = true;
+        left = await wait(left, 5000);
+        step("强制结束旧窗口进程");
+      }
       if (left.length) {
-        done("error", `旧的 Studio 还没退出（进程 ${left.join("、")}，等了 ${STUDIO_STOP_WAIT_MS / 1000} 秒），没有打开新版。它退出后点「打开」就是新版。`);
+        done("error", `旧的 Studio 还没退出（进程 ${left.join("、")}，等了 ${Math.round((Date.now() - started) / 1000)} 秒），没有打开新版。它退出后点「打开」就是新版。`);
         return;
       }
-      const opened = await this.open("studio");
+      const opened = await this.openNow("studio");
+      step("新版启动");
       const installed = this.installer.currentVersion("studio");
-      done(opened.ok ? "ok" : "error", opened.ok ? `已重启 Studio${installed ? `，现在是 ${installed}` : ""}` : `旧的 Studio 已经退出，但新版没能打开：${opened.message}`);
-      // The new Host takes a moment to answer: asked again then.
-      if (opened.ok) setTimeout(() => void this.refreshStudio().catch(() => undefined), 5000).unref?.();
+      const note = forced ? `（旧的 Studio 关掉窗口后 ${STUDIO_SHELL_GRACE_MS / 1000} 秒没退出，平台把它结束了；会话在后台里，不受影响）` : "";
+      done(opened.ok ? "ok" : "error", opened.ok ? `已重启 Studio${installed ? `，现在是 ${installed}` : ""}${note}` : `旧的 Studio 已经退出，但新版没能打开：${opened.message}`);
+      // The new Host takes a moment to answer: asked every half second until it does (it was once, after 5 s).
+      if (opened.ok) void this.followStudioUp(dataDir, started);
     } finally {
       this.studioRestarting = false;
       this.studio = await studioHealth(dataDir, this.options.fetch);
       this.changed();
+      logTiming(this.options.env, `重启 Studio：${steps.join("，") || "后台没有答应关闭"}`);
     }
+  }
+
+  /** After 重启 Studio: its card follows the new Host as soon as it answers, for up to 30 s. */
+  private async followStudioUp(dataDir: string, started: number): Promise<void> {
+    for (const until = Date.now() + 30_000; Date.now() < until; ) {
+      await new Promise((r) => setTimeout(r, 500).unref?.());
+      const health = await studioHealth(dataDir, this.options.fetch).catch(() => null);
+      if (!health?.hostUp) continue;
+      this.studio = health;
+      this.changed();
+      logTiming(this.options.env, `重启 Studio：新后台应答 ${Date.now() - started} ms`);
+      return;
+    }
+    logTiming(this.options.env, "重启 Studio：新后台 30 秒没有应答");
   }
 
   // ---- settings
@@ -608,6 +859,12 @@ export class Platform implements PlatformCalls {
   async setOpenAtLogin(on: boolean): Promise<void> {
     this.options.shell.setOpenAtLogin(on, this.loginExe());
     updateSettings({ openAtLogin: on }, this.options.env);
+    this.changed();
+  }
+
+  async setTheme(theme: "light" | "dark" | "system"): Promise<void> {
+    if (theme !== "light" && theme !== "dark" && theme !== "system") return;
+    updateSettings({ theme }, this.options.env);
     this.changed();
   }
 
@@ -710,6 +967,77 @@ export class Platform implements PlatformCalls {
   }
 
   /**
+   * 用完整包更新 (2026-11-03, the user: when 更新平台 gets stuck — it did, 「中途断了（terminated）」 — there should be a way
+   * out from here): the channel's platform as one zip, downloaded on Electron's own network stack and going on where it
+   * stopped (also on a later click), unpacked with Windows' tar, then installed from the unpacked files like any update
+   * (package-install.ts: each checked against the manifest; fresh, nothing linked from the tools' files). 重启平台 then
+   * as after 更新平台. The zip and the unpacked folder are in apps\.downloads; the zip stays when it did not go through.
+   */
+  async updateSelfFull(): Promise<void> {
+    if (this.selfTask) return;
+    const done = (tone: "ok" | "warn" | "error", text: string) => {
+      this.selfResult = { tone, text };
+      this.changed();
+    };
+    if (this.place.kind === "dev") return done("warn", "这是从源码启动的开发版，不自己更新。");
+    const readonly = this.readonlyText();
+    if (readonly) return done("error", readonly);
+    const client = this.client;
+    if (!client || !this.channels) return done("error", "现在连不上服务器，更新不了。");
+    const version = channelVersion(this.channels, this.channel(), SELF);
+    if (!version) return done("error", "这个通道里没有平台。");
+    if (compareVersions(version, this.options.version) <= 0) return done("ok", `平台 ${this.options.version} 已是最新。`);
+    const task: TaskView = { kind: "update", version, phase: "manifest", doneBytes: 0, totalBytes: 0, doneFiles: 0, totalFiles: 0, reused: 0 };
+    this.selfTask = task;
+    this.selfResult = null;
+    this.changed();
+    const downloads = join(this.installer.appsDir, ".downloads");
+    const zip = join(downloads, `${SELF}-${version}.zip`);
+    const unpacked = join(downloads, `${SELF}-${version}`);
+    try {
+      const manifest = await client.manifest(SELF, version);
+      task.phase = "package";
+      this.changed();
+      if (!existsSync(zip)) {
+        mkdirSync(downloads, { recursive: true });
+        let last = 0;
+        await client.downloadPackage(
+          SELF,
+          version,
+          zip,
+          (got, total) => {
+            task.doneBytes = got;
+            task.totalBytes = Number.isFinite(total) ? total : 0;
+            const t = Date.now();
+            if (t - last >= 100) {
+              last = t;
+              this.changed();
+            }
+          },
+          this.options.packageFetch,
+        );
+      }
+      task.phase = "unpacking";
+      this.changed();
+      discard(unpacked, this.installer.appsDir);
+      await (this.options.unpack ?? unpackZip)(zip, unpacked);
+      await this.installer.install(SELF, version, packageSource(manifest, unpackedRoot(unpacked)), (p: InstallProgress) => {
+        Object.assign(task, p);
+        this.changed();
+      }, { fresh: true });
+      this.selfInstalledThisRun = true;
+      discard(zip, this.installer.appsDir);
+      this.selfResult = { tone: "ok", text: `已用完整包装好 ${version}` };
+    } catch (err) {
+      this.selfResult = { tone: "error", text: `用完整包也没更新成功：${this.failed(err)}${existsSync(zip) ? `（下载好的完整包在 ${zip}）` : ""}` };
+    } finally {
+      discard(unpacked, this.installer.appsDir);
+      this.selfTask = null;
+      this.changed();
+    }
+  }
+
+  /**
    * 重启平台 (after an update) or 打开那个 (an older platform running while apps\platform has a newer one, when the
    * entry could not forward): the installed platform starts — from its real version folder, as the tools do
    * (launch.ts), so switching `current` later never meets a folder in use through the junction — and this one quits.
@@ -753,8 +1081,133 @@ export class Platform implements PlatformCalls {
   /** The last check of what the tools run on, or a new one (重新检测: `fresh`). */
   async environment(fresh = false): Promise<EnvironmentView> {
     // Studio's own SDK, when it is installed, tells an outdated Claude Code as Studio's 设置 → 模型 does.
-    this.envChecker ??= new EnvironmentChecker(() => ({ env: this.options.env, sdkClaudeCodeVersion: studioSdkClaudeCodeVersion(this.programs().studio?.dir) }));
+    // AMO_PLATFORM_NPM_REGISTRY: another registry for the newest versions (tests point it nowhere).
+    const registry = this.options.env.AMO_PLATFORM_NPM_REGISTRY;
+    this.envChecker ??= new EnvironmentChecker(() => ({ env: this.options.env, sdkClaudeCodeVersion: studioSdkClaudeCodeVersion(this.programs().studio?.dir), ...(registry ? { latest: (pkg: string) => latestVersion(pkg, fetch, 8000, registry) } : {}), sources: { claude: () => claudeSources(this.claudeOptions()), codex: () => codexSources(this.codexOptions()) } }));
     return this.envChecker.check(fresh);
+  }
+
+  private serverAccount(): { server: string; key: string } | null {
+    return this.account ? { server: this.account.server, key: this.account.key } : null;
+  }
+
+  /** Claude Code 安装 / 更新's sources (claude-install.ts): the account's server, Anthropic (AMO_PLATFORM_CLAUDE_BASE in tests). */
+  private claudeOptions() {
+    const base = this.options.env.AMO_PLATFORM_CLAUDE_BASE;
+    return { env: this.options.env, account: this.serverAccount(), ...(this.options.fetch ? { fetch: this.options.fetch } : {}), ...(base ? { base } : {}) };
+  }
+
+  /** Codex 安装 / 更新's sources (codex-install.ts): the account's server, npm (AMO_PLATFORM_NPM_REGISTRY in tests). */
+  private codexOptions() {
+    const registry = this.options.env.AMO_PLATFORM_NPM_REGISTRY;
+    return { env: this.options.env, account: this.serverAccount(), ...(this.options.fetch ? { fetch: this.options.fetch } : {}), ...(registry ? { registry } : {}) };
+  }
+
+  private envUpdating: string | null = null;
+  private envTask: EnvTaskView | null = null;
+  private envTaskSent = 0;
+  private envSpeed: { at: number; done: number }[] = [];
+
+  /** Where a download waits between tries: the platform's own folder, as the tools' downloads (2026-10-28). */
+  envDownloadsDir(id: "claude" | "codex"): string {
+    return join(this.place.root, "downloads", id === "claude" ? "claude-code" : "codex");
+  }
+
+  /**
+   * 安装 / 更新 Claude Code (2026-11-03, plans/claude-code-mirror.md): from the team server's mirror when it has the
+   * version, else Anthropic; the progress goes out with the view (at most every 300 ms while downloading).
+   */
+  private async installHere(it: EnvItemView, from: EnvFrom, view: EnvironmentView): Promise<EnvUpdateResult> {
+    const install = it.install!;
+    const version = from === "server" ? install.server?.version : install.official?.version;
+    if (!version) return { ok: false, message: from === "server" ? "团队服务器上现在没有备好的版本：点「重新检测」看看。" : "没连上官方，不知道最新版：点「重新检测」看看。", view };
+    if (install.blocked) return { ok: false, message: install.blocked.text, view };
+    const npm = it.id === "codex" ? firstOnPath(["npm.cmd"], this.options.env) : null;
+    if (it.id === "codex") {
+      if (!npm) return { ok: false, message: "没找到 npm。", view };
+      const busy = await this.codexRunning(it);
+      if (busy) return { ok: false, message: busy, view };
+    }
+    this.envUpdating = it.id;
+    this.envSpeed = [];
+    this.envTask = { id: it.id, version, from, phase: "manifest", done: 0, total: null, bytesPerSec: 0 };
+    this.changed();
+    const onProgress = (p: EnvInstallProgress) => {
+      const now = Date.now();
+      if (p.phase === "downloading") {
+        this.envSpeed.push({ at: now, done: p.done });
+        while (this.envSpeed.length > 2 && now - this.envSpeed[0]!.at > 5000) this.envSpeed.shift();
+      }
+      const first = this.envSpeed[0];
+      const secs = first ? (now - first.at) / 1000 : 0;
+      const phaseChanged = this.envTask?.phase !== p.phase;
+      this.envTask = { id: it.id, version, from, phase: p.phase, done: p.done, total: p.total, bytesPerSec: first && secs > 0.5 ? Math.round((p.done - first.done) / secs) : (this.envTask?.bytesPerSec ?? 0) };
+      if (phaseChanged || now - this.envTaskSent >= 300) {
+        this.envTaskSent = now;
+        this.changed();
+      }
+    };
+    try {
+      const common = { downloadsDir: this.envDownloadsDir(it.id as "claude" | "codex"), runEnv: startEnv(this.options.env), onProgress };
+      if (it.id === "claude") await installClaude(version, from, { ...this.claudeOptions(), ...common, runningPaths: () => (this.options.runningPaths ?? runningExePaths)(), ...(this.options.claudeRun ? { run: this.options.claudeRun } : {}) });
+      else await installCodex(version, from, { ...this.codexOptions(), ...common, npm: npm!, ...(this.options.npmRun ? { run: this.options.npmRun } : {}) });
+      const fresh = await this.environment(true);
+      const now = fresh.items.find((i) => i.id === it.id);
+      const how = `从${SOURCE_NAME[from]}下载`;
+      return { ok: true, message: now?.version ? `已${it.version ? "更新" : "安装"}，现在是 ${now.version}（${how}）` : `已装好 ${version}（${how}）。还显示没装的话，退出平台再打开（新装的程序要平台重新读 PATH）。`, view: fresh };
+    } catch (err) {
+      const fresh = await this.environment(true).catch(() => view);
+      return { ok: false, message: err instanceof InstallError ? err.message : `没装成功：${message(err)}`, view: fresh };
+    } finally {
+      this.envUpdating = null;
+      this.envTask = null;
+      this.changed();
+    }
+  }
+
+  /**
+   * Codex is not replaced while a codex.exe from its npm folder runs (Studio's Codex runs one in the background): Windows
+   * would refuse halfway. What to say, or null when nothing holds it.
+   */
+  private async codexRunning(it: EnvItemView): Promise<string | null> {
+    const dir = this.options.env.APPDATA ? join(this.options.env.APPDATA, "npm", "node_modules", "@openai", "codex").toLowerCase() + "\\" : null;
+    if (!dir || !it.version) return null;
+    const paths = await (this.options.runningPaths ?? runningExePaths)().catch(() => [] as string[]);
+    if (!paths.some((p) => p.toLowerCase().startsWith(dir))) return null;
+    return `${it.name} 正在运行（Studio 的 Codex 会话在后台开着它，或者终端里开着 codex），这时 Windows 不让替换它：先在托盘里「完全退出 Studio」、关掉终端里的 codex，再更新。`;
+  }
+
+  /**
+   * 更新 on the 环境 page (2026-10-29, the user: like cc-switch; only when clicked): Claude Code or Codex to npm's latest,
+   * the way it was installed (npm, or Claude Code's own `claude update`); then checked again. Codex is not replaced while
+   * a codex.exe from its folder runs (Studio's Codex runs one in the background): Windows would refuse halfway.
+   * Claude Code and Codex the platform installs itself (item.install, 2026-11-03): from `from`, the block clicked.
+   */
+  async updateEnvironment(id: string, from?: unknown): Promise<EnvUpdateResult> {
+    if (this.envUpdating) return { ok: false, message: "正在更新另一项，等它做完。", view: null };
+    const view = await this.environment();
+    const it = view.items.find((i) => i.id === id);
+    if (it?.install) return this.installHere(it, from === "server" ? "server" : "official", view);
+    const plan = it ? updatePlan(it.id, it.path, this.options.env) : null;
+    if (!it || !plan) return { ok: false, message: "这一项不能在这里更新。", view };
+    if (plan.packageDir) {
+      const dir = plan.packageDir.toLowerCase() + "\\";
+      const paths = await (this.options.runningPaths ?? runningExePaths)().catch(() => [] as string[]);
+      if (paths.some((p) => p.toLowerCase().startsWith(dir))) return { ok: false, message: `${it.name} 正在运行（Studio 的 Codex 会话在后台开着它，或者终端里开着 codex），这时 Windows 不让替换它：先在托盘里「完全退出 Studio」、关掉终端里的 codex，再更新。`, view };
+    }
+    this.envUpdating = id;
+    try {
+      const run = await (this.options.runUpdate ?? runUpdate)(plan, startEnv(this.options.env));
+      const fresh = await this.environment(true);
+      const now = fresh.items.find((i) => i.id === id);
+      if (!run.ok) {
+        const tail = run.out.trim().split(/\r?\n/).slice(-4).join("\n");
+        return { ok: false, message: `没更新成功（${run.reason === "timeout" ? "等了 5 分钟还没做完" : plan.how + " 出错"}）${tail ? "：\n" + tail : ""}`, view: fresh };
+      }
+      return { ok: true, message: now?.version ? `已更新，现在是 ${now.version}` : "已运行更新，重新检测看看", view: fresh };
+    } finally {
+      this.envUpdating = null;
+    }
   }
 
   /** 去下载: the item's official page (the platform's own list, https only) in the system browser. */

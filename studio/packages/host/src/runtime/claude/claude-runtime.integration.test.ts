@@ -1,13 +1,14 @@
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { ModelProfile, SessionItem, Task, Workspace } from "@amo-studio/protocol";
+import type { AccountUsage, ModelProfile, SessionItem, Task, Workspace } from "@amo-studio/protocol";
 import { MOCK_CLAUDE_MODEL, TINY_PNG_BASE64, removeTempDir, startMockAnthropic, type ClaudeMockServer, mockClaudeProvider } from "@amo-studio/testkit";
 import { Store } from "../../store/store.js";
 import { StaticCredentialReader } from "../credentials.js";
 import { ClaudeRuntime } from "./claude-runtime.js";
 import { writeClaudeLogin } from "./claude-login.js";
+import { ClaudeAccounts } from "./accounts.js";
 
 // Integration: Store + ClaudeRuntime + the real Claude Agent SDK against the mock Anthropic API, in a temp
 // CLAUDE_CONFIG_DIR. Covers a turn, approvals, queued messages, interrupt, resume and a Host restart. No model budget.
@@ -168,6 +169,106 @@ describe("ClaudeRuntime", () => {
     await until(() => agentTexts(s.id).includes("MOCK: after interrupt"), "reply after interrupt");
   }, 180_000);
 
+  it("停止 a CLI does not answer (2026-11-01): Studio closes its process after the grace, says so, and the session goes on", async () => {
+    const s = await runtime.startSession({ taskId: task.id, topicId: null, profileId: "claude-mock", workspace, text: "[[slow]]" });
+    await until(() => status(s.id) === "running" && items(s.id).some((i) => i.type === "agent"), "slow reply started");
+    // Stuck as the user's was (a command hung on the memory folder): the interrupt is never answered.
+    const internals = runtime as unknown as { live: Map<string, { q: { interrupt(): Promise<void> } }>; options: { stopGraceMs?: number } };
+    internals.live.get(s.id)!.q.interrupt = () => new Promise(() => undefined);
+    internals.options.stopGraceMs = 1500;
+    try {
+      const asked = Date.now();
+      await runtime.interrupt(s.id);
+      // The person's request returns after the grace, not never.
+      expect(Date.now() - asked).toBeLessThan(5000);
+      await until(() => status(s.id) === "idle", "stopped by Studio", 20_000);
+      expect(items(s.id).some((i) => i.type === "notice" && i.message.includes("Studio 关掉了它的进程"))).toBe(true);
+      expect(items(s.id).some((i) => i.type === "error")).toBe(false);
+    } finally {
+      delete internals.options.stopGraceMs;
+    }
+    await runtime.sendMessage(s.id, "after stuck");
+    await until(() => agentTexts(s.id).includes("MOCK: after stuck"), "reply after the forced stop");
+  }, 120_000);
+
+  // 立即发送 (2026-11-02). The mock's [[slow]] reply is 40 words over 6 s: a cut one has fewer.
+  const userItem = (sessionId: string, text: string) => items(sessionId).find((i): i is Extract<SessionItem, { type: "user" }> => i.type === "user" && i.text === text);
+  const slowWords = (sessionId: string) => Math.max(0, ...items(sessionId).filter((i): i is Extract<SessionItem, { type: "agent" }> => i.type === "agent" && i.markdown.startsWith("slow")).map((i) => i.markdown.split(" ").length));
+
+  it("立即发送: a message sent mid-turn waits until the CLI reads it, and Send now makes the turn give way to it", async () => {
+    const s = await runtime.startSession({ taskId: task.id, topicId: null, profileId: "claude-mock", workspace, text: "[[slow]]" });
+    await until(() => status(s.id) === "running" && items(s.id).some((i) => i.type === "agent"), "slow reply started");
+    expect((await runtime.sendMessage(s.id, "read me now")).mode).toBe("queue");
+    await until(() => userItem(s.id, "read me now")?.delivery === "waiting", "shown as waiting", 5000);
+    await runtime.sendNow(s.id, userItem(s.id, "read me now")!.id);
+    await until(() => agentTexts(s.id).includes("MOCK: read me now") && status(s.id) === "idle", "answered at once");
+    expect(userItem(s.id, "read me now")!.delivery).toBeUndefined();
+    expect(slowWords(s.id)).toBeLessThan(40);
+    // The turn that gave way ended as stopped, not as an error.
+    expect(items(s.id).some((i) => i.type === "error")).toBe(false);
+    expect(items(s.id).filter((i) => i.type === "turn").map((i) => (i.type === "turn" ? i.state : ""))).toEqual(["interrupted", "completed"]);
+  }, 120_000);
+
+  it("立即发送 from the composer (now): the running turn gives way at once", async () => {
+    const s = await runtime.startSession({ taskId: task.id, topicId: null, profileId: "claude-mock", workspace, text: "[[slow]]" });
+    await until(() => status(s.id) === "running" && items(s.id).some((i) => i.type === "agent"), "slow reply started");
+    expect((await runtime.sendMessage(s.id, "right now", [], { now: true })).mode).toBe("queue");
+    await until(() => agentTexts(s.id).includes("MOCK: right now") && status(s.id) === "idle", "answered at once");
+    expect(slowWords(s.id)).toBeLessThan(40);
+    expect(userItem(s.id, "right now")!.delivery).toBeUndefined();
+    expect(items(s.id).some((i) => i.type === "error")).toBe(false);
+  }, 120_000);
+
+  // 问题 #16 (2026-11-03): as a `priority: "now"` message it waited out a shell command that had run a second or two.
+  it("立即发送 from the composer while a shell command has run a while: the turn gives way at once", async () => {
+    const s = await runtime.startSession({ taskId: task.id, topicId: null, profileId: "claude-mock", workspace, text: "[[shell: sleep 30]]" });
+    await until(() => status(s.id) === "awaiting-approval" || items(s.id).some((i) => i.type === "tool" && i.status === "running"), "the command asked for or running");
+    const approval = items(s.id).find((i) => i.type === "approval");
+    if (approval?.type === "approval") await runtime.respondApproval(s.id, approval.approvalId, "accept");
+    await until(() => items(s.id).some((i) => i.type === "tool" && i.status === "running"), "the command running");
+    await new Promise((r) => setTimeout(r, 4000));
+    const sent = Date.now();
+    expect((await runtime.sendMessage(s.id, "while it sleeps", [], { now: true })).mode).toBe("queue");
+    await until(() => agentTexts(s.id).includes("MOCK: while it sleeps") && status(s.id) === "idle", "answered at once", 15_000);
+    expect(Date.now() - sent).toBeLessThan(10_000);
+    expect(items(s.id).find((i) => i.type === "tool")).toMatchObject({ status: "failed" });
+  }, 120_000);
+
+  it("停止 with a message waiting: the turn stops and the waiting message runs next (as the CLI's esc does)", async () => {
+    const s = await runtime.startSession({ taskId: task.id, topicId: null, profileId: "claude-mock", workspace, text: "[[slow]]" });
+    await until(() => status(s.id) === "running" && items(s.id).some((i) => i.type === "agent"), "slow reply started");
+    await runtime.sendMessage(s.id, "still wanted");
+    await until(() => userItem(s.id, "still wanted")?.delivery === "waiting", "shown as waiting", 5000);
+    await runtime.interrupt(s.id);
+    await until(() => agentTexts(s.id).includes("MOCK: still wanted") && status(s.id) === "idle", "the waiting one answered");
+    expect(userItem(s.id, "still wanted")!.delivery).toBeUndefined();
+    expect(items(s.id).some((i) => i.type === "error")).toBe(false);
+  }, 120_000);
+
+  it("a message waiting when Studio closes a stuck process is shown 没送到, and 重新发送 sends that same row", async () => {
+    const s = await runtime.startSession({ taskId: task.id, topicId: null, profileId: "claude-mock", workspace, text: "[[slow]]" });
+    await until(() => status(s.id) === "running" && items(s.id).some((i) => i.type === "agent"), "slow reply started");
+    await runtime.sendMessage(s.id, "do not lose me");
+    await until(() => userItem(s.id, "do not lose me")?.delivery === "waiting", "shown as waiting", 5000);
+    const internals = runtime as unknown as { live: Map<string, { q: { interrupt(): Promise<void> } }>; options: { stopGraceMs?: number } };
+    internals.live.get(s.id)!.q.interrupt = () => new Promise(() => undefined);
+    internals.options.stopGraceMs = 1500;
+    try {
+      await runtime.interrupt(s.id);
+      await until(() => status(s.id) === "idle" && userItem(s.id, "do not lose me")?.delivery === "unsent", "marked unsent", 20_000);
+    } finally {
+      delete internals.options.stopGraceMs;
+    }
+    // Not sent by itself: the model never got it.
+    expect(agentTexts(s.id)).not.toContain("MOCK: do not lose me");
+    const row = userItem(s.id, "do not lose me")!;
+    expect((await runtime.resend(s.id, row.id)).mode).toBe("start");
+    await until(() => agentTexts(s.id).includes("MOCK: do not lose me") && status(s.id) === "idle", "sent again");
+    expect(store.getItem(row.id)).toMatchObject({ type: "user", text: "do not lose me" });
+    expect((store.getItem(row.id) as { delivery?: string }).delivery).toBeUndefined();
+    expect(items(s.id).filter((i) => i.type === "user" && i.text === "do not lose me")).toHaveLength(1);
+  }, 120_000);
+
   it("sends images as image blocks, with or without text, also when queued", async () => {
     const id = "att-00000000-0000-4000-8000-000000000002";
     const path = join(root, `${id}.png`);
@@ -209,7 +310,10 @@ describe("ClaudeRuntime", () => {
     const expiresAt = Date.now() + 365 * 24 * 3600_000;
     writeFileSync(join(mine, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "sk-ant-oat01-local-test", refreshToken: "sk-ant-ort01-local-test", expiresAt, scopes: ["user:inference", "user:profile"], subscriptionType: "max" } }));
     const sub: ModelProfile = { id: "claude-sub", label: "Claude", runtime: "claude", provider: "mock-oauth", model: MOCK_CLAUDE_MODEL, credentialId: "claude-subscription" };
+    // Claude 多账号: added accounts' dirs go under the test's own folder, never ~/.claude-accounts.
+    const accounts = new ClaudeAccounts(store, { defaultDir: mine, defaultExplicit: true, root: join(root, "accounts") });
     const local = new ClaudeRuntime({
+      accounts,
       store,
       profiles: [...PROFILES, sub],
       providers: { mock: mockClaudeProvider(mock.baseUrl), "mock-oauth": mockClaudeProvider(mock.baseUrl, { auth: "oauth" }) },
@@ -221,7 +325,7 @@ describe("ClaudeRuntime", () => {
       // A token way chosen before it was removed counts for nothing outside tests: the local login is used.
       writeClaudeLogin(store, "token");
       // The local login reads the quota: 5 小时 and 每周 with their resets, as Claude Code's /usage reads them.
-      const usage = await local.usage("claude-sub", true);
+      const usage = (await local.usage("claude-sub", true)) as AccountUsage;
       expect(usage).toMatchObject({ note: null, windows: [{ label: "5 小时", usedPercent: 37 }, { label: "每周", usedPercent: 12 }] });
       expect(Date.parse(usage!.windows[0]!.resetsAt!) - Date.now()).toBeGreaterThan(90 * 60_000);
       const s = await local.startSession({ taskId: task.id, topicId: null, profileId: "claude-sub", workspace, text: "from my login" });
@@ -236,6 +340,35 @@ describe("ClaudeRuntime", () => {
       await local.sendMessage(branch.id, "in my branch");
       await until(() => agentTexts(branch.id).includes("MOCK: in my branch"), "local branch reply");
       await expect(local.fork(s.id, "claude-mock")).rejects.toThrow(/只能继续用 Claude 订阅/);
+
+      // Claude 多账号 (2026-11-03): a second account in a dir of its own (its login written here as `auth login` would),
+      // linked to the default dir's records.
+      const second = accounts.add("第二个", { signIn: false });
+      const secondDir = join(root, "accounts", second);
+      writeFileSync(join(secondDir, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "sk-ant-oat01-local-second", refreshToken: "sk-ant-ort01-local-second", expiresAt, scopes: ["user:inference", "user:profile"], subscriptionType: "pro" } }));
+      expect(lstatSync(join(secondDir, "projects")).isSymbolicLink()).toBe(true);
+      // Not while a session is at work (the user: 会话进行中禁止切换).
+      await local.sendMessage(s.id, "[[slow]] busy for a moment");
+      expect(accounts.state().switchBlocked).toMatch(/正在进行/);
+      await expect(accounts.switchTo(second)).rejects.toThrow(/正在进行/);
+      await until(() => status(s.id) === "idle", "busy turn over");
+      await accounts.switchTo(second);
+      expect(accounts.currentId()).toBe(second);
+      // The same session goes on under the second account: its token goes out, and the conversation is all there.
+      await local.sendMessage(s.id, "on the second account");
+      await until(() => agentTexts(s.id).includes("MOCK: on the second account") && status(s.id) === "idle", "reply on the second account");
+      const last = mock.requests.at(-1)!;
+      expect(last.authorization).toContain("local-second");
+      expect(JSON.stringify(last.body.messages)).toContain("MOCK: from my login");
+      // The quota per account, the one in use first.
+      const both = (await local.usage("claude-sub", true)) as AccountUsage[];
+      expect(both.map((u) => u.account)).toMatchObject([{ id: second, current: true, label: "第二个" }, { id: "default", current: false }]);
+      expect(both[0]).toMatchObject({ note: null, windows: [{ label: "5 小时", usedPercent: 37 }, { label: "每周", usedPercent: 12 }] });
+      // Back to the default account; the added one goes, the shared records stay.
+      await accounts.switchTo("default");
+      accounts.remove(second);
+      expect(existsSync(secondDir)).toBe(false);
+      expect(existsSync(join(mine, "projects"))).toBe(true);
     } finally {
       writeClaudeLogin(store, "token");
       await local.closeAll();
@@ -257,6 +390,8 @@ describe("ClaudeRuntime", () => {
   }, 120_000);
 
   it("asks the person before a subagent's command, even when the Agent call asks to bypass permissions", async () => {
+    // A retry (release runs with --retry=1) found the folder the first try made and failed at once (2026-10-31).
+    rmSync(join(wsDir, "sub-made-dir"), { recursive: true, force: true });
     const s = await runtime.startSession({ taskId: task.id, topicId: null, profileId: "claude-mock", workspace, text: "[[spawn-mode-bypassPermissions: helper: [[shell: mkdir sub-made-dir]]]]" });
     await until(() => status(s.id) === "awaiting-approval", "subagent approval");
     const approval = items(s.id).find((i) => i.type === "approval") as { approvalId: string; summary: string };
@@ -269,7 +404,11 @@ describe("ClaudeRuntime", () => {
     expect(items(child).find((i) => i.type === "tool")).toMatchObject({ name: "shell", summary: "mkdir sub-made-dir", status: "completed" });
     // Its two model calls (the mock reports 10 input each), counted from its transcript once it ends (2026-10-27), in
     // the child with a speed measured from each request, and on the parent's row.
-    await until(() => (items(child).find((i) => i.type === "turn") as { decode?: unknown } | undefined)?.decode !== undefined, "subagent stats");
+    // Both calls counted, not only the first (under load the second came a look later; 2026-10-31).
+    await until(() => {
+      const turn = items(child).find((i) => i.type === "turn") as { decode?: unknown; usage?: { input?: number } } | undefined;
+      return turn?.decode !== undefined && turn.usage?.input === 20;
+    }, "subagent stats");
     expect(items(child).find((i) => i.type === "turn")).toMatchObject({ state: "completed", usage: { input: 20 }, decode: { basis: "request" } });
     expect(items(s.id).find((i) => i.type === "subagent")).toMatchObject({ usage: { input: 20 } });
   }, 120_000);

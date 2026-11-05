@@ -1,12 +1,14 @@
 import { useState } from "react";
 import { TASK_COLUMNS, taskProject, type RemoteState, type Session, type Task, type TaskColumn, type Topic, type Workspace } from "@amo-studio/protocol";
 import type { HostLink } from "../host/client.js";
-import { copyStatus, grantsOf, useRemote, type CopyStatus } from "../settings/remote.js";
+import { copyStatus, grantsOf, useRemote, type CopyStatus } from "../remote/remote.js";
+import { teamWaits, useTeamThreads } from "../teamrelay/TeamRelay.js";
 import { COLUMN_NAMES, relativeTime, SESSION_LOOK, taskSessions, taskStatus } from "../lib/status.js";
 import { ArchiveIcon } from "../task/Archived.js";
 import { ArchivedTasks } from "./ArchivedTasks.js";
 import { KindIcon } from "./KindIcon.js";
 import { setGroupByTopic, useGroupByTopic } from "./prefs.js";
+import { dutyOfTask, useDuty } from "../duty/duty.js";
 
 /** What the board shows: everything, one topic's tasks, or one project's. Archived tasks are never on the board. */
 export type Scope = { kind: "all" } | { kind: "topic"; id: string } | { kind: "workspace"; id: string };
@@ -58,6 +60,7 @@ interface BoardProps {
 /** Four columns; the person moves cards (drag a card onto another column), agents never do. Cards carry no buttons. */
 export function Board({ tasks, sessions, workspaces, topics, scope, onOpen, onMove, mail, decisions, checklist, onArchive, link }: BoardProps) {
   const remote = useRemote(link ?? null);
+  const teamThreads = useTeamThreads(link ?? null);
   const visible = tasks.filter((t) => inScope(t, scope)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const [dragging, setDragging] = useState<Task | null>(null);
   const [over, setOver] = useState<TaskColumn | null>(null);
@@ -74,6 +77,7 @@ export function Board({ tasks, sessions, workspaces, topics, scope, onOpen, onMo
       key={task.id}
       task={task}
       sessions={taskSessions(task, sessions)}
+      teamWaiting={teamWaits(teamThreads, taskSessions(task, sessions))}
       scope={scope}
       grouped={grouped}
       workspaces={workspaces}
@@ -180,6 +184,7 @@ function TaskCard({
   decisions = 0,
   checklist,
   remote = null,
+  teamWaiting = [],
 }: {
   remote?: RemoteState | null;
   task: Task;
@@ -196,9 +201,13 @@ function TaskCard({
   mail?: number;
   decisions?: number;
   checklist?: { done: number; total: number };
+  /** 会话里用中转 (2026-10-30): 「等 X 回复（中转）· 已等 …」, one per person its sessions wait on. */
+  teamWaiting?: string[];
 }) {
   const status = taskStatus(sessions);
   const look = status ? SESSION_LOOK[status] : null;
+  // 值守 (2026-10-31): items on that open sessions in this task.
+  const duty = dutyOfTask(useDuty(), task.id);
   // 远程 (step 2): a copy says where it runs and whether that computer can be reached; a task of this computer says
   // which devices it is granted to.
   const copy: CopyStatus | null = copyStatus(task, remote);
@@ -214,7 +223,7 @@ function TaskCard({
   const showTopic = scope.kind !== "topic" && !grouped;
   const topic = showTopic && task.topicId ? (topics.find((t) => t.id === task.topicId)?.title ?? null) : null;
   const noTopic = showTopic && !topic && scope.kind === "all";
-  const meta = [mains.length ? `${mains.length} 个会话` : "还没有会话", branches ? `${branches} 个分支` : "", checklist ? `清单 ${checklist.done}/${checklist.total}` : ""].filter(Boolean).join(" · ");
+  const meta = [mains.length ? `${mains.length} 个会话` : task.firstMessage ? "还没有会话 · 第一句话已写好" : "还没有会话", branches ? `${branches} 个分支` : "", checklist ? `清单 ${checklist.done}/${checklist.total}` : ""].filter(Boolean).join(" · ");
   // Collaboration hints are counts in the meta line, not a second status: the dot keeps one status per card.
   const asks = [decisions ? `${decisions} 个待决策` : "", mail ? `${mail} 条留言` : ""].filter(Boolean).join(" · ");
 
@@ -268,6 +277,11 @@ function TaskCard({
             主控
           </span>
         )}
+        {duty.length > 0 && (
+          <span className="duty-chip" title={`值守开着：${duty.map((i) => i.title).join("、")}。到点（检查到有事）会在这个任务里开会话`} data-testid="card-duty">
+            值守
+          </span>
+        )}
         {task.title || "未命名任务"}
       </span>
       <span className="card-status">
@@ -291,8 +305,13 @@ function TaskCard({
           {asks}
         </span>
       )}
+      {teamWaiting.map((w) => (
+        <span key={w} className="card-asks card-team" data-testid="card-team-wait">
+          {w}
+        </span>
+      ))}
       {granted.length > 0 && (
-        <span className="card-granted" data-testid="card-granted" title="这个任务授权给了你的其他设备远程使用（任务页的 ⋯ 或 设置 → 远程 里可以收回）">
+        <span className="card-granted" data-testid="card-granted" title="这个任务授权给了你的其他设备远程使用（任务页的 ⋯ 或顶栏的「远程」里可以收回）">
           已授权给 {granted.map((g) => g.name).join("、")}
         </span>
       )}

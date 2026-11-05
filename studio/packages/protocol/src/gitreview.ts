@@ -24,7 +24,6 @@ export const isGitRange = (v: unknown): v is GitRange => GIT_RANGES.some((r) => 
  */
 export type GitCommentRange = GitRange | "file";
 
-export const isCommentRange = (v: unknown): v is GitCommentRange => v === "file" || isGitRange(v);
 
 /** A project folder as git sees it. Paths in a review are relative to the project folder, which may sit inside the repository. */
 export interface GitStatus {
@@ -333,6 +332,8 @@ export interface ReviewOpenTarget {
   mode?: "changes" | "file";
   line?: number;
   endLine?: number;
+  /** 远程 Reviewer (2026-11-02), on B: the project is this remote task's, on the computer it runs on. */
+  remote?: string;
 }
 
 /** The open request was validated and sent to the workbench; this is not a human review/approval or window acknowledgement. */

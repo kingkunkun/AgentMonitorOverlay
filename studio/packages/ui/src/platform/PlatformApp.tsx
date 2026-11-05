@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import { AccountPage, Face } from "./AccountPage.js";
-import { bridge, call, formatBytes, openTool, serverLabel, type Channel, type PlatformView, type RegisterResult, type ServerCheck, type TaskView, type ToolView } from "./bridge.js";
+import { formatBytes } from "../lib/bytes.js";
+import { bridge, call, openTool, serverLabel, type Channel, type OpenResult, type PlatformView, type RegisterResult, type ServerCheck, type TaskView, type ToolView } from "./bridge.js";
 import { EnvironmentPage } from "./EnvironmentPage.js";
+import { useMenuDismiss } from "../lib/ContextMenu.js";
 
 // AMO 平台's window (platform.html, 2026-10-28; prototype https://claude.ai/artifact/Uu4fL3bXZg1NZHXDSKBPc9): the login
 // page (with 注册 for people without an account) until there is an account, then 工具 / 环境 / 目录 / 设置, and 账号 at the
@@ -74,7 +76,7 @@ export function PlatformApp() {
           </nav>
           <main className="pf-content">
             {page === "tools" && <ToolsPage view={view} onNeedStudioDir={needStudioDir} />}
-            {page === "environment" && <EnvironmentPage />}
+            {page === "environment" && <EnvironmentPage task={view.envTask} />}
             {page === "dirs" && <DirsPage view={view} notice={dirNotice} onNoticeDone={() => setDirNotice(null)} />}
             {page === "settings" && <SettingsPage view={view} />}
             {page === "account" && <AccountPage view={view} />}
@@ -370,7 +372,7 @@ function ToolsPage({ view, onNeedStudioDir }: { view: PlatformView; onNeedStudio
       )}
       {view.tools.length === 0 && <p className="pf-hint">{view.connection.state === "checking" ? "正在读取服务器上的工具…" : "服务器上还没有发布工具。"}</p>}
       {view.tools.map((t) => (
-        <ToolRow key={t.id} tool={t} online={view.connection.state === "online"} writable={view.root.writable} onNeedStudioDir={onNeedStudioDir} />
+        <ToolRow key={t.id} tool={t} connection={view.connection.state} writable={view.root.writable} onNeedStudioDir={onNeedStudioDir} />
       ))}
     </div>
   );
@@ -409,8 +411,13 @@ function RootBanner({ view }: { view: PlatformView }) {
   return null;
 }
 
-function statusLine(t: ToolView): { tone: "ok" | "warn" | "idle"; text: string } {
-  const running = t.running ? " · 正在运行" : "";
+function statusLine(t: ToolView, checking: boolean): { tone: "ok" | "warn" | "idle"; text: string } {
+  // 重启 Studio under way: neither the old one nor the new one is simply "running" (2026-11-05: it read 0.9.39 正在运行
+  // while the old 0.9.36 was still quitting).
+  const running = t.studio?.restarting ? " · 正在重启" : t.running ? " · 正在运行" : "";
+  // While connecting (2026-10-30): what the server has is not known yet — before the first answer an installed tool
+  // would read 「这个通道里没有它」, after a 重试 or a channel switch the last answer; say it is being read instead.
+  if (checking) return t.installed ? { tone: "ok", text: `✓ ${t.installed} · 正在读取服务器上的版本…${running}` } : { tone: "idle", text: "○ 没装 · 正在读取服务器上的版本…" };
   switch (t.standing) {
     case "not-installed":
       return { tone: "idle", text: t.available ? `○ 没装 · 服务器上是 ${t.available}` : "○ 没装 · 这个通道里没有它" };
@@ -429,6 +436,7 @@ function statusLine(t: ToolView): { tone: "ok" | "warn" | "idle"; text: string }
 function studioLine(t: ToolView): string | null {
   const s = t.studio;
   if (!s || !t.installed) return null;
+  if (s.restarting) return "◐ 正在关掉旧的 Studio 和后台，再打开已装的版本";
   if (!s.hostUp) return "○ 后台没在运行";
   const sessions = s.sessions === null ? "看不到有几个会话在跑" : s.sessions === 0 ? "没有会话在跑" : `${s.sessions} 个会话进行中`;
   const version = s.version === null ? "" : s.version === "dev" ? " · 后台是开发版" : ` · 后台版本 ${s.version}`;
@@ -451,6 +459,15 @@ function studioRestartLine(t: ToolView): string | null {
   }
 }
 
+// One bar that only moves forward (用户 2026-10-29: it rose, fell back and rose again — the sliding busy block before and
+// after the download, then the real width from 0): empty until the download, its bytes while it runs, full while
+// switching. The sliding block only for what has no amount at all (uninstalling, going back to a kept version).
+function BarFill({ task }: { task: TaskView }) {
+  const fraction = task.phase === "manifest" || task.phase === "linking" ? 0 : task.phase === "downloading" || task.phase === "package" ? (task.totalBytes > 0 ? Math.min(1, task.doneBytes / task.totalBytes) : task.phase === "package" ? 0 : 1) : task.phase === "unpacking" ? null : task.kind === "install" || task.kind === "update" ? 1 : null;
+  if (fraction === null) return <div className="pf-bar-fill busy" />;
+  return <div className="pf-bar-fill" style={{ width: `${(100 * fraction).toFixed(1)}%` }} />;
+}
+
 function taskLine(task: TaskView): string {
   switch (task.phase) {
     case "manifest":
@@ -463,14 +480,19 @@ function taskLine(task: TaskView): string {
       return task.kind === "rollback" ? `正在回到 ${task.version}…` : `正在切换到 ${task.version}…`;
     case "removing":
       return "正在卸载…";
+    case "package":
+      return task.totalBytes > 0 ? `正在下载完整包 · ${formatBytes(task.doneBytes)} / ${formatBytes(task.totalBytes)}` : "正在下载完整包…";
+    case "unpacking":
+      return "正在解压完整包…";
   }
 }
 
-function ToolRow({ tool: t, online, writable, onNeedStudioDir }: { tool: ToolView; online: boolean; writable: boolean; onNeedStudioDir: (message: string) => void }) {
+function ToolRow({ tool: t, connection, writable, onNeedStudioDir }: { tool: ToolView; connection: PlatformView["connection"]["state"]; writable: boolean; onNeedStudioDir: (message: string) => void }) {
   const [confirmUninstall, setConfirmUninstall] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
   const busy = t.task !== null;
-  const status = statusLine(t);
+  const checking = connection === "checking";
+  const status = statusLine(t, checking);
   const studio = studioLine(t);
   const studioRestart = studioRestartLine(t);
   const short = t.name.replace(/（独立版）$/, "");
@@ -485,11 +507,28 @@ function ToolRow({ tool: t, online, writable, onNeedStudioDir }: { tool: ToolVie
   };
 
   const actions: Array<{ label: string; kind: "primary" | "plain" | "quiet"; run: () => void; disabled?: boolean; title?: string }> = [];
-  // A folder it cannot write to: nothing to install or update (RootBanner says why); offline: nothing to fetch.
-  const cannot = !writable ? "这个文件夹不能写入，见上面的提示" : !online ? "现在连不上服务器" : undefined;
+  // A folder it cannot write to: nothing to install or update (RootBanner says why); offline or connecting: nothing to
+  // fetch yet. Only these wait for the server — 打开, 关闭, 回到, 卸载 are this machine's (2026-10-30, the user agreed).
+  const cannot = !writable ? "这个文件夹不能写入，见上面的提示" : checking ? "正在连接服务器…" : connection !== "online" ? "现在连不上服务器" : undefined;
   if (t.standing === "not-installed" && t.available) actions.push({ label: "安装", kind: "plain", run: () => void call("install", t.id), disabled: !!cannot, title: cannot });
   if (t.standing === "update") actions.push({ label: `更新到 ${t.available}`, kind: "primary", run: () => void call("install", t.id), disabled: !!cannot, title: cannot });
-  if (t.installed) actions.push({ label: "打开", kind: "plain", run: open });
+  // While 重启 Studio runs (2026-11-05, the user's restart): 打开 started a second Studio beside the old one still quitting,
+  // and 关闭 went to the wrong one. Both wait for the restart to end.
+  const restarting = t.studio?.restarting === true;
+  const busyRestart = restarting ? "正在重启 Studio，等它做完" : undefined;
+  if (t.installed) actions.push({ label: "打开", kind: "plain", run: open, disabled: restarting, title: busyRestart });
+  // 关闭 (2026-10-29, the user): the tool quits its own way — Studio asks first when sessions are at work, as its 完全退出 does.
+  if (t.installed && t.running)
+    actions.push({
+      label: "关闭",
+      kind: "plain",
+      run: () => {
+        setOpenError(null);
+        void (call("close", t.id) as Promise<OpenResult>).then((r) => !r.ok && setOpenError(r.message));
+      },
+      disabled: restarting,
+      title: busyRestart ?? (t.id === "studio" ? "完全退出 Studio（连后台一起）；有会话在跑或远程在用时它会先问你" : `退出 ${short}`),
+    });
   // 重启 Studio (2026-10-29): the Host is older than what is installed; never while sessions are at work (AGENTS.md, 6).
   const st = t.studio;
   if (st && (st.restart === "ready" || st.restart === "busy" || st.restarting))
@@ -535,7 +574,7 @@ function ToolRow({ tool: t, online, writable, onNeedStudioDir }: { tool: ToolVie
         </div>
         <div className="pf-actions">
           {actions.map((a) => (
-            <button key={a.label} type="button" className={a.kind === "primary" ? "btn-primary" : "btn-ghost"} disabled={busy || a.disabled} title={a.title ?? (a.disabled ? "现在连不上服务器" : undefined)} onClick={a.run}>
+            <button key={a.label} type="button" className={a.kind === "primary" ? "btn-primary" : "btn-ghost"} disabled={busy || a.disabled} title={a.title} onClick={a.run}>
               {a.label}
             </button>
           ))}
@@ -546,7 +585,7 @@ function ToolRow({ tool: t, online, writable, onNeedStudioDir }: { tool: ToolVie
       {t.task && (
         <div className="pf-progress" role="status" aria-label={`${short} 进度`}>
           <div className="pf-bar" aria-hidden="true">
-            <div className={`pf-bar-fill${t.task.phase === "downloading" && t.task.totalBytes > 0 ? "" : " busy"}`} style={t.task.phase === "downloading" && t.task.totalBytes > 0 ? { width: `${Math.min(100, (100 * t.task.doneBytes) / t.task.totalBytes).toFixed(1)}%` } : undefined} />
+            <BarFill task={t.task} />
           </div>
           <span className="pf-hint">{taskLine(t.task)}</span>
         </div>
@@ -555,12 +594,14 @@ function ToolRow({ tool: t, online, writable, onNeedStudioDir }: { tool: ToolVie
       {t.result && (
         <div className={`pf-result ${t.result.tone}`} role={t.result.tone === "error" ? "alert" : "status"} data-testid={`tool-${t.id}-result`}>
           <span>
-            {t.result.tone === "ok" ? "✓ " : "! "}
+            {t.result.tone === "ok" ? "✓ " : t.result.tone === "busy" ? "◐ " : "! "}
             {t.result.text}
           </span>
-          <button type="button" className="pf-x" aria-label="知道了" title="知道了" onClick={() => void call("dismiss", t.id)}>
-            ×
-          </button>
+          {t.result.tone !== "busy" && (
+            <button type="button" className="pf-x" aria-label="知道了" title="知道了" onClick={() => void call("dismiss", t.id)}>
+              ×
+            </button>
+          )}
         </div>
       )}
       {openError && (
@@ -612,25 +653,10 @@ interface MenuItem {
   danger?: boolean;
 }
 
-/** A tool's 「⋯」: the actions not needed every day, in a small menu under the button (closes on a click outside or Esc). */
+/** A tool's 「⋯」: the actions not needed every day, in a small menu under the button. */
 function MoreMenu({ items, label, disabled }: { items: MenuItem[]; label: string; disabled: boolean }) {
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const down = (e: MouseEvent) => {
-      if (!wrap.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", down);
-    document.addEventListener("keydown", key);
-    return () => {
-      document.removeEventListener("mousedown", down);
-      document.removeEventListener("keydown", key);
-    };
-  }, [open]);
   useEffect(() => {
     if (disabled) setOpen(false);
   }, [disabled]);
@@ -640,7 +666,7 @@ function MoreMenu({ items, label, disabled }: { items: MenuItem[]; label: string
         ⋯
       </button>
       {open && (
-        <div className="pf-menu" role="menu" aria-label={`${label} 的更多操作`}>
+        <MoreMenuList wrap={wrap} label={label} onClose={() => setOpen(false)}>
           {items.map((i) => (
             <button
               key={i.label}
@@ -657,8 +683,18 @@ function MoreMenu({ items, label, disabled }: { items: MenuItem[]; label: string
               {i.note && <span className="pf-menu-note">{i.note}</span>}
             </button>
           ))}
-        </div>
+        </MoreMenuList>
       )}
+    </div>
+  );
+}
+
+/** The open menu, closed as Studio's menus are (lib/ContextMenu.tsx); a press on the ⋯ button is its own toggle. */
+function MoreMenuList({ wrap, label, onClose, children }: { wrap: RefObject<HTMLDivElement | null>; label: string; onClose(): void; children: ReactNode }) {
+  useMenuDismiss(wrap, onClose);
+  return (
+    <div className="pf-menu" role="menu" aria-label={`${label} 的更多操作`}>
+      {children}
     </div>
   );
 }
@@ -790,7 +826,7 @@ function SelfSection({ view }: { view: PlatformView }) {
         )}
         <span className="pf-spacer" />
         {s.standing === "update" && (
-          <button type="button" className="btn-primary" disabled={busy || !online || !view.root.writable} title={!view.root.writable ? "这个文件夹不能写入，见「工具」页上的提示" : online ? undefined : "现在连不上服务器"} onClick={() => void call("updateSelf")}>
+          <button type="button" className="btn-primary" disabled={busy || !online || !view.root.writable} title={!view.root.writable ? "这个文件夹不能写入，见「工具」页上的提示" : online ? undefined : view.connection.state === "checking" ? "正在连接服务器…" : "现在连不上服务器"} onClick={() => void call("updateSelf")}>
             更新平台
           </button>
         )}
@@ -812,7 +848,7 @@ function SelfSection({ view }: { view: PlatformView }) {
       {s.task && (
         <div className="pf-progress" role="status" aria-label="平台更新进度">
           <div className="pf-bar" aria-hidden="true">
-            <div className={`pf-bar-fill${s.task.phase === "downloading" && s.task.totalBytes > 0 ? "" : " busy"}`} style={s.task.phase === "downloading" && s.task.totalBytes > 0 ? { width: `${Math.min(100, (100 * s.task.doneBytes) / s.task.totalBytes).toFixed(1)}%` } : undefined} />
+            <BarFill task={s.task} />
           </div>
           <span className="pf-hint">{taskLine(s.task)}</span>
         </div>
@@ -827,6 +863,16 @@ function SelfSection({ view }: { view: PlatformView }) {
             ×
           </button>
         </div>
+      )}
+      {/* 2026-11-03, the user: when 更新平台 gets stuck, a way out from here — the whole package, another download. */}
+      {s.standing === "update" && !s.task && (
+        <p className="pf-hint" data-testid="pf-self-full">
+          {s.result?.tone === "error" ? "更新不了？可以" : "「更新平台」卡住时可以"}
+          <button type="button" className="pf-link" disabled={busy || !online || !view.root.writable} onClick={() => void call("updateSelfFull")} data-testid="pf-self-full-button">
+            用完整包更新
+          </button>
+          ：一次下载整个平台，换一条下载路，断了再点会接着下。
+        </p>
       )}
       {s.notes && (s.standing === "update" || s.standing === "restart") && (
         <details className="pf-notes pf-self-notes" open={s.standing === "update"}>
@@ -846,6 +892,12 @@ function SelfSection({ view }: { view: PlatformView }) {
 const CHANNELS: Array<[Channel, string, string]> = [
   ["stable", "稳定", "团队确认过的版本。"],
   ["test", "测试", "刚发布的版本，先拿到，可能有问题。"],
+];
+
+const THEMES: Array<[PlatformView["theme"], string]> = [
+  ["light", "浅色"],
+  ["dark", "深色"],
+  ["system", "跟随系统"],
 ];
 
 function SettingsPage({ view }: { view: PlatformView }) {
@@ -871,13 +923,27 @@ function SettingsPage({ view }: { view: PlatformView }) {
         {view.channelFromArgs && <p className="pf-hint">这次是用启动参数 --channel {view.channel} 打开的，以它为准；不带参数打开时才按这里的选择。</p>}
       </section>
 
+      <section className="pf-section" aria-label="主题">
+        <h2 className="pf-h2">主题</h2>
+        <div className="pf-row">
+          <div role="radiogroup" aria-label="主题" className="pf-seg">
+            {THEMES.map(([id, label]) => (
+              <button key={id} type="button" role="radio" aria-checked={view.theme === id} onClick={() => view.theme !== id && void call("setTheme", id)}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <span className="pf-hint">平台的窗口和托盘菜单都跟着变。</span>
+        </div>
+      </section>
+
       <section className="pf-section" aria-label="启动">
         <h2 className="pf-h2">启动</h2>
         <label className="pf-check">
           <input type="checkbox" checked={view.openAtLogin} onChange={(e) => void call("setOpenAtLogin", e.target.checked)} data-testid="pf-login-start" />
           开机时启动平台（只在托盘里，不弹窗口）
         </label>
-        <p className="pf-hint">关掉窗口后平台留在托盘里；右键托盘图标可以打开工具或退出平台。</p>
+        <p className="pf-hint">关掉窗口后平台留在托盘里。从平台打开的工具不再各放一个托盘图标，都在平台的托盘菜单里（右键）：打开、关闭、显示便签；单击托盘图标打开便签或 Studio，在菜单最下面选。</p>
       </section>
 
       <section className="pf-section last" aria-label="关于">

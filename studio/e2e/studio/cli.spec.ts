@@ -75,8 +75,8 @@ test("Codex: the / menu, compaction, review mode and retries", async () => {
   const compaction = page.getByTestId("compaction");
   await expect(compaction).toHaveAttribute("data-state", "completed", { timeout: 60_000 });
   await expect(compaction).toContainText(/上下文已压缩（之前约 [\d.]+k? tok）/);
-  // Codex's own warning after compacting is a notice row.
-  await expect(page.getByTestId("msg-notice").filter({ hasText: "multiple compactions" })).toBeVisible();
+  // Codex's own warning after compacting (「multiple compactions…」) is gone from Codex 0.166 (2026-11-03); that a
+  // warning becomes a notice row is codex-cli.test's, with the fake app-server.
   await idle(page);
   await expect(page.getByTestId("compact-button")).toBeEnabled();
   await screenshot(app, "stage-12", "S12-E-compaction", page);
@@ -153,6 +153,14 @@ test("Claude: commands, a background command, retries, notices, images and sugge
   await expect(page.getByTestId("background-output")).toContainText("tick 2", { timeout: 30_000 });
   await idle(page);
   await screenshot(app, "stage-12", "S12-E-background", page);
+  // 问题 #12: the list folds to one line (with how many run) so it does not cover the conversation, and opens again.
+  const bgToggle = page.getByTestId("background-tasks-toggle");
+  await bgToggle.click();
+  await expect(bg).toHaveCount(0);
+  await expect(bgToggle).toContainText("1 个在跑");
+  await screenshot(app, "stage-12", "S12-E-background-folded", page);
+  await bgToggle.click();
+  await expect(bg).toHaveAttribute("data-state", "running");
   await bg.getByRole("button", { name: "停止" }).click();
   await expect(bg).toHaveAttribute("data-state", "stopped", { timeout: 30_000 });
   await expect(bg).toContainText("已停止");

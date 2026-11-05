@@ -39,7 +39,7 @@ test("Focus: waiting for its subagents is 进行中 with ▸ N, finished once th
   await expect(working).toHaveAttribute("data-waiting-subs", "true", { timeout: 60_000 });
   await expect(working).toContainText("调查方案");
   await expect(working).toContainText("等子 agent");
-  await expect(working.locator(".dot.ring")).toHaveCount(1);
+  await expect(working.getByTestId("focus-status-word").first()).toHaveText("◐等待");
   // Not finished, nothing for the person yet.
   await expect(focus.getByTestId("focus-entry")).toHaveCount(0);
   await expect(focus.getByTestId("focus-needs")).toHaveText("没有待处理");
@@ -148,4 +148,31 @@ test("opened to deal with it — from Focus or from the board — a long reply o
   await expect(page.getByTestId("msg-agent").first()).toBeVisible();
   await page.waitForTimeout(500);
   await expect(hint).toHaveCount(0);
+});
+
+test("追踪 on the session bar pins the task in Focus and follows Focus's own 置顶 (问题 #15)", async () => {
+  studio = await launchStudio();
+  const { app, page } = studio;
+  const ws = await studio.api<Workspace>("POST", "/api/workspaces", { path: studio.workspace("alpha") });
+  const focus = await openFocus(studio);
+  await studio.api("POST", "/api/tasks", { title: "追踪的任务", workspaceId: ws.id, firstSession: { profileId: "codex-mock", text: "hello" } });
+  await page.getByTestId("task-card").filter({ hasText: "追踪的任务" }).click();
+  await expect(page.getByTestId("msg-agent").last()).toContainText("MOCK: hello", { timeout: 60_000 });
+
+  const track = page.getByTestId("session-track");
+  await expect(track).toHaveAttribute("aria-pressed", "false");
+  await expect(track).toHaveText("追踪");
+  await track.click();
+  await expect(track).toHaveAttribute("aria-pressed", "true");
+  await expect(track).toHaveText("追踪中");
+  const pinned = focus.getByTestId("focus-pinned");
+  await expect(pinned).toContainText("追踪的任务");
+  await screenshot(app, "studio", "issue15-track-on", page);
+  await screenshot(app, "studio", "issue15-track-focus", focus, "focus");
+
+  // Unpinned in Focus: the button follows.
+  await pinned.getByTestId("focus-pin").click();
+  await expect(pinned).toHaveCount(0);
+  await expect(track).toHaveAttribute("aria-pressed", "false");
+  await expect(track).toHaveText("追踪");
 });

@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { collectSubtreeIds, type CanvasDoc, type HostEvent, type Id, type Session, type SessionItem, type SessionOptions, type Task, type TaskColumn, type TaskRemote, type Topic, type Workspace } from "@amo-studio/protocol";
+import { collectSubtreeIds, ENDED_STATUSES, type CanvasDoc, type HostEvent, type Id, type Session, type SessionItem, type SessionOptions, type Task, type TaskColumn, type TaskRemote, type Topic, type Workspace } from "@amo-studio/protocol";
 import { DocumentStore } from "./documents.js";
 import { ATTACHMENT_ID, str, strOrNull, toItem, toSession, toTask, toTopic, toWorkspace, type Row } from "./rows.js";
 import { MIGRATIONS } from "./migrations.js";
+import { kvPrefixes, MCP_SESSION_PREFIX, MCP_TOKEN_PREFIX } from "./kv-keys.js";
 
 /** A HostEvent before the store assigns its sequence number. */
 export type HostEventInput = HostEvent extends infer E ? (E extends HostEvent ? Omit<E, "seq"> : never) : never;
@@ -167,12 +168,13 @@ export class Store extends DocumentStore {
   // Tasks
 
   /** `id` and `remote`: 远程 step 2, this computer's copy of a paired device's task, under that task's own id. */
-  createTask(input: { title: string; workspaceId: Id; topicId?: Id | null; column?: TaskColumn; lead?: boolean; id?: Id; remote?: TaskRemote }): Task {
+  createTask(input: { title: string; workspaceId: Id; topicId?: Id | null; column?: TaskColumn; lead?: boolean; id?: Id; remote?: TaskRemote; firstMessage?: string }): Task {
     const at = this.timestamp();
-    const task: Task = { id: input.id ?? newId("task"), title: input.title, workspaceId: input.workspaceId, topicId: input.topicId ?? null, column: input.column ?? "todo", ...(input.lead ? { lead: true } : {}), ...(input.remote ? { remote: input.remote } : {}), createdAt: at, updatedAt: at, archivedAt: null };
+    const firstMessage = input.firstMessage?.trim() || "";
+    const task: Task = { id: input.id ?? newId("task"), title: input.title, workspaceId: input.workspaceId, topicId: input.topicId ?? null, column: input.column ?? "todo", ...(firstMessage ? { firstMessage } : {}), ...(input.lead ? { lead: true } : {}), ...(input.remote ? { remote: input.remote } : {}), createdAt: at, updatedAt: at, archivedAt: null };
     this.db
-      .prepare("INSERT INTO tasks (id, title, workspace_id, topic_id, column_name, lead, remote, created_at, updated_at, archived_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)")
-      .run(task.id, task.title, task.workspaceId, task.topicId, task.column, input.lead ? 1 : 0, input.remote ? JSON.stringify(input.remote) : null, at, at);
+      .prepare("INSERT INTO tasks (id, title, workspace_id, topic_id, column_name, lead, remote, first_message, created_at, updated_at, archived_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)")
+      .run(task.id, task.title, task.workspaceId, task.topicId, task.column, input.lead ? 1 : 0, input.remote ? JSON.stringify(input.remote) : null, firstMessage || null, at, at);
     return task;
   }
 
@@ -190,20 +192,21 @@ export class Store extends DocumentStore {
     return (this.db.prepare("SELECT * FROM tasks ORDER BY created_at, id").all() as Row[]).map(toTask);
   }
 
-  /** `description`: empty removes it. */
-  updateTask(id: Id, patch: Partial<Pick<Task, "title" | "column" | "workspaceId" | "topicId" | "archivedAt" | "description" | "lead" | "relayAuto" | "remote">>): Task {
+  /** `description`, `firstMessage`: empty removes it. */
+  updateTask(id: Id, patch: Partial<Pick<Task, "title" | "column" | "workspaceId" | "topicId" | "archivedAt" | "description" | "firstMessage" | "lead" | "relayAuto" | "remote">>): Task {
     const task = this.getTask(id);
     if (!task) throw new Error(`task ${id} not found`);
-    const { description: _old, lead: _wasLead, relayAuto: _wasAuto, remote: _wasRemote, ...rest } = task;
+    const { description: _old, firstMessage: _oldFirst, lead: _wasLead, relayAuto: _wasAuto, remote: _wasRemote, ...rest } = task;
     const description = patch.description !== undefined ? patch.description.trim() : (task.description ?? "");
+    const firstMessage = patch.firstMessage !== undefined ? patch.firstMessage.trim() : (task.firstMessage ?? "");
     const lead = patch.lead !== undefined ? patch.lead : !!task.lead;
     const relayAuto = patch.relayAuto !== undefined ? patch.relayAuto : !!task.relayAuto;
     const remote = patch.remote !== undefined ? patch.remote : task.remote;
-    const { description: _d, lead: _l, relayAuto: _r, remote: _m, ...plain } = patch;
-    const next: Task = { ...rest, ...plain, ...(description ? { description } : {}), ...(lead ? { lead: true } : {}), ...(relayAuto ? { relayAuto: true } : {}), ...(remote ? { remote } : {}), updatedAt: this.timestamp() };
+    const { description: _d, firstMessage: _f, lead: _l, relayAuto: _r, remote: _m, ...plain } = patch;
+    const next: Task = { ...rest, ...plain, ...(description ? { description } : {}), ...(firstMessage ? { firstMessage } : {}), ...(lead ? { lead: true } : {}), ...(relayAuto ? { relayAuto: true } : {}), ...(remote ? { remote } : {}), updatedAt: this.timestamp() };
     this.db
-      .prepare("UPDATE tasks SET title = ?, column_name = ?, workspace_id = ?, topic_id = ?, archived_at = ?, description = ?, lead = ?, relay_auto = ?, remote = ?, updated_at = ? WHERE id = ?")
-      .run(next.title, next.column, next.workspaceId || null, next.topicId, next.archivedAt, description || null, lead ? 1 : 0, relayAuto ? 1 : 0, remote ? JSON.stringify(remote) : null, next.updatedAt, id);
+      .prepare("UPDATE tasks SET title = ?, column_name = ?, workspace_id = ?, topic_id = ?, archived_at = ?, description = ?, first_message = ?, lead = ?, relay_auto = ?, remote = ?, updated_at = ? WHERE id = ?")
+      .run(next.title, next.column, next.workspaceId || null, next.topicId, next.archivedAt, description || null, firstMessage || null, lead ? 1 : 0, relayAuto ? 1 : 0, remote ? JSON.stringify(remote) : null, next.updatedAt, id);
     return next;
   }
 
@@ -242,7 +245,7 @@ export class Store extends DocumentStore {
 
   createSession(input: Omit<Session, "id" | "createdAt" | "updatedAt" | "archivedAt" | "options"> & { id?: Id; options?: SessionOptions }): Session {
     const at = this.timestamp();
-    const s: Session = { ...input, options: input.options ?? {}, id: input.id ?? newId("s"), createdAt: at, updatedAt: at, archivedAt: null };
+    const s: Session = { ...input, options: input.options ?? {}, id: input.id ?? newId("s"), createdAt: at, updatedAt: at, archivedAt: null, endedAt: null };
     this.db
       .prepare(
         `INSERT INTO sessions (id, task_id, topic_id, parent_id, kind, runtime, profile_id, workspace_id, title, status, writer, runtime_ref, options, created_at, updated_at, archived_at)
@@ -293,12 +296,15 @@ export class Store extends DocumentStore {
   updateSession(id: Id, patch: Partial<Pick<Session, "title" | "status" | "writer" | "runtimeRef" | "profileId" | "options" | "wake">>): Session {
     const s = this.getSession(id);
     if (!s) throw new Error(`session ${id} not found`);
-    const { wake: _old, ...rest } = { ...s, ...patch, updatedAt: this.timestamp() };
+    const at = this.timestamp();
+    // A turn ended: the status became an ended one (Session.endedAt). Nothing else moves it.
+    const ended = patch.status !== undefined && patch.status !== s.status && ENDED_STATUSES.includes(patch.status);
+    const { wake: _old, ...rest } = { ...s, ...patch, updatedAt: at, ...(ended ? { endedAt: at } : {}) };
     const wake = patch.wake === undefined ? s.wake : patch.wake;
     const next: Session = { ...rest, ...(wake && (wake.loop || wake.limit) ? { wake } : {}) };
     this.db
-      .prepare("UPDATE sessions SET title = ?, status = ?, writer = ?, runtime_ref = ?, profile_id = ?, options = ?, wake = ?, updated_at = ? WHERE id = ?")
-      .run(next.title, next.status, next.writer, next.runtimeRef, next.profileId, JSON.stringify(next.options), next.wake ? JSON.stringify(next.wake) : null, next.updatedAt, id);
+      .prepare("UPDATE sessions SET title = ?, status = ?, writer = ?, runtime_ref = ?, profile_id = ?, options = ?, wake = ?, updated_at = ?, ended_at = ? WHERE id = ?")
+      .run(next.title, next.status, next.writer, next.runtimeRef, next.profileId, JSON.stringify(next.options), next.wake ? JSON.stringify(next.wake) : null, next.updatedAt, next.endedAt ?? null, id);
     return next;
   }
 
@@ -325,12 +331,13 @@ export class Store extends DocumentStore {
   putRemoteSession(s: Session): Session {
     this.db
       .prepare(
-        `INSERT INTO sessions (id, task_id, topic_id, parent_id, kind, runtime, profile_id, workspace_id, title, status, writer, runtime_ref, options, wake, started_by, report_to, created_at, updated_at, archived_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO sessions (id, task_id, topic_id, parent_id, kind, runtime, profile_id, workspace_id, title, status, writer, runtime_ref, options, wake, started_by, report_to, created_at, updated_at, archived_at, ended_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET title = excluded.title, status = excluded.status, writer = excluded.writer, runtime_ref = excluded.runtime_ref, profile_id = excluded.profile_id,
-           options = excluded.options, wake = excluded.wake, started_by = excluded.started_by, report_to = excluded.report_to, updated_at = excluded.updated_at, archived_at = excluded.archived_at`,
+           options = excluded.options, wake = excluded.wake, started_by = excluded.started_by, report_to = excluded.report_to, updated_at = excluded.updated_at, archived_at = excluded.archived_at, ended_at = excluded.ended_at`,
       )
-      .run(s.id, s.taskId, s.topicId, s.parentId, s.kind, s.runtime, s.profileId, s.workspaceId, s.title, s.status, s.writer, s.runtimeRef, JSON.stringify(s.options ?? {}), s.wake ? JSON.stringify(s.wake) : null, s.startedBy ?? null, s.reportTo ?? null, s.createdAt, s.updatedAt, s.archivedAt);
+      // A's Host from before endedAt: an ended session's updatedAt stands in, as Focus read it before.
+      .run(s.id, s.taskId, s.topicId, s.parentId, s.kind, s.runtime, s.profileId, s.workspaceId, s.title, s.status, s.writer, s.runtimeRef, JSON.stringify(s.options ?? {}), s.wake ? JSON.stringify(s.wake) : null, s.startedBy ?? null, s.reportTo ?? null, s.createdAt, s.updatedAt, s.archivedAt, s.endedAt !== undefined ? s.endedAt : ENDED_STATUSES.includes(s.status) ? s.updatedAt : null);
     return this.getSession(s.id)!;
   }
 
@@ -452,6 +459,18 @@ export class Store extends DocumentStore {
       }
       each(topics, "DELETE FROM topics WHERE id = ?");
       for (const id of ids.workspaceIds) this.removeWorkspace(id);
+      // Their kv keys (kv-keys.ts; 2026-11-04: until then they stayed for good), a session's MCP token's too.
+      for (const id of sessions) {
+        const token = this.getKv(MCP_SESSION_PREFIX + id)?.value;
+        if (token) this.deleteKv(MCP_TOKEN_PREFIX + token);
+      }
+      const dropKv = (scope: "session" | "task" | "workspace", list: Iterable<Id>) => {
+        const prefixes = kvPrefixes(scope);
+        for (const id of list) for (const p of prefixes) this.deleteKv(p + id);
+      };
+      dropKv("session", sessions);
+      dropKv("task", tasks);
+      dropKv("workspace", ids.workspaceIds);
       // The event log is only for catching up after a reconnect; events about what is gone would bring it back.
       const gone = [...sessions, ...tasks, ...topics];
       for (let i = 0; i < gone.length; i += 50) {
@@ -538,7 +557,7 @@ export class Store extends DocumentStore {
     return (
       this.db
         .prepare(
-          `SELECT * FROM items WHERE session_id = ? AND (json_extract(body, '$.state') IN ('pending', 'running') OR json_extract(body, '$.streaming') = 1 OR json_extract(body, '$.status') = 'running') ORDER BY seq`,
+          `SELECT * FROM items WHERE session_id = ? AND (json_extract(body, '$.state') IN ('pending', 'running') OR json_extract(body, '$.streaming') = 1 OR json_extract(body, '$.status') = 'running' OR json_extract(body, '$.delivery') = 'waiting') ORDER BY seq`,
         )
         .all(sessionId) as Row[]
     ).map(toItem);
@@ -585,5 +604,9 @@ export class Store extends DocumentStore {
       .prepare("INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
       .run(key, value, updatedAt);
     return { value, updatedAt };
+  }
+
+  deleteKv(key: string): void {
+    this.db.prepare("DELETE FROM kv WHERE key = ?").run(key);
   }
 }

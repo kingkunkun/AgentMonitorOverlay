@@ -1,11 +1,20 @@
 import { randomBytes } from "node:crypto";
-import { REMOTE_KINDS, TASK_DESCRIPTION_MAX, type Id, type RemoteAcceptInput, type RemotePush, type RemoteTaskRequest, type SessionOptions } from "@amo-studio/protocol";
+import { REMOTE_KINDS, TASK_DESCRIPTION_MAX, type Id, type RemoteAcceptInput, type RemotePush, type RemoteTaskRequest } from "@amo-studio/protocol";
 import type { DeviceRef } from "@amo-studio/relay";
 import { HostError } from "../../core/shared.js";
 import type { RemoteContext, RemoteGrants } from "./grants.js";
+import { startGrantedTask } from "./create.js";
+import { claimedOf, claimedText } from "./uploads.js";
+
+/** A request as the device sees it: without the paths of what it sent along (they name this computer's folders). */
+const forPeer = (r: RemoteTaskRequest): RemoteTaskRequest => {
+  if (!r.attached) return r;
+  const { attached, ...rest } = r;
+  return { ...rest, attached: { images: attached.images, files: attached.files.map((f) => ({ id: f.id, name: f.name, path: "" })) } };
+};
 
 // 远程, step 4 (plans/remote-session.md, 2026-10-29): B asks A to run a task. B writes a title and what to do; A's
-// person sees it on Focus and in 设置 → 远程, picks the project, the topic (or none) and a model from 远端允许的模型,
+// person sees it on Focus and on the remote page (顶栏「远程」), picks the project, the topic (or none) and a model from 远端允许的模型,
 // and allows it: A makes the task (its 说明 the request), grants it to B, and starts its session with the request as
 // the first message — B's board shows the task and it running. Or A refuses it, saying why. A request goes only while A
 // is online: the team server keeps no task contents, and nothing is sent again later on its own.
@@ -53,14 +62,16 @@ export class TaskRequests {
     this.ctx.host.store.setKv(REQUESTS_KEY, JSON.stringify(list));
   }
 
-  /** Waiting for this computer's person (Focus, 设置 → 远程). */
+  /** Waiting for this computer's person (Focus, the remote page). */
   pending(): RemoteTaskRequest[] {
     return this.all().filter((r) => r.state === "pending");
   }
 
   /** A device's requests, answered ones too (it asks for them when it comes back: rt.list). */
   of(from: DeviceRef): RemoteTaskRequest[] {
-    return this.all().filter((r) => same(r, from));
+    return this.all()
+      .filter((r) => same(r, from))
+      .map(forPeer);
   }
 
   /** rt.request: a device that may reach this computer (it allowed the pairing) asks for a task. Same id twice: one request. */
@@ -78,13 +89,30 @@ export class TaskRequests {
     return request;
   }
 
+  /**
+   * 安全 (2026-10-29): a task the device created that waits for a yes here — a request with its project, topic and
+   * model already picked (create.ts checked them against 远端允许的…). The device keeps it with what it asked.
+   */
+  hold(from: DeviceRef, input: { title: string; text: string; preset: NonNullable<RemoteTaskRequest["preset"]>; attached?: RemoteTaskRequest["attached"] }): RemoteTaskRequest {
+    const p = this.ctx.peer(from, "owner");
+    if (!p) throw new HostError("bad_request", "只有这台电脑允许配对的设备才能在它上面建任务");
+    const request: RemoteTaskRequest = { id: `rq_${randomBytes(9).toString("base64url")}`, title: input.title, text: input.text, account: from.account, device: from.device, name: p.name, state: "pending", createdAt: new Date().toISOString(), preset: input.preset, ...(input.attached ? { attached: input.attached } : {}) };
+    this.save([...this.all(), request]);
+    this.ctx.changed();
+    return forPeer(request);
+  }
+
   /** rt.withdraw: the device takes its request back, or puts this computer's answer away. */
   withdraw(from: DeviceRef, requestId: unknown): void {
     const list = this.all();
     const r = list.find((x) => x.id === requestId && same(x, from));
     if (!r) return;
     this.save(list.filter((x) => x !== r));
-    if (r.state === "pending") this.ctx.changed();
+    // Taken back before an answer: what it sent along goes too.
+    if (r.state === "pending") {
+      this.ctx.inbox().drop(r.attached);
+      this.ctx.changed();
+    }
   }
 
   private take(id: Id): RemoteTaskRequest {
@@ -97,7 +125,7 @@ export class TaskRequests {
   private answer(r: RemoteTaskRequest, patch: Partial<RemoteTaskRequest>): RemoteTaskRequest {
     const next: RemoteTaskRequest = { ...r, ...patch, answeredAt: new Date().toISOString() };
     this.save(this.all().map((x) => (x.id === r.id && same(x, r) ? next : x)));
-    this.push(r, { type: "request", request: next });
+    this.push(r, { type: "request", request: forPeer(next) });
     this.ctx.changed();
     return next;
   }
@@ -115,29 +143,31 @@ export class TaskRequests {
     if (typeof input?.workspaceId !== "string" || !input.workspaceId) throw new HostError("bad_request", "先选一个项目（或公共目录）");
     if (typeof input.profileId !== "string" || !input.profileId) throw new HostError("bad_request", "先选一个模型");
     const allowed = this.grants.allowed();
-    if (!allowed.profiles.length) throw new HostError("bad_request", "还没有选远端允许的模型：先在 设置 → 远程「远端允许的模型」里勾上可以给远程任务用的模型");
+    if (!allowed.profiles.length) throw new HostError("bad_request", "还没有选远端允许的模型：先在顶栏的「远程」→「远程设置」→「远端允许的模型」里勾上可以给远程任务用的模型");
     const profile = host.profiles.find((p) => p.id === input.profileId);
     if (!allowed.profiles.includes(input.profileId) || !profile || profile.unavailable) throw new HostError("bad_request", "这个模型不在远端允许的模型里（或现在用不了）");
     const topicId = typeof input.topicId === "string" && input.topicId ? input.topicId : null;
-    // 进行中 from the start, as a task made with its first session is (the session starts just below, once granted).
-    const { task } = await host.tasks.createTask({ title: r.title, workspaceId: input.workspaceId, topicId, column: "doing" });
-    host.tasks.updateTask(task.id, { description: r.text.length > TASK_DESCRIPTION_MAX ? `${r.text.slice(0, TASK_DESCRIPTION_MAX - 1)}…` : r.text });
-    this.grants.grant(task.id, { account: r.account, device: r.device });
-    const permission = this.grants.permissionFor(input.profileId);
-    const options: SessionOptions | undefined = permission ? { permission } : undefined;
-    const answered = this.answer(r, { state: "accepted", taskId: task.id });
-    try {
-      await host.tasks.addSession(task.id, { profileId: input.profileId, text: r.text, ...(options ? { options } : {}) });
-    } catch (err) {
-      // The task and the grant stay: its session can be started on the task page (here or from the device).
-      host.emit("event", { type: "host.error", message: `远程请求的任务已经建好，但会话没能启动：${err instanceof Error ? err.message : String(err)}`, seq: host.store.lastEventSeq() });
-    }
-    return answered;
+    // What B sent along with it (安全, held here): made part of the first message — a DSH session takes no pictures.
+    const sent = claimedOf(r.attached, (aid) => host.attachments.get(aid));
+    const along = profile.runtime === "dsh" ? { images: [], files: [...sent.files, ...sent.images.map((a) => ({ id: a.id, name: a.name, path: a.path }))] } : sent;
+    // The same path as 远程创建 (create.ts): made, granted, answered, its session started.
+    let answered: RemoteTaskRequest | null = null;
+    const made = await startGrantedTask(
+      this.ctx,
+      this.grants,
+      { account: r.account, device: r.device },
+      { title: r.title, ...(r.preset ? {} : { description: r.text.length > TASK_DESCRIPTION_MAX ? `${r.text.slice(0, TASK_DESCRIPTION_MAX - 1)}…` : r.text }), text: claimedText(r.text, along), workspaceId: input.workspaceId, topicId, profileId: input.profileId, ...(along.images.length ? { attachments: along.images.map((a) => a.id) } : {}) },
+      (task) => (answered = this.answer(r, { state: "accepted", taskId: task.id })),
+    );
+    // The task and the grant stay: its session can be started on the task page (here or from the device).
+    if (made.error) host.emit("event", { type: "host.error", message: `远程请求的任务已经建好，但会话没能启动：${made.error}`, seq: host.store.lastEventSeq() });
+    return answered ?? this.answer(r, { state: "accepted", taskId: made.task.id });
   }
 
   refuse(id: Id, reason: unknown): RemoteTaskRequest {
     const r = this.take(id);
     const why = typeof reason === "string" ? reason.trim().slice(0, REASON_MAX) : "";
+    this.ctx.inbox().drop(r.attached);
     return this.answer(r, { state: "refused", ...(why ? { reason: why } : {}) });
   }
 
@@ -145,6 +175,7 @@ export class TaskRequests {
   dropPeer(peer: DeviceRef): void {
     const list = this.all();
     if (list.some((r) => same(r, peer))) {
+      for (const r of list) if (same(r, peer) && r.state === "pending") this.ctx.inbox().drop(r.attached);
       this.save(list.filter((r) => !same(r, peer)));
       this.ctx.changed();
     }

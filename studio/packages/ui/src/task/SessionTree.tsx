@@ -1,6 +1,6 @@
 import { useEffect, useState, type JSX } from "react";
 import { buildSessionTree, type ModelProfile, type Session, type SessionNode, type SessionOptions, type Task, type Workspace } from "@amo-studio/protocol";
-import { defaultProfile, rememberProfile, shortModel } from "../lib/profiles.js";
+import { defaultProfile, rememberProfile, repick, shortModel } from "../lib/profiles.js";
 import { sessionModelName, storedChoices } from "../lib/choices.js";
 import type { HostLink } from "../host/client.js";
 import { activeModel, useProfileChoices } from "../lib/choices.js";
@@ -13,6 +13,7 @@ import { wakeLabel } from "../chat/WakeBar.js";
 import { Mark } from "../chat/pickers.js";
 import { ArchiveIcon, formatDay } from "./Archived.js";
 import { useStoredIds } from "../lib/storedIds.js";
+import { dutyOfSession, useDuty } from "../duty/duty.js";
 
 const KIND = { main: "会话", fork: "分支", sub: "子 agent" } as const;
 
@@ -41,9 +42,6 @@ interface SessionTreeProps {
   onRestore(id: string): void;
   /** Unread mail per session id. */
   unread?: ReadonlyMap<string, number>;
-  /** Session presets from the extension packs of the task's workspaces. */
-  presets?: ReadonlyArray<{ key: string; label: string }>;
-  onPreset?(key: string): void;
   /** The new-session form, opened from 新会话 in the task head (2026-10-14). */
   creating: boolean;
   onCreating(open: boolean): void;
@@ -64,7 +62,7 @@ function RemoteNewSession({ name, allowed, blocked, profiles, busy, onStart }: {
   return (
     <div className="new-session" aria-label="新会话" data-testid="remote-new-session">
       {allowed.length === 0 ? (
-        <span className="settings-hint">{name} 没有允许远程新开会话的模型：在那台电脑的 设置 → 远程 里勾选。</span>
+        <span className="settings-hint">{name} 没有允许远程新开会话的模型：在那台电脑顶栏的「远程」→「远程设置」里勾选。</span>
       ) : (
         <>
           <label className="stack-field">
@@ -88,13 +86,22 @@ function RemoteNewSession({ name, allowed, blocked, profiles, busy, onStart }: {
 }
 
 /** Left column of the task page: session tree (forks and subagents indented), new session, archived area. Shown or hidden as a whole by 会话 in the task head (2026-10-15). */
-export function SessionTree({ link, task, sessions, workspaces, profiles, selected, busy, onSelect, onNewSession, onRestore, unread, presets = [], onPreset, creating, onCreating, remote }: SessionTreeProps) {
+export function SessionTree({ link, task, sessions, workspaces, profiles, selected, busy, onSelect, onNewSession, onRestore, unread, creating, onCreating, remote }: SessionTreeProps) {
   const live = sessions.filter((s) => !s.archivedAt);
   // An archived subtree shows once, by its top-most archived session.
   const archivedRoots = sessions.filter((s) => s.archivedAt && !sessions.some((p) => p.id === s.parentId && p.archivedAt));
   const [pick, setPick] = useState<ModelPick>({ profileId: defaultProfile(profiles)?.id ?? "", model: null });
   const [effort, setEffort] = useState<string | null>(null);
   const [fast, setFast] = useState<boolean | undefined>(undefined);
+  // A model hidden in 设置 → 模型 meanwhile gives way to the default (问题 #14).
+  useEffect(() => {
+    const next = repick(profiles, pick.profileId);
+    if (next !== null) {
+      setPick({ profileId: next, model: null });
+      setEffort(null);
+      setFast(undefined);
+    }
+  }, [profiles, pick.profileId]);
   const [drawer, setDrawer] = useState(false);
   const { choices } = useProfileChoices(link, pick.profileId);
   const model = choices ? activeModel(choices, pick.model ? { model: pick.model } : {}) : undefined;
@@ -187,19 +194,6 @@ export function SessionTree({ link, task, sessions, workspaces, profiles, select
           >
             开始新会话
           </button>
-          {presets.length > 0 && onPreset && (
-            <label className="stack-field">
-              按扩展包预设
-              <select value="" onChange={(e) => e.target.value && onPreset(e.target.value)} disabled={busy} aria-label="按预设新建会话">
-                <option value="">选择启动预设…</option>
-                {presets.map((p) => (
-                  <option key={p.key} value={p.key}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
         </div>
       )}
 
@@ -328,10 +322,12 @@ function TreeLevel({
   modelOf(s: Session): string;
   folded: { has(id: string): boolean; toggle(id: string): void };
 }) {
+  const duty = useDuty();
   return (
     <>
       {nodes.map((node) => {
         const s = node.session;
+        const onDuty = dutyOfSession(duty, s.id);
         const look = SESSION_LOOK[s.status];
         const letters = unread?.get(s.id) ?? 0;
         // 被中断 (2026-10-28: a main session cut off from outside, a subagent stopped before it finished) says so in words.
@@ -385,6 +381,16 @@ function TreeLevel({
                 {s.wake && (s.wake.loop || s.wake.limit) && (
                   <span className="tree-wake" data-kind={s.wake.limit ? "limit" : "loop"} data-testid="session-wake">
                     {wakeLabel(s.wake)}
+                  </span>
+                )}
+                {onDuty.started && (
+                  <span className="duty-chip" title={onDuty.startedBy ? `值守项「${onDuty.startedBy.title}」开的会话` : "值守开的会话（那一项已经删了）"} data-testid="session-duty">
+                    值守开的
+                  </span>
+                )}
+                {onDuty.set.length > 0 && (
+                  <span className="duty-chip" title={`这个会话设了值守：${onDuty.set.map((i) => `${i.title}（${i.enabled ? "开着" : "关着"}）`).join("、")}`} data-testid="session-duty-set">
+                    设了值守
                   </span>
                 )}
                 {loud ? (

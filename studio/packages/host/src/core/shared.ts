@@ -9,6 +9,9 @@ export const LEGACY_COMMON_WORKSPACE_KEY = "settings:common-workspace";
 export const COMMON_NAME = "公共";
 export const PRESETS_KEY = "settings:presets";
 export const DISABLED_FEATURES_KEY = "settings:disabled-features";
+export const EXPERIMENTAL_FEATURES_KEY = "settings:experimental-features";
+/** 设置 → 功能 → 中转 (2026-10-30): "1" when what sessions ask through 中转 goes without waiting for 发送. */
+export const TEAM_AUTO_SEND_KEY = "settings:team-auto-send";
 /** 设置 → 额度: where each account's quota shows. */
 export const QUOTA_DISPLAY_KEY = "settings:quota-display";
 /** 设置 → 模型 → 快速选择: the model tiles, in order. */
@@ -38,6 +41,10 @@ export function sessionOptions(v: unknown): SessionOptions {
   if (effort) out.effort = effort;
   if (permission) out.permission = permission;
   if (typeof o.fast === "boolean") out.fast = o.fast;
+  if (o.mcp && typeof o.mcp === "object" && !Array.isArray(o.mcp)) {
+    const mcp = Object.fromEntries(Object.entries(o.mcp).filter(([, v]) => typeof v === "boolean")) as Record<string, boolean>;
+    if (Object.keys(mcp).length) out.mcp = mcp;
+  }
   return out;
 }
 
@@ -52,6 +59,8 @@ export class HostError extends Error {
 
 export interface HostServiceEvents {
   event: [HostEvent];
+  /** A line for host.log (the runtimes' too: until 2026-11-05 nobody listened to their "log" and it was lost). */
+  log: [string];
 }
 
 // Agents write notes, mail and questions through the AMO MCP; a runaway turn must not fill the store or the Focus
@@ -70,5 +79,8 @@ export function boundedText(value: unknown, field: string, max: number): string 
   return text;
 }
 
-/** Credentials Studio may write: none since 2026-10-27 (the Claude subscription token mode is gone). */
-export const WRITABLE_CREDENTIALS = new Set<string>();
+/**
+ * Credentials Studio may write (the Claude subscription token went 2026-10-27): the built-in DeepSeek's API key since
+ * 2026-11-03 (a computer that never had old AMO had no way to set it; 设置 → 模型 → DeepSeek).
+ */
+export const WRITABLE_CREDENTIALS = new Set<string>(["deepseek-v4"]);

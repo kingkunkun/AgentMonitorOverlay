@@ -1,33 +1,19 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { ModelProfile, ScheduleProposal, TodoItem, Workspace, WorkspaceActivity } from "@amo-studio/protocol";
 import { call, HostApiError, type HostLink } from "../host/client.js";
-import { mergeFirstLoad, onHostEvent, onHostReconnect } from "../host/events.js";
+import { keepWhere, useLiveResource } from "../host/live.js";
 import { pickable, profileLabel } from "../lib/profiles.js";
 
 /** Scheduler proposals waiting for the person, kept live. */
 export function usePendingProposals(link: HostLink) {
-  const [pending, setPending] = useState<readonly ScheduleProposal[]>([]);
-  useEffect(() => {
-    let cancelled = false;
-    const load = (first = false) =>
-      call(link, "GET /api/proposals", {}, undefined, { state: "pending" })
-        .then((list) => !cancelled && setPending((cur) => (first ? mergeFirstLoad(list, cur) : list)))
-        .catch(() => undefined);
-    const off = onHostEvent((e) => {
-      if (e.type !== "proposal.upserted") return;
-      setPending((cur) => {
-        const rest = cur.filter((p) => p.id !== e.proposal.id);
-        return e.proposal.state === "pending" ? [...rest, e.proposal] : rest;
-      });
-    });
-    const offReconnect = onHostReconnect(() => void load());
-    void load(true);
-    return () => {
-      cancelled = true;
-      off();
-      offReconnect();
-    };
-  }, [link]);
+  const [pending] = useLiveResource<readonly ScheduleProposal[]>(
+    {
+      load: () => call(link, "GET /api/proposals", {}, undefined, { state: "pending" }),
+      initial: [],
+      onEvent: (cur, e) => (e.type === "proposal.upserted" ? keepWhere(cur, e.proposal, e.proposal.state === "pending") : cur),
+    },
+    [link],
+  );
   return pending;
 }
 
@@ -58,7 +44,7 @@ export function ProposalsPanel({
       <div className="anno-head">
         <span className="anno-title">调度提案</span>
         <span className="anno-count">{proposals.length}</span>
-        <span className="pack-item-sub">批准后才会建任务并开始第一轮</span>
+        <span className="proposal-sub">批准后才会建任务并开始第一轮</span>
       </div>
       <div className="proposal-list">
         {proposals.map((p) => (
@@ -116,13 +102,13 @@ function ProposalCard({
   }
   return (
     <div className="proposal-card" data-testid="proposal-card">
-      <span className="pack-item-title">{todo?.text ?? "（待办已不存在）"}</span>
-      <span className="pack-item-sub">
+      <span className="proposal-title">{todo?.text ?? "（待办已不存在）"}</span>
+      <span className="proposal-sub">
         在 {workspace?.name ?? "?"}
         {idle ? " · 现在空闲" : " · 现在忙碌"}
         {proposal.reason ? ` · ${proposal.reason}` : ""}
       </span>
-      <textarea className="preset-text" value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={4} aria-label="提案提示词" />
+      <textarea className="proposal-text" value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={4} aria-label="提案提示词" />
       <div className="composer-bar">
         <label className="inline-field">
           模型

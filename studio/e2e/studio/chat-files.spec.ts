@@ -142,12 +142,25 @@ test("names of existing files in a reply open the viewer, the quick look, VS Cod
   expect(viewers(app)).toHaveLength(1);
   await screenshot(app, "stage-13", "S13-A-viewer-markdown", viewer, "viewer");
 
-  // 固定: that window stays as it is, and the next file opens in a new preview window, which the chip then reuses.
+  // 置顶 left of 最小化 (问题 #3): the window goes above the others, and back.
+  const onTop = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => w.isAlwaysOnTop() && w.webContents.getURL().includes("#viewer")).map((w) => w.webContents.getURL()));
+  const pinButton = viewer.getByTestId("win-pin");
+  await expect(viewer.getByTestId("win-controls").locator("button").first()).toHaveAttribute("data-testid", "win-pin");
+  await expect(pinButton).toHaveAttribute("aria-pressed", "false");
+  await pinButton.click();
+  await expect(pinButton).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(onTop).toEqual([viewer.url()]);
+  await screenshot(app, "stage-13", "S13-A-viewer-on-top", viewer, "viewer");
+  await pinButton.click();
+  await expect(pinButton).toHaveAttribute("aria-pressed", "false");
+  await expect.poll(onTop).toEqual([]);
+
+  // 锁定 (was 固定, 问题 #3): that window stays as it is, and the next file opens in a new preview window, which the chip then reuses.
   await viewer.getByTestId("viewer-pin").click();
-  await expect(viewer.getByTestId("viewer-pin")).toHaveText("已固定");
+  await expect(viewer.getByTestId("viewer-pin")).toHaveText("已锁定");
   const second = await nextWindow(app, () => links.first().click());
   await expect(second.getByTestId("viewer-name")).toHaveText(DEMO_FILE);
-  await expect(second.getByTestId("viewer-pin")).toHaveText("固定");
+  await expect(second.getByTestId("viewer-pin")).toHaveText("锁定");
   await chip.click();
   await expect(second.getByTestId("viewer-name")).toHaveText("README.md");
   await expect(viewer.getByTestId("viewer-name")).toHaveText("README.md");
@@ -187,12 +200,12 @@ test("names of existing files in a reply open the viewer, the quick look, VS Cod
   await expect(preview).toHaveCount(0);
   await expect(page.getByRole("complementary", { name: "批注" })).toBeVisible();
 
-  // The header: the working directory with Explorer (and VS Code) next to it.
-  const workdir = page.getByTestId("workdir");
-  await expect(workdir).toBeVisible();
-  const folder = await nextOpenIn(page, () => workdir.getByRole("button", { name: "在资源管理器中显示" }).click());
+  // The session bar's ⋯ (2026-11-03, 问题 #15: out of the bar): the working directory in Explorer (and VS Code).
+  await page.getByTestId("session-more").click();
+  if (vscode) await expect(page.getByTestId("session-vscode")).toBeVisible();
+  const folder = await nextOpenIn(page, () => page.getByTestId("session-explorer").click());
   expect(folder.asked).toMatchObject({ path: ws.path, app: "explorer" });
-  if (vscode) await expect(workdir.getByRole("button", { name: "VS Code 打开文件夹" })).toBeVisible();
+  await expect(page.getByTestId("session-menu")).toHaveCount(0);
 });
 
 test("a finished turn lists the files it changed; each opens its diff, then the file; 用 git diff 看", async () => {

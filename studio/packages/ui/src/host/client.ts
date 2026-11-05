@@ -30,7 +30,12 @@ declare global {
       setAppIcon?(face: string | null): void;
       /** Writes text to the system clipboard (Electron); works without window focus. */
       copyText?(text: string): Promise<void>;
+      /** The 便签 program (2026-10-30): text and pictures together. */
+      copyRich?(input: { text: string; images: Uint8Array[] }): Promise<void>;
       setMinWidth?(px: number): void;
+      /** The AMO Reviewer program alone (2026-10-29): its 主题, which its main process sets for all its windows. */
+      theme?(): Promise<"light" | "dark" | "system">;
+      setTheme?(theme: "light" | "dark" | "system"): Promise<void>;
       /** The Focus window (Electron). */
       focus?: {
         get(): Promise<boolean>;
@@ -65,12 +70,6 @@ declare global {
         set(scale: number): Promise<void>;
         onChange(cb: (scale: number) => void): () => void;
       };
-      /** 置顶 (stage 14): the workbench window above other windows (Electron). */
-      pin?: {
-        get(): Promise<boolean>;
-        set(on: boolean): Promise<void>;
-        onChange(cb: (on: boolean) => void): () => void;
-      };
       /** From Focus: show a task (and session) in the workbench. */
       /** A task (and session); without a task (a topic session) the workbench shows the board; `topicId`: that topic's
        * canvas (画布审阅, 2026-10-27), opening the question `calloutId`. */
@@ -87,6 +86,8 @@ declare global {
         close(): void;
         isMaximized(): Promise<boolean>;
         onMaximized(cb: (maximized: boolean) => void): () => void;
+        /** 置顶 (问题 #3): on top of other windows or not; without a value, whether it is. Absent in older preloads. */
+        onTop?(on?: boolean): Promise<boolean>;
       };
       /** Workbench: Focus asked to show a task. */
       onNavigate?(cb: (target: { taskId: string; sessionId?: string; passage?: Passage; topicId?: string; calloutId?: string; settings?: "remote" }) => void): () => void;
@@ -96,10 +97,21 @@ declare global {
         openSettings(): Promise<void>;
         closeSettings(): void;
         pickFolder(start?: string | null): Promise<string | null>;
-        trayAction?(action: "show" | "settings" | "quit" | "close"): void;
+        trayAction?(action: "show" | "todo" | "settings" | "quit" | "close"): void;
+        hideTodo?(): void;
+        aboutInfo?(): Promise<NotesAbout>;
+        onAbout?(listener: () => void): () => void;
       };
     };
   }
+}
+
+/** 关于便签 (2026-10-30). `viaStudio`: the Studio version whose exe runs it (便签 has no install of its own), else null. */
+export interface NotesAbout {
+  version: string;
+  dev: boolean;
+  viaStudio: string | null;
+  electron: string;
 }
 
 export interface HostLink {
@@ -129,17 +141,25 @@ export async function call<R extends HostRoute>(
   const [method, pattern] = route.split(" ") as [string, string];
   const path = pattern.replace(/:([A-Za-z]+)/g, (_, k: string) => encodeURIComponent(params[k] ?? ""));
   const search = query ? `?${new URLSearchParams(query).toString()}` : "";
-  const res = await fetch(`${link.url}${path}${search}`, {
+  return request<RouteResponse<R>>(link, method, `${path}${search}`, body);
+}
+
+/**
+ * The one way the windows talk to a local server — the Host, or the 便签 program's own (架构整理第 7 步, 2026-11-05; Host
+ * routes, attachments, 便签 and 待办 had a copy each): the bearer token, a JSON body (a Blob goes as it is, with its own
+ * type), a JSON answer, and a failure as HostApiError — also when the answer is not JSON (a proxy's page, a cut-off one).
+ */
+export async function request<T>(link: HostLink, method: string, path: string, body?: unknown): Promise<T> {
+  const raw = body instanceof Blob;
+  const res = await fetch(`${link.url}${path}`, {
     method,
-    headers: { authorization: `Bearer ${link.token}`, "content-type": "application/json" },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    headers: { authorization: `Bearer ${link.token}`, "content-type": raw ? body.type : "application/json" },
+    ...(body === undefined ? {} : { body: raw ? body : JSON.stringify(body) }),
   });
-  const data = (await res.json()) as RouteResponse<R> | HostErrorBody;
-  if (!res.ok) {
-    const err = (data as HostErrorBody).error;
-    throw new HostApiError(res.status, err?.code ?? "internal", err?.message ?? res.statusText);
-  }
-  return data as RouteResponse<R>;
+  const data = (await res.json().catch(() => undefined)) as (T & Partial<HostErrorBody>) | undefined;
+  if (!res.ok) throw new HostApiError(res.status, data?.error?.code ?? "internal", data?.error?.message ?? (res.statusText || `HTTP ${res.status}`));
+  if (data === undefined) throw new HostApiError(res.status, "internal", "回应读不出来（不是 JSON）");
+  return data;
 }
 
 export const loadState = (link: HostLink): Promise<StateSnapshot> => call(link, "GET /api/state");
@@ -148,4 +168,12 @@ export const loadState = (link: HostLink): Promise<StateSnapshot> => call(link, 
 export async function copyText(text: string): Promise<void> {
   if (window.amo?.copyText) return window.amo.copyText(text);
   await navigator.clipboard?.writeText(text);
+}
+
+/** Text and pictures (PNG, JPEG… bytes) together; without the 便签 program's bridge, the text and the first picture. */
+export async function copyRich(text: string, images: Uint8Array<ArrayBuffer>[]): Promise<void> {
+  if (!images.length) return copyText(text);
+  if (window.amo?.copyRich) return window.amo.copyRich({ text, images });
+  const png = new Blob([images[0]!], { type: "image/png" });
+  await navigator.clipboard?.write([new ClipboardItem({ "text/plain": new Blob([text], { type: "text/plain" }), "image/png": png })]);
 }

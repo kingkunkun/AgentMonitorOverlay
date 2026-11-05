@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeImage, nativeTheme, Notification, protocol, safeStorage, shell, Tray } from "electron";
+import { app, BrowserWindow, clipboard, ipcMain, nativeImage, nativeTheme, Notification, protocol, safeStorage, shell, Tray } from "electron";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -9,6 +9,7 @@ import { dirname, extname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   normalizeServer,
+  readSettings,
   relayHome,
   settingsPath,
   SHELL_VERSION,
@@ -20,7 +21,9 @@ import {
   type UpdateInfo,
 } from "@amo-studio/relay";
 import { readAccount } from "@amo-studio/account";
+import { badgedImage, overlayImage, TrayMenu } from "@amo-studio/traymenu";
 import { Accounts } from "./accounts.js";
+import { Attention, writeAttention } from "./attention.js";
 import { newShellText, readBuildMode, stableExe } from "./build-mode.js";
 import { ContentStore, fetchManifest, type InstalledContent } from "./content.js";
 import { LOADER_HTML, type LoaderState } from "./loader.js";
@@ -39,6 +42,9 @@ import { LOADER_HTML, type LoaderState } from "./loader.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const testMode = process.env.AMO_RELAY_TEST === "1";
+/** In tests, the last text 复制… would have put on the clipboard (`__relayCopied`). */
+let copied = "";
+if (testMode) Object.assign(globalThis, { __relayCopied: () => copied });
 const home = relayHome();
 const buildMode = readBuildMode(here);
 const byPlatform = buildMode === "platform";
@@ -64,7 +70,6 @@ let quitting = false;
 let server: string | null = null;
 let content: InstalledContent | null = null;
 let latest: ClientManifest | null = null;
-let unread = 0;
 
 /** This desktop program's build (written by relay-release --shell next to main.js); undefined in a dev build. A platform
  * install has none: its version is the platform's (resources/app/package.json), and a stamp left in dist by an earlier
@@ -140,13 +145,24 @@ function createWindow(): BrowserWindow {
     webPreferences: { preload: join(here, "preload.cjs"), sandbox: true, contextIsolation: true },
   });
   w.setMenu(null);
+  // The taskbar button takes its icon from a Start Menu shortcut with the window's AppUserModelID when there is one, over
+  // the window's own icon. Electron writes such a shortcut itself for toasts — named after the exe's ProductName, no icon
+  // — so on the platform's exe (Electron's own, never edited) it is 「Electron.lnk」 with Electron's icon, and the button
+  // showed that (问题 #11, 2026-11-02). The window gets an id no shortcut has, so its own icon shows; toasts keep
+  // AMO.Relay (app.setAppUserModelId above). The portable exe has its own name and icon: left as it was.
+  if (process.platform === "win32" && buildMode !== "portable") w.setAppDetails({ appId: "AMO.Relay.Window" });
   w.once("ready-to-show", () => (testMode ? w.showInactive() : w.show()));
   w.on("close", (e) => {
     if (quitting) return;
     e.preventDefault();
     w.hide();
   });
-  w.on("focus", () => w.flashFrame(false));
+  // Whether someone is looking at it: the taskbar stops flashing, the tray stops blinking (attention.ts).
+  for (const event of ["focus", "blur", "show", "hide", "minimize", "restore"] as const) w.on(event as "focus", () => attention.setInUse(inUse()));
+  // A page loaded anew (the loader, the content after an update) counts again from nothing; the content sends its count.
+  w.webContents.on("did-start-navigation", (details) => {
+    if (details.isMainFrame && !details.isSameDocument) attention.setCount(0);
+  });
   w.on("maximize", () => w.webContents.send("relay:maximized", true));
   w.on("unmaximize", () => w.webContents.send("relay:maximized", false));
   // Links open in the browser, never in this window.
@@ -336,6 +352,24 @@ function hookup(): McpHookup {
 
 // ---- IPC
 
+/**
+ * This machine's identity for the MCP and the command line. The platform's own account is written as a pointer to it
+ * (no key in settings.json, which agents' commands can read; @amo-studio/relay loadSettings decrypts account.json when
+ * asked — the 11-03 audit, AGENTS.md rule 7); a login of this client's own keeps its key there as before.
+ */
+async function writeIdentity(identity: { server: string; name: string; key: string }): Promise<void> {
+  const a = await readAccount().catch(() => null);
+  const platform = a && a.key === identity.key && normalizeServer(a.server) === normalizeServer(identity.server);
+  writeSettings(platform ? { server: identity.server, name: identity.name, account: "platform" } : identity, home);
+}
+
+/** A settings.json written before 11-04 with the platform account's key in it: the same identity, as a pointer. */
+async function unplainSettings(): Promise<void> {
+  const own = readSettings(home);
+  const a = own ? await readAccount().catch(() => null) : null;
+  if (own && a && a.key === own.key) await writeIdentity(own);
+}
+
 function wire(): void {
   ipcMain.on("relay:loader-ready", () => (loaderReady?.(), (loaderReady = null)));
   ipcMain.on("relay:loader-server", (_e, value: string) => loaderAnswer?.({ kind: "server", value }));
@@ -359,14 +393,16 @@ function wire(): void {
   ipcMain.handle("relay:accounts", () => accounts.list());
   ipcMain.handle("relay:save-account", (_e, a: { server: string; name: string; password: string | null }) => accounts.save(a));
   ipcMain.handle("relay:forget-account", (_e, s: string, name: string) => accounts.forget(s, name));
-  ipcMain.handle("relay:signed-in", (_e, identity: { server: string; name: string; key: string } | null) => {
-    if (identity) writeSettings(identity, home);
+  ipcMain.handle("relay:signed-in", async (_e, identity: { server: string; name: string; key: string } | null) => {
+    if (identity) await writeIdentity(identity);
     else rmSync(settingsPath(home), { force: true });
   });
   ipcMain.handle("relay:mcp", () => hookup());
-  ipcMain.handle("relay:copy", (_e, text: string) => clipboard.writeText(text));
+  // Tests never touch the person's clipboard (2026-10-30): what would be copied is kept here for them to read.
+  ipcMain.handle("relay:copy", (_e, text: string) => (testMode ? void (copied = text) : clipboard.writeText(text)));
   ipcMain.on("relay:notify", (_e, n: { title: string; body: string; threadId: string }) => {
-    if (win && !win.isFocused()) win.flashFrame(true);
+    // Not in tests: flashing gives even a skipTaskbar window a taskbar button (2026-10-29: a row of them during e2e).
+    if (win && !inUse() && !testMode) win.flashFrame(true);
     if (testMode || !Notification.isSupported()) return;
     const note = new Notification({ title: n.title, body: n.body, icon: ICON || undefined, silent: false });
     note.on("click", () => {
@@ -375,10 +411,8 @@ function wire(): void {
     });
     note.show();
   });
-  ipcMain.on("relay:unread", (_e, count: number) => {
-    unread = count;
-    tray?.setToolTip(unread ? `AMO 中转 · ${unread} 条未读` : "AMO 中转");
-  });
+  // What waits for this person (relay-ui Home: sessions waiting for me + unread chats): taskbar and tray (attention.ts).
+  ipcMain.on("relay:unread", (_e, count: unknown) => attention.setCount(typeof count === "number" ? count : 0));
   // The page's window buttons (the window has no system title bar). 关闭 hides it to the tray, as before.
   ipcMain.on("relay:window", (_e, action: unknown) => {
     if (!win) return;
@@ -387,7 +421,7 @@ function wire(): void {
     else if (action === "close") win.close();
   });
   ipcMain.handle("relay:window-maximized", () => !!win?.isMaximized());
-  ipcMain.handle("relay:in-use", () => !!win && win.isVisible() && !win.isMinimized() && win.isFocused());
+  ipcMain.handle("relay:in-use", () => inUse());
   // The usage text as a file next to the command line: agents are pointed at it instead of being pasted the whole text.
   ipcMain.handle("relay:write-usage", (_e, text: string) => {
     const file = join(home, "AMO中转用法.md");
@@ -479,6 +513,7 @@ async function updateShell(): Promise<void> {
     app.relaunch({ args: process.argv.slice(1).filter((a) => !a.startsWith("--remote-debugging") && !a.startsWith("--inspect")) });
     quitting = true;
     tray?.destroy();
+    attention.dispose();
     setTimeout(() => app.quit(), 300);
   } finally {
     shellUpdating = false;
@@ -570,31 +605,77 @@ async function removeOldFiles(): Promise<void> {
 
 // ---- tray
 
-/** The tray icon at each scale Windows may ask for: assets/icon-16…32.png (scripts/make-icons.mjs; 16–24 px are the
- *  simplified cut, 2026-10-28), else the window icon shrunk. */
+/** assets/icon-16…32.png (scripts/make-icons.mjs; 16–24 px are the simplified cut, 2026-10-28), by size. */
+const trayPngs = (() => {
+  const out = new Map<number, Buffer>();
+  for (const size of [16, 20, 24, 32]) {
+    const file = join(here, "..", "assets", `icon-${size}.png`);
+    if (existsSync(file)) out.set(size, readFileSync(file));
+  }
+  return out;
+})();
+const TRAY_SCALES: Record<number, number> = { 16: 1, 20: 1.25, 24: 1.5, 32: 2 };
+
+/** The tray icon at each scale Windows may ask for, else the window icon shrunk. */
 function trayImage(): Electron.NativeImage {
   const image = nativeImage.createEmpty();
-  for (const [size, scaleFactor] of [
-    [16, 1],
-    [20, 1.25],
-    [24, 1.5],
-    [32, 2],
-  ] as const) {
-    const file = join(here, "..", "assets", `icon-${size}.png`);
-    if (existsSync(file)) image.addRepresentation({ scaleFactor, buffer: readFileSync(file) });
-  }
+  for (const [size, buffer] of trayPngs) image.addRepresentation({ scaleFactor: TRAY_SCALES[size]!, buffer });
   return image.isEmpty() ? nativeImage.createFromPath(ICON).resize({ width: 16, height: 16 }) : image;
 }
 
+/** The window is on screen and focused: someone is looking at it. */
+const inUse = () => !!win && !win.isDestroyed() && win.isVisible() && !win.isMinimized() && win.isFocused();
+
+/** The tray icon with a count on it, made once per count (it blinks between this and the plain one). */
+let badged: { count: number; image: Electron.NativeImage } | null = null;
+let plainTray: Electron.NativeImage | null = null;
+
+/** What waits, outside the window (2026-10-29): see attention.ts. Tests read what was last done (__relayAttention). */
+const shown = { flashing: false, overlay: 0, trayBadge: false, tooltip: "AMO 中转" };
+const attention = new Attention({
+  flash(on) {
+    shown.flashing = on;
+    // Tests only record it: flashing (and the overlay) gives even a skipTaskbar window a taskbar button.
+    if (win && !win.isDestroyed() && !testMode) win.flashFrame(on);
+  },
+  overlay(count) {
+    shown.overlay = count;
+    if (process.platform === "win32" && win && !win.isDestroyed() && !testMode) win.setOverlayIcon(overlayImage(count), count > 0 ? `${count} 条待处理 / 未读` : "");
+  },
+  tray(badge, count) {
+    shown.trayBadge = badge && count > 0;
+    if (!tray) return;
+    if (!shown.trayBadge) return tray.setImage((plainTray ??= trayImage()));
+    if (badged?.count !== count) badged = { count, image: badgedImage(trayPngs, count) };
+    tray.setImage(badged.image);
+  },
+  tooltip(text) {
+    shown.tooltip = text;
+    tray?.setToolTip(text);
+  },
+  // Started by AMO 平台: it has the tray, and blinks its icon as this one's (it reads <home>ttention.json).
+  ...(process.argv.includes("--amo-tray=platform") ? { write: (state) => writeAttention(home, state) } : {}),
+});
+if (testMode) Object.assign(globalThis, { __relayAttention: () => ({ ...shown, ...attention.state }) });
+
+/** Started by AMO 平台 (2026-10-29, the user: too many tray icons): the platform's tray menu has 打开中转 / 退出中转, so
+ *  this one makes no icon. Started on its own it keeps its tray (constraint 1). */
+const trayByPlatform = process.argv.includes("--amo-tray=platform");
+
+const trayWindow = new TrayMenu({ label: "AMO 中转菜单" });
+
 function createTray(): void {
-  if (!ICON) return;
+  // Not in tests either (2026-10-29: each test client put an icon in the person's tray, blinking): as Studio and the platform.
+  if (!ICON || trayByPlatform || testMode) return;
   tray = new Tray(trayImage());
   tray.setToolTip("AMO 中转");
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: "显示 AMO 中转", click: showWindow },
-      { type: "separator" },
-      { label: "退出", click: () => ((quitting = true), app.quit()) },
+  // Like 便签's menu, not Windows' own (2026-10-29, the user; @amo-studio/traymenu).
+  tray.on("right-click", () =>
+    trayWindow.open([
+      { kind: "title", label: "AMO 中转" },
+      { kind: "item", label: "显示 AMO 中转", strong: true, run: showWindow },
+      { kind: "rule" },
+      { kind: "item", label: "退出中转", run: () => ((quitting = true), app.quit()) },
     ]),
   );
   tray.on("click", showWindow);
@@ -607,28 +688,60 @@ function createTray(): void {
 // shows its window. (A running client from before this rule only shows its window; quit it from the tray once.)
 const me = { exe: process.execPath };
 
+/**
+ * running.json in its home (2026-11-04, the user: 关闭 on AMO 平台's card was slow): this client's pid and exe, so the
+ * platform knows it runs — and when it has quit — without asking Windows for every process. Only the running one
+ * writes it; it goes when it quits (a file left by a crash names a pid that no longer lives).
+ */
+const runningFile = join(home, "running.json");
+function writeRunning(): void {
+  try {
+    mkdirSync(home, { recursive: true });
+    writeFileSync(runningFile, JSON.stringify({ pid: process.pid, exe: process.execPath, startedAt: new Date().toISOString() }, null, 2));
+  } catch {
+    // the platform then asks Windows, as before
+  }
+}
+function removeRunning(): void {
+  try {
+    if ((JSON.parse(readFileSync(runningFile, "utf8")) as { pid?: unknown }).pid === process.pid) rmSync(runningFile, { force: true });
+  } catch {
+    // not there, or another client's
+  }
+}
+
 function start(): void {
-  app.on("second-instance", (_e, _argv, _cwd, data) => {
+  writeRunning();
+  app.on("will-quit", removeRunning);
+  app.on("second-instance", (_e, argv, _cwd, data) => {
     const other = (data as { exe?: string } | undefined)?.exe;
-    if (other && other.toLowerCase() !== process.execPath.toLowerCase()) {
+    // 退出中转 from AMO 平台's tray or card (2026-10-29), whichever copy asks.
+    if (argv.includes("--amo-quit") || (other && other.toLowerCase() !== process.execPath.toLowerCase())) {
       quitting = true;
       tray?.destroy();
       app.quit();
     } else showWindow();
   });
-  app.on("before-quit", () => (quitting = true));
+  app.on("before-quit", () => ((quitting = true), attention.dispose()));
   app.on("window-all-closed", () => undefined);
   void app.whenReady().then(async () => {
     serveScheme();
     wire();
+    // Left by a client started by the platform that did not get to remove it; started on its own, this one writes none.
+    if (!trayByPlatform) writeAttention(home, null);
     createTray();
     win = createWindow();
     setTimeout(() => void removeOldFiles(), 5000);
+    void unplainSettings();
     await boot();
   });
 }
 
-if (app.requestSingleInstanceLock(me)) start();
+if (process.argv.includes("--amo-quit")) {
+  // The platform's 退出中转: the running client hears it through the lock and quits; this one never starts.
+  app.requestSingleInstanceLock(me);
+  app.quit();
+} else if (app.requestSingleInstanceLock(me)) start();
 else {
   // Another copy runs; it quits if it is a different one. Wait for the lock a few seconds, else leave it to it.
   let tries = 0;

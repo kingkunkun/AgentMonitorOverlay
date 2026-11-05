@@ -1,10 +1,12 @@
 import { randomBytes } from "node:crypto";
-import { NO_REMOTE_ALLOWED, REMOTE_KINDS, REMOTE_PERMISSIONS, RUNTIME_LABELS, type HostEvent, type Id, type ModelProfile, type RemoteAllowed, type RemoteGrant, type RemoteItemsAnswer, type RemoteFileAsk, type RemotePermission, type RemotePush,type RemoteTaskSnapshot, type RemoteTaskView, type SessionItem, type SessionOptions, type Task } from "@amo-studio/protocol";
+import { NO_REMOTE_ALLOWED, REMOTE_KINDS, REMOTE_PERMISSIONS, RUNTIME_LABELS, type HostEvent, type Id, type ModelProfile, type RemoteAllowed, type RemoteGrant, type RemoteItemsAnswer, type RemoteFileAsk, type RemotePermission, type RemotePush,type RemoteTaskSnapshot, type RemoteTaskView, type RemoteViewAsk, type ReviewOpenTarget, type SessionItem, type SessionOptions, type Task } from "@amo-studio/protocol";
 import type { DeviceRef } from "@amo-studio/relay";
 import type { HostService } from "../../service.js";
 import { HostError, boundedText } from "../../core/shared.js";
 import type { DeviceLink } from "./link.js";
 import { attachedPaths, itemForPeer, readRemoteFile, type FileRoots } from "./files.js";
+import { claimedText, type UploadInbox } from "./uploads.js";
+import { answerView, ViewAnswers } from "./views.js";
 
 // 远程, step 2 on A (plans/remote-session.md, 2026-10-29): the tasks this computer granted to paired devices, what such
 // a device may ask of them, and what A tells it unasked as they change. The grant is the whole task: every session in
@@ -20,8 +22,14 @@ export interface RemoteContext {
   link(): DeviceLink | null;
   /** This computer's name, for what the other side reads. */
   deviceName(): string;
+  /** The account this computer is logged in with (the platform's), null when none. */
+  ownAccount(): string | null;
+  /** Files paired devices send along (2026-10-29 evening). */
+  inbox(): UploadInbox;
   /** A paired device's name and whether the server says it is online. */
   peer(ref: DeviceRef, role?: "owner" | "guest"): { name: string; online: boolean } | null;
+  /** The devices this computer allowed to pair (the owner side). */
+  ownerPeers(): DeviceRef[];
   changed(): void;
 }
 
@@ -62,6 +70,15 @@ export function fitItem(item: SessionItem): SessionItem {
 export class RemoteGrants {
   /** Which task a session is in (sessions never change task): items and deltas are looked up per event. */
   private readonly taskOf = new Map<Id, Id | null>();
+  /** 远程 Reviewer (2026-11-02): big answers kept for their later pieces. */
+  private readonly views = new ViewAnswers();
+  /**
+   * 远程 Reviewer step 2 (2026-11-02, the user: 谁发的消息引出了这一轮，就在谁那边弹): per session, the device whose
+   * message started its turn — null for this computer. In memory only: after a restart a turn counts as this computer's.
+   */
+  private readonly turnBy = new Map<Id, DeviceRef | null>();
+  /** A device's message on its way into a session (rt.send), or a device's first message of a task's new session. */
+  private readonly sending = new Map<Id, DeviceRef>();
 
   constructor(private readonly ctx: RemoteContext) {}
 
@@ -115,16 +132,21 @@ export class RemoteGrants {
     const next: RemoteAllowed = { profiles, defaultProfile, permission };
     this.store.setKv(ALLOWED_KEY, JSON.stringify(next));
     // What granted tasks may start on changed: the devices hear it.
-    for (const g of this.list()) {
-      const task = this.store.getTask(g.taskId);
-      if (task) this.push(g, this.taskPush(task));
-    }
+    this.pushTasks();
     this.ctx.changed();
     return next;
   }
 
+  /** Every granted task again, as the devices see it (what new sessions may run on, the models' names). */
+  private pushTasks(): void {
+    for (const g of this.list()) {
+      const task = this.store.getTask(g.taskId);
+      if (task) this.push(g, this.taskPush(task));
+    }
+  }
+
   /**
-   * A's profiles a session started from a paired device may run in this task: those of 设置 → 远程, or (none chosen)
+   * A's profiles a session started from a paired device may run in this task: those of 远程设置 (the remote page), or (none chosen)
    * those the task's own sessions use. The default first.
    */
   allowedFor(taskId: Id): Id[] {
@@ -147,14 +169,15 @@ export class RemoteGrants {
     return level && p && p.runtime !== "remote" ? PERMISSION_OF[p.runtime][level] : undefined;
   }
 
-  private label(pid: Id): string {
+  /** A profile of this computer as the devices read it ("Codex · P"). */
+  labelOf(pid: Id): string {
     const p = this.ctx.host.profiles.find((x) => x.id === pid);
     return p ? `${RUNTIME_LABELS[p.runtime]} · ${p.label}` : pid;
   }
 
   private profilesOf(taskId: Id, allowed: Id[]): Array<{ id: Id; label: string }> {
     const ids = [...new Set([...this.store.listSessions({ taskId }).map((s) => s.profileId), ...allowed])];
-    return ids.map((pid) => ({ id: pid, label: this.label(pid) }));
+    return ids.map((pid) => ({ id: pid, label: this.labelOf(pid) }));
   }
 
   private view(task: Task): RemoteTaskView {
@@ -166,16 +189,49 @@ export class RemoteGrants {
     return { type: "task", task: this.view(task), profiles: this.profilesOf(task.id, allowed), allowed };
   }
 
-  // ---- granting (设置 → 远程, the task page)
+  // ---- granting (the remote page, the task page)
 
+  /**
+   * Granted to one of the own account's devices, the task is granted to all of them (2026-10-31, the user: a phone shows
+   * what the desk computer drives on this one). Each keeps its own grant: one device archiving its copy, or a grant taken
+   * back here, leaves the others'. Another account's devices are granted one by one, as before.
+   */
   grant(taskId: Id, peer: DeviceRef): RemoteGrant {
+    const g = this.grantOne(taskId, peer);
+    for (const other of this.ownSiblings(peer)) this.grantOne(taskId, other);
+    return g;
+  }
+
+  /** The other devices of this computer's own account it allowed to pair; none when `peer` is another account's. */
+  private ownSiblings(peer: DeviceRef): DeviceRef[] {
+    const own = this.ctx.ownAccount();
+    if (!own || peer.account !== own) return [];
+    return this.ctx.ownerPeers().filter((p) => p.account === own && !same(p, peer));
+  }
+
+  /** A device of the own account newly allowed to pair: what is granted to the account's other devices is granted to it too. */
+  shareWith(peer: DeviceRef): void {
+    const own = this.ctx.ownAccount();
+    if (!own || peer.account !== own || !this.ctx.peer(peer, "owner")) return;
+    const tasks = new Set(this.list().filter((g) => g.account === own && !same(g, peer)).map((g) => g.taskId));
+    for (const taskId of tasks) {
+      try {
+        this.grantOne(taskId, peer);
+      } catch (err) {
+        // A task archived or gone since: nothing to share.
+        if (!(err instanceof HostError)) throw err;
+      }
+    }
+  }
+
+  private grantOne(taskId: Id, peer: DeviceRef): RemoteGrant {
     const task = this.store.getTask(taskId);
     if (!task) throw new HostError("not_found", `没有任务 ${taskId}`);
     if (task.remote) throw new HostError("bad_request", "这是别的电脑授权给这台电脑的远程任务，不能再转授权");
     if (task.archivedAt) throw new HostError("read_only", "任务已归档，不能授权");
     const p = this.ctx.peer(peer, "owner");
     // Only a device this computer allowed to pair may reach it (the owner side, plans/remote-session.md「B 是谁」).
-    if (!p) throw new HostError("bad_request", "只能授权给这台电脑允许配对的设备（在 设置 → 远程 里配对）");
+    if (!p) throw new HostError("bad_request", "只能授权给这台电脑允许配对的设备（在顶栏的「远程」里配对）");
     const list = this.list();
     const had = list.find((g) => g.taskId === taskId && same(g, peer));
     if (had) return had;
@@ -254,6 +310,7 @@ export class RemoteGrants {
       root,
       attachments: this.ctx.host.attachments.dir(),
       attached: () => this.store.listSessions({ taskId }).flatMap((s) => attachedPaths(this.store.listItems(s.id))),
+      findByEnd: (written) => this.ctx.host.chatFiles.findByEnd(root, written),
     };
   }
 
@@ -287,7 +344,18 @@ export class RemoteGrants {
         }
         case REMOTE_KINDS.send: {
           const s = this.sessionFor(from, id(b.sessionId, "sessionId"), true);
-          return ok(await sessions.sendMessage(s.id, boundedText(b.text, "text", 100_000)));
+          // Pictures and files B sent first (rt.upload): this computer's attachments now; a DSH session takes no pictures.
+          const claimed = this.ctx.inbox().claim(from, b.uploads, { noImages: s.runtime === "dsh" });
+          const plain = claimed.images.length || claimed.files.length ? (typeof b.text === "string" ? b.text.slice(0, 100_000) : "") : boundedText(b.text, "text", 100_000);
+          // Its user item (appended as it goes in) marks the turn as this device's (onHostEvent).
+          this.sending.set(s.id, { account: from.account, device: from.device });
+          try {
+            return ok(await sessions.sendMessage(s.id, claimedText(plain, claimed), claimed.images.map((a) => a.id), [], { now: b.now === true }));
+          } catch (err) {
+            this.sending.delete(s.id);
+            this.ctx.inbox().drop(claimed);
+            throw err;
+          }
         }
         case REMOTE_KINDS.approve: {
           const s = this.sessionFor(from, id(b.sessionId, "sessionId"), true);
@@ -305,9 +373,49 @@ export class RemoteGrants {
           await sessions.answerQuestion(s.id, id(b.itemId, "itemId"), b.reply);
           return ok({ ok: true });
         }
+        case REMOTE_KINDS.sendNow: {
+          const s = this.sessionFor(from, id(b.sessionId, "sessionId"), true);
+          await sessions.sendNow(s.id, id(b.itemId, "itemId"));
+          // No new user item marks the turn (noteUser): the turn that now runs the message is this device's.
+          this.markTurn(s.id, from);
+          return ok({ ok: true });
+        }
+        case REMOTE_KINDS.resend: {
+          const s = this.sessionFor(from, id(b.sessionId, "sessionId"), true);
+          const sent = await sessions.resend(s.id, id(b.itemId, "itemId"));
+          this.markTurn(s.id, from);
+          return ok(sent);
+        }
         case REMOTE_KINDS.interrupt: {
           const s = this.sessionFor(from, id(b.sessionId, "sessionId"), false);
           await sessions.interrupt(s.id);
+          return ok({ ok: true });
+        }
+        case REMOTE_KINDS.templates: {
+          const taskId = id(b.taskId, "taskId");
+          this.grantFor(from, taskId);
+          const task = this.store.getTask(taskId);
+          return ok({ templates: this.ctx.host.promptTemplates.list(task?.workspaceId ?? "") });
+        }
+        case REMOTE_KINDS.rename: {
+          // The new name comes back to B with the task's or session's own push.
+          if (typeof b.sessionId === "string") {
+            const s = this.sessionFor(from, id(b.sessionId, "sessionId"), true);
+            await sessions.renameSession(s.id, b.title);
+          } else {
+            const taskId = id(b.taskId, "taskId");
+            this.grantFor(from, taskId);
+            if (this.store.getTask(taskId)?.archivedAt) throw new HostError("read_only", "这个任务已经归档了");
+            this.ctx.host.tasks.updateTask(taskId, { title: boundedText(b.title, "title", 200) });
+          }
+          return ok({ ok: true });
+        }
+        case REMOTE_KINDS.archive: {
+          // The sessions archived (or restored) go to B with their own pushes.
+          const s = this.sessionFor(from, id(b.sessionId, "sessionId"), false);
+          if (this.store.getTask(s.taskId!)?.archivedAt) throw new HostError("read_only", "这个任务已经归档了");
+          if (b.archived === false) await sessions.unarchive(s.id);
+          else await sessions.archive(s.id);
           return ok({ ok: true });
         }
         case REMOTE_KINDS.start: {
@@ -316,12 +424,21 @@ export class RemoteGrants {
           const task = this.store.getTask(taskId);
           if (!task || task.archivedAt) throw new HostError("read_only", "这个任务已经归档了");
           const profileId = id(b.profileId, "profileId");
-          if (!this.allowedFor(taskId).includes(profileId)) throw new HostError("bad_request", `${this.label(profileId)} 不在 ${this.ctx.deviceName()} 允许远程使用的模型里`);
-          const text = typeof b.text === "string" && b.text.trim() ? boundedText(b.text, "text", 100_000) : undefined;
+          if (!this.allowedFor(taskId).includes(profileId)) throw new HostError("bad_request", `${this.labelOf(profileId)} 不在 ${this.ctx.deviceName()} 允许远程使用的模型里`);
+          const plain = typeof b.text === "string" && b.text.trim() ? boundedText(b.text, "text", 100_000) : "";
           const permission = this.permissionFor(profileId);
           const options: SessionOptions | undefined = permission ? { permission } : undefined;
-          const session = await this.ctx.host.tasks.addSession(taskId, { profileId, ...(text ? { text } : {}), ...(options ? { options } : {}) });
-          return ok({ session: this.store.getSession(session.id) ?? session });
+          const claimed = this.ctx.inbox().claim(from, b.uploads, { noImages: this.ctx.host.profiles.find((p) => p.id === profileId)?.runtime === "dsh" });
+          const text = claimedText(plain, claimed);
+          try {
+            if (text) this.sending.set(taskId, { account: from.account, device: from.device });
+            const session = await this.ctx.host.tasks.addSession(taskId, { profileId, ...(text ? { text } : {}), ...(claimed.images.length ? { attachments: claimed.images.map((a) => a.id) } : {}), ...(options ? { options } : {}) });
+            if (text) this.markTurn(session.id, from);
+            return ok({ session: this.store.getSession(session.id) ?? session });
+          } catch (err) {
+            this.ctx.inbox().drop(claimed);
+            throw err;
+          }
         }
         case REMOTE_KINDS.drop: {
           // B archived its copy (2026-10-29): the grant ends without a word back — B has put the task away.
@@ -338,6 +455,18 @@ export class RemoteGrants {
           const taskId = id(b.taskId, "taskId");
           this.grantFor(from, taskId);
           return ok(await readRemoteFile(this.fileRoots(taskId), b as unknown as RemoteFileAsk, this.ctx.deviceName()));
+        }
+        case REMOTE_KINDS.view: {
+          // 远程 Reviewer (plans/remote-reviewer.md, 2026-11-02): a read of the task's 查看包 or Review, checked in views.ts.
+          const taskId = id(b.taskId, "taskId");
+          this.grantFor(from, taskId);
+          const task = this.store.getTask(taskId);
+          const root = this.taskRoot(taskId);
+          if (!task || !root) throw new HostError("not_found", "任务的文件夹不在了");
+          const ask = b as unknown as RemoteViewAsk;
+          return ok(await this.views.serve(`${from.account}
+${from.device}
+${taskId}`, ask, () => answerView({ host: this.ctx.host, task, root }, ask)));
         }
         default:
           return fail("unknown_kind", `${this.ctx.deviceName()} 的 Studio 不认识「${kind}」，可能版本不同`);
@@ -387,6 +516,8 @@ export class RemoteGrants {
         return;
       case "item.appended":
       case "item.updated": {
+        // A message going in starts a turn: whose it is (a device's through rt.send, else this computer's).
+        if (e.type === "item.appended" && e.item.type === "user") this.noteUser(e.item.sessionId);
         const taskId = this.taskIdOf(e.item.sessionId);
         const gs = to(taskId);
         if (!gs.length) return;
@@ -400,9 +531,83 @@ export class RemoteGrants {
       case "data.purged":
         for (const g of grants.filter((x) => e.taskIds.includes(x.taskId))) this.revoke(g.taskId, g, `任务在 ${this.ctx.deviceName()} 上删除了`);
         return;
+      // 2026-10-30: a channel added, renamed, removed or hidden here — the copies' model names and choices follow.
+      case "profiles.updated":
+        this.pushTasks();
+        return;
       default:
         return;
     }
+  }
+
+  // ---- 远程 Reviewer step 2 (2026-11-02): where what an agent opens for the person shows
+
+  /** The device whose message started the session's turn (its own, or its parent's: a delegated session); null: this computer. */
+  turnOf(sessionId: Id): DeviceRef | null {
+    let id: Id | null = sessionId;
+    for (let hops = 0; id && hops < 20; hops++) {
+      if (this.turnBy.has(id)) return this.turnBy.get(id)!;
+      id = this.store.getSession(id)?.parentId ?? null;
+    }
+    return null;
+  }
+
+  /** A device's message started this session's turn (a new session or task it started with a first message). */
+  markTurn(sessionId: Id, from: DeviceRef): void {
+    this.turnBy.set(sessionId, { account: from.account, device: from.device });
+  }
+
+  /** A task's next new session starts with this device's message (startGrantedTask, rt.start). */
+  expectFirst(taskId: Id, from: DeviceRef): void {
+    this.sending.set(taskId, { account: from.account, device: from.device });
+  }
+
+  private noteUser(sessionId: Id): void {
+    const by = this.sending.get(sessionId);
+    if (by) {
+      this.sending.delete(sessionId);
+      this.turnBy.set(sessionId, by);
+      return;
+    }
+    const taskId = this.taskIdOf(sessionId);
+    const first = taskId ? this.sending.get(taskId) : undefined;
+    if (first && taskId) {
+      this.sending.delete(taskId);
+      this.turnBy.set(sessionId, first);
+      return;
+    }
+    this.turnBy.set(sessionId, null);
+  }
+
+  /**
+   * view_open / review_open in a session (the user, 2026-11-02): which paired device hears of it, and whether it shows
+   * here. Only for a granted task, and only what is of its own project (a device reads nothing else). The device whose
+   * message started the turn gets it (`to`) when it is online — then this computer shows it only when the person here
+   * ticked 「我也关心」 for the task (`here: "alsoMine"`, the same tick that keeps it in Focus). The turn this computer's,
+   * or its device away: shown here as always, and no device hears of it (its conversation's rows still open it there).
+   */
+  openRoute(sessionId: Id | null, workspaceId: Id | null): { here: "always" | "alsoMine"; taskId: Id | null; to: RemoteGrant | null } {
+    const session = sessionId ? this.store.getSession(sessionId) : undefined;
+    const taskId = session?.taskId ?? null;
+    const task = taskId ? this.store.getTask(taskId) : undefined;
+    const gs = taskId ? this.of(taskId) : [];
+    if (!task || !gs.length || !workspaceId || workspaceId !== task.workspaceId) return { here: "always", taskId, to: null };
+    const link = this.ctx.link();
+    const up = (g: RemoteGrant) => !!link && link.state === "online" && !!this.ctx.peer(g)?.online;
+    const turn = this.turnOf(sessionId!);
+    const starter = turn ? gs.find((g) => same(g, turn) && up(g)) : undefined;
+    return starter ? { here: "alsoMine", taskId, to: starter } : { here: "always", taskId, to: null };
+  }
+
+  /** Whether what this session's agent opens now shows on a paired device (its turn's) — this computer needs no window. */
+  showsElsewhere(sessionId: Id | null): boolean {
+    const task = sessionId ? this.store.getTask(this.store.getSession(sessionId)?.taskId ?? "") : undefined;
+    return !!task && !!this.openRoute(sessionId, task.workspaceId).to;
+  }
+
+  /** Tells the device `openRoute` named what was opened (a pack, or a Review of the task's project). */
+  pushOpen(route: ReturnType<RemoteGrants["openRoute"]>, sessionId: Id, what: { packId: Id; itemId?: Id } | { review: ReviewOpenTarget }): void {
+    if (route.taskId && route.to) this.push(route.to, { type: "open", taskId: route.taskId, sessionId, ...what });
   }
 
   /**
@@ -420,8 +625,8 @@ export class RemoteGrants {
     let note: string | null = null;
     if (!allowed.includes(profileId)) {
       const fallback = allowed[0];
-      if (!fallback) throw new HostError("bad_request", `这个任务正授权给 ${who} 远程使用，${this.label(profileId)} 不在允许远程使用的模型里，也没有可以换的：请人在 设置 → 远程 里允许一个模型。`);
-      note = `（这个任务正被 ${who} 远程使用，要的模型 ${this.label(profileId)} 不在允许远程使用的模型里，换成了 ${this.label(fallback)}。）`;
+      if (!fallback) throw new HostError("bad_request", `这个任务正授权给 ${who} 远程使用，${this.labelOf(profileId)} 不在允许远程使用的模型里，也没有可以换的：请人在那台电脑顶栏的「远程」→「远程设置」里允许一个模型。`);
+      note = `（这个任务正被 ${who} 远程使用，要的模型 ${this.labelOf(profileId)} 不在允许远程使用的模型里，换成了 ${this.labelOf(fallback)}。）`;
       profileId = fallback;
     }
     return { profileId, note, permission: this.permissionFor(profileId) };

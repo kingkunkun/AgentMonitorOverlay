@@ -10,6 +10,8 @@ import type { DshRuntime } from "./runtime/dsh/dsh-runtime.js";
 import { DshFeature } from "./features/dsh/service.js";
 import { ProjectsFeature } from "./features/projects/service.js";
 import { ConfigFeature } from "./features/config/service.js";
+import { ClaudeAccountsFeature } from "./features/claudeaccounts/service.js";
+import type { ClaudeAccounts } from "./runtime/claude/accounts.js";
 import { TasksFeature } from "./features/tasks/service.js";
 import { TopicsFeature } from "./features/topics/service.js";
 import { SessionsFeature } from "./features/sessions/service.js";
@@ -17,7 +19,8 @@ import { PlanningFeature } from "./features/planning/service.js";
 import { CollabFeature } from "./features/collab/service.js";
 import { CanvasFeature } from "./features/canvas/service.js";
 import { ReviewFeature } from "./features/review/service.js";
-import { PacksFeature } from "./features/packs/service.js";
+import { PromptTemplatesFeature } from "./features/prompttemplates/service.js";
+import { McpFeature } from "./features/mcp/service.js";
 import { AttachmentsFeature } from "./features/attachments/service.js";
 import { ScratchpadFeature } from "./features/scratchpad/service.js";
 import { GitReviewFeature } from "./features/gitreview/service.js";
@@ -29,6 +32,9 @@ import { TopicDocsFeature } from "./features/topicdocs/service.js";
 import { CanvasReviewFeature } from "./features/canvasreview/service.js";
 import { TaskPlansFeature } from "./features/taskplans/service.js";
 import { RelaysFeature } from "./features/relays/service.js";
+import { TeamRelayFeature } from "./features/teamrelay/service.js";
+import { IssuesFeature } from "./features/issues/service.js";
+import { DutyFeature } from "./features/duty/service.js";
 import { ChatFilesFeature } from "./features/chatfiles/service.js";
 import { CliFeature } from "./features/cli/service.js";
 import { DataFeature } from "./features/datamgmt/service.js";
@@ -49,6 +55,8 @@ export class HostService extends EventEmitter<HostServiceEvents> {
   liveWindows = 0;
   readonly projects = new ProjectsFeature(this);
   readonly config = new ConfigFeature(this);
+  /** Claude 多账号 (2026-11-03): the Claude subscription's accounts, signing in and switching. */
+  readonly claudeAccounts = new ClaudeAccountsFeature(this);
   readonly tasks = new TasksFeature(this);
   readonly topics = new TopicsFeature(this);
   readonly sessions = new SessionsFeature(this);
@@ -57,7 +65,9 @@ export class HostService extends EventEmitter<HostServiceEvents> {
   readonly canvases = new CanvasFeature(this);
   readonly canvasReview = new CanvasReviewFeature(this);
   readonly review = new ReviewFeature(this);
-  readonly extensions = new PacksFeature(this);
+  readonly promptTemplates = new PromptTemplatesFeature(this);
+  /** MCP 设置 (2026-11-04): which MCP servers sessions get besides amo. */
+  readonly mcp = new McpFeature(this);
   readonly attachments = new AttachmentsFeature(this);
   readonly scratchpad = new ScratchpadFeature(this);
   readonly gitReview = new GitReviewFeature(this);
@@ -76,6 +86,11 @@ export class HostService extends EventEmitter<HostServiceEvents> {
   readonly dsh = new DshFeature(this);
   readonly maintenance = new MaintenanceFeature(this);
   readonly remote = new RemoteFeature(this);
+  /** 会话里用中转 (2026-10-30): sessions ask people on the team through AMO 中转; replies come back into them. */
+  readonly teamRelay = new TeamRelayFeature(this);
+  readonly issues = new IssuesFeature(this);
+  /** 值守 (2026-10-31): items that start a session, run a command or one of Studio's jobs at set times. */
+  readonly duty = new DutyFeature(this);
   /** The runtimes of this computer, plus "remote" for copies of tasks paired devices granted it (远程 step 2). */
   readonly runtime: SessionRuntimeApi;
 
@@ -90,6 +105,12 @@ export class HostService extends EventEmitter<HostServiceEvents> {
       commonDir?: string;
       /** The person's Claude Code config dir (设置 → 模型 shows whether it holds a login); default theirs, ~/.claude. */
       localClaudeHome?: string;
+      /** The person's Claude Code config file (~/.claude.json, or in their CLAUDE_CONFIG_DIR): MCP 设置 reads their servers there. */
+      claudeConfigFile?: string;
+      /** The Codex home its app-servers run with (tests: a stand-in); default CODEX_HOME or ~/.codex. 设置 → 模型 reads GPT's address there. */
+      codexHome?: string;
+      /** Claude 多账号: the Claude runtime's accounts (one for the person's own dir when absent). */
+      claudeAccounts?: ClaudeAccounts;
       /** The person's own model channels (设置 → 模型); `profiles` is its list. */
       channels?: ChannelRegistry;
       /** DeepSeek on a DSH clone (stage 17): 设置 → 模型 →「检查」 runs through it. */
@@ -101,9 +122,11 @@ export class HostService extends EventEmitter<HostServiceEvents> {
     super();
     this.runtime = new RemoteAwareRuntime(store, runtime, () => this.remote.copies);
     runtime.on("event", (e) => this.emit("event", e));
+    runtime.on("log", (line) => this.log(line));
     this.tasks.ensureStructure();
     this.sessions.watchReports();
     this.tasks.watchColumns();
+    this.duty.registerCheck(this.issues.dutyCheck());
   }
 
   /** The common space: where tasks without a project, the scheduler and topic sessions without a project run. */
@@ -184,6 +207,11 @@ export class HostService extends EventEmitter<HostServiceEvents> {
     const s = this.store.getSession(id);
     if (!s) throw new HostError("not_found", `session ${id} not found`);
     return s;
+  }
+
+  /** A line for host.log (host-process writes them). */
+  log(line: string): void {
+    this.emit("log", line);
   }
 
   async wrap<T>(fn: () => Promise<T>, fallback: HostErrorCode = "runtime_error"): Promise<T> {

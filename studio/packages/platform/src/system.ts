@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
-import { compareVersions } from "./manifest.js";
+import { compareVersions, isVersion } from "./manifest.js";
 
 // What the platform asks of Windows and of a running Studio — only reading, never changing anything.
 
@@ -15,7 +15,10 @@ function powershell(): string {
 export function runningExePaths(): Promise<string[]> {
   if (process.platform !== "win32") return Promise.resolve([]);
   // One line on stdin, not an encoded command (10-28: an antivirus took encoded PowerShell in AMO for a trojan).
-  const script = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-Process -ErrorAction SilentlyContinue | ForEach-Object { $_.Path } | Where-Object { $_ } | Sort-Object -Unique\n";
+  // CIM, not Get-Process (2026-11-03): Get-Process's .Path opens every process and took 10.9 s here (the platform read
+  // 正在连接 that long after each login, and an install's clean-up would wait as long); Win32_Process gives the same
+  // list (compared: the same 107 paths) in under a second.
+  const script = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-CimInstance Win32_Process -Property ExecutablePath -ErrorAction SilentlyContinue | ForEach-Object { $_.ExecutablePath } | Where-Object { $_ } | Sort-Object -Unique\n";
   return new Promise((done) => {
     const child = spawn(powershell(), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "-"], { windowsHide: true, stdio: ["pipe", "pipe", "ignore"] });
     let out = "";
@@ -35,6 +38,21 @@ export function foldersInUse(paths: readonly string[], folders: readonly string[
     return lower.some((p) => p.startsWith(prefix));
   });
 }
+
+/** The version folders of `toolDir` that running exes are in (the tools run from their real version folder, launch.ts). */
+export function runningVersions(paths: readonly string[], toolDir: string): string[] {
+  const prefix = (resolve(toolDir) + sep).toLowerCase();
+  const out = new Set<string>();
+  for (const p of paths) {
+    if (!p.toLowerCase().startsWith(prefix)) continue;
+    const v = p.slice(prefix.length).split(/[\\/]/)[0] ?? "";
+    if (isVersion(v)) out.add(v);
+  }
+  return [...out];
+}
+
+/** The first version of each tool whose running instance quits on --amo-quit (2026-10-29); an older one only comes to the front. */
+export const QUIT_SINCE: Record<string, string> = { studio: "0.9.8", notes: "0.9.3", relay: "0.9.2" };
 
 /** What a running Studio says of itself (/api/health), read only. */
 export interface StudioHealth {
@@ -102,10 +120,15 @@ export function studioRestart(health: StudioHealth, installed: string | null): "
 }
 
 export type StudioStop =
-  /** Accepted: wait for these processes (the Host, and the shell from shell.json) to end. */
-  | { ok: true; pids: number[] }
+  /** Accepted: wait for these processes (the Host, and the shell from shell.json) to end; which is which. */
+  | { ok: true; pids: number[]; host?: number; shell?: number }
   | { ok: false; reason: "running"; running: number }
   | { ok: false; reason: "not-running" | "unsupported" | "failed"; message: string };
+
+/** The Host's pid from the data dir's host.json, or null (关闭 Studio waits for it as well as the shell). */
+export function studioHostPid(dataDir: string | null): number | null {
+  return dataDir ? (hostOf(dataDir)?.pid ?? null) : null;
+}
 
 /** The Studio shell's pid from the data dir's shell.json (written by Studio since 2026-10-29), or null. */
 export function studioShellPid(dataDir: string): number | null {
@@ -131,7 +154,10 @@ export async function stopStudio(dataDir: string, fetchImpl: typeof fetch = fetc
   try {
     const res = await fetchImpl(`${host.url}/api/shutdown`, { method: "POST", headers: { authorization: `Bearer ${host.token}`, "content-type": "application/json" }, body: "{}", signal: AbortSignal.timeout(5000) });
     const body = (await res.json().catch(() => null)) as { running?: unknown; error?: { message?: unknown } } | null;
-    if (res.ok) return { ok: true, pids: [host.pid, shell].filter((p): p is number => p !== null && p !== process.pid) };
+    if (res.ok) {
+      const own = (p: number | null): p is number => p !== null && p !== process.pid;
+      return { ok: true, pids: [host.pid, shell].filter(own), ...(own(host.pid) ? { host: host.pid } : {}), ...(own(shell) && shell !== host.pid ? { shell } : {}) };
+    }
     const running = sessionCount(body?.running);
     if (res.status === 409 && running) return { ok: false, reason: "running", running };
     if (res.status === 404) return { ok: false, reason: "unsupported", message: "这个后台是更早的 Studio 启动的，不能从这里关掉。" };
@@ -147,6 +173,15 @@ function pidAlive(pid: number): boolean {
     return true;
   } catch (err) {
     return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/** Ends a process (TerminateProcess on Windows); one already gone is fine. */
+export function killProcess(pid: number): void {
+  try {
+    process.kill(pid);
+  } catch {
+    // gone already, or not ours to end: the wait after it says which
   }
 }
 

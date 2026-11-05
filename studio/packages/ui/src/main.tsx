@@ -12,6 +12,7 @@ import "@fontsource-variable/noto-serif-sc";
 import "@fontsource-variable/jetbrains-mono";
 // Styles live with their features; one bundle, so the order here is the cascade: base first, then the features.
 import "./styles/base.css";
+import "./styles/controls.css";
 import "./styles/markdown.css";
 import "./styles/code.css";
 import "./shell/shell.css";
@@ -24,11 +25,12 @@ import "./chat/pickers.css";
 import "./chat/options.css";
 import "./review/review.css";
 import "./canvas/canvas.css";
+import "./panorama/panorama.css";
 import "./collab/collab.css";
-import "./packs/packs.css";
 import "./planning/planning.css";
 import "./settings/settings.css";
 import "./settings/stats.css";
+import "./remote/remote.css";
 import "./scratchpad/scratchpad.css";
 import "./gitreview/gitreview.css";
 import "./attach/attach.css";
@@ -41,6 +43,7 @@ import "./viewer/viewer.css";
 import "./viewpacks/viewpacks.css";
 import "./taskplans/taskplans.css";
 import "./relays/relays.css";
+import "./teamrelay/teamrelay.css";
 import { applyTheme, followThemeChanges } from "./lib/theme.js";
 import { WindowBoundary } from "./lib/ErrorBoundary.js";
 import { Toaster } from "./lib/toast.js";
@@ -75,7 +78,7 @@ const root = document.getElementById("root");
 if (!root) throw new Error("missing #root");
 createRoot(root).render(
   <StrictMode>
-    <WindowBoundary>
+    <WindowBoundary {...(focus || bot ? {} : { title: review ? "Git Review" : marks ? "书签" : viewer ? "查看器" : canvasMini ? "画布小窗" : "AMO Studio" })}>
       {focus ? <FocusApp /> : bot ? <BotApp /> : review ? <ReviewApp /> : marks ? <MarksApp /> : viewer ? <ViewerApp /> : canvasMini ? <CanvasMiniApp /> : <App />}
       <Toaster />
       <BookmarkNotePrompt />

@@ -15,16 +15,19 @@
 
 ## 发布与更新
 
-中转分两部分发布（2026-10-28 起）：
+中转分两部分发布（2026-10-28 起）。**发布都走 `npm run release`**（2026-10-31 起，`scripts/release.mjs`）：它只从提交过的 master 打包，跑测试、升版本、把「下一版」改成版本标题、提交、打 tag，再调用下面的底层命令。不要直接跑底层命令发没提交的改动，下一次 `release` 会把它冲掉。
 
 | 部分 | 怎么发 | 谁来更新 |
 |---|---|---|
-| 服务 + 客户端界面（`relay`、`relay-ui`） | `npm run relay:release`，再 `npm run relay:mac -- deploy` | 服务器下发，在线的客户端几秒内自己更新（下面） |
-| 桌面程序（外壳，`relay-app`） | `npm run package:platform -- --only relay`，再 `npm run relay:mac -- publish relay`（见「AMO 平台的发布」） | AMO 平台：「工具」里的 AMO 中转，和别的工具一样安装、更新、回滚、卸载 |
+| 服务 + 客户端界面（`relay`、`relay-ui`） | `npm run release -- relay-service`（会重启中转几秒） | 服务器下发，在线的客户端几秒内自己更新（下面） |
+| 桌面程序（外壳，`relay-app`） | `npm run release -- relay`（或 `auto`），试过后 `npm run release -- promote relay <版本>` | AMO 平台：「工具」里的 AMO 中转，和别的工具一样安装、更新、回滚、卸载 |
+
+`release -- relay-service` 内部依次跑的底层命令（只在排查时单独用）：
 
 ```
-npm run relay:release              # 界面 + 服务；界面更新就是重跑这一条，在线的客户端几秒内自己更新
-npm run relay:release -- --shell   # 再加上桌面客户端的 portable zip（只给自己解压用的旧客户端，见下）
+npm run relay:release              # 界面 + 服务，生成 release/relay/
+npm run relay:release -- --shell   # 再加上桌面客户端的 portable zip（只给自己解压用的旧客户端，见下）；release 在外壳的包改过时自动加
+npm run relay:mac -- deploy        # 传到 Mac
 ```
 
 `release/relay/` 里有：
@@ -38,9 +41,9 @@ npm run relay:release -- --shell   # 再加上桌面客户端的 portable zip（
 ### 改了外壳时
 
 1. 改了 `shell-api.ts`（外壳给界面的接口）时，先把 `SHELL_VERSION` 加一；只改了外壳内部的不用。
-2. `packages/relay-app/package.json` 升版本号，`CHANGELOG.md` 加一节（平台上显示的改动说明）。
-3. `npm run package:platform -- --only relay`，`npm run relay:mac -- publish relay`（默认发到测试通道，试过再 `promote relay <版本>`）。
-4. 要用新接口的界面，等平台上的新外壳发出去以后再 `relay:release` + `deploy`。比 `minShell` 旧的外壳会提示：平台装的写「在 AMO 平台的「工具」里更新 AMO 中转」，自己解压的写「需要重新下载客户端」。
+2. 改动说明写进 `packages/relay-app/CHANGELOG.md` 的「## 下一版」（平台上显示的就是它；版本号由 `release` 升）。
+3. `npm run release -- relay`（默认发到测试通道，试过再 `npm run release -- promote relay <版本>`）。
+4. 要用新接口的界面，等平台上的新外壳发出去以后再 `npm run release -- relay-service`。比 `minShell` 旧的外壳会提示：平台装的写「在 AMO 平台的「工具」里更新 AMO 中转」，自己解压的写「需要重新下载客户端」。
 
 **平台装的中转不自己更新外壳**（`relay-app/src/build-mode.ts`，看 `resources/app/package.json` 的 `amoBuild.mode`）：不检查、不下载、不改写自己程序文件夹里的文件（平台装的工具共用硬链接的 Electron 文件，改一个就改到别的工具），「更新桌面程序」的提示和按钮都不出现；`updateShell` 直接拒绝。接入 AI 的配置和 `amo-relay.cmd` 指向 `apps\relay\current\AMO Relay.exe`，平台清掉旧版本文件夹后照样能用。从平台打开时，平台用 `--server` 传它登录的服务器地址，中转第一次打开就不用再填。
 
@@ -61,10 +64,13 @@ powershell -File scripts/relay-service.ps1 start|stop|restart|status [-Passphras
 服务在团队的 Mac mini 上：`http://172.16.8.85:47120/`。在这台 Windows 上用 `scripts/relay-mac.mjs` 通过 SSH 管它（`~/.ssh/config` 里的别名 `mac`，换机器时设 `SSH_HOST`）：
 
 ```
-npm run relay:release                 # 先在本机生成 release/relay
+npm run release -- relay-service      # 发布：生成 release/relay 再 deploy（下面两行是它的底层步骤）
+npm run relay:release                 # 在本机生成 release/relay
 npm run relay:mac -- deploy           # 传到 Mac；只改了界面不重启，服务本身变了会先备份数据库再重启
 npm run relay:mac -- status | start | stop | restart | logs [行数] | backup
 npm run relay:mac -- passwd <名字> [新密码]          # 忘了密码：重设并打印新密码（不填就随机生成 8 位）
+npm run relay:mac -- admin-password [密码]           # 管理页 http://172.16.8.85:47120/admin 的密码（不填就随机生成）
+npm run relay:mac -- rename <旧名字> <新名字>       # 改登录名（会重启服务；管理页上改不用重启）
 npm run relay:mac -- migrate --from <数据目录> [--force]   # 一次性把另一台的数据搬过来（先备份 Mac 上的）
 ```
 
@@ -105,7 +111,7 @@ platform/
 
 工具 id、版本号、sha256 不合格式时返回 400，不会去读磁盘；读到的文件一定在平台目录里面。同一个 sha256 两种都有时（`platform-compress` 做到一半）先用 `.gz`，两种都是对的。下载页（`/`）在 `downloads/AMO-Platform-win.zip` 存在时（客户端的 `downloads/` 里，或者平台目录的 `downloads/` 里）显示「下载 AMO 平台」，这个 zip 不用登录就能下载。放在平台目录里更稳：deploy 换客户端 zip 时会整个换掉 `app/downloads`。
 
-发布（在本机，通过 SSH，不开 HTTP 写接口）：
+发布（在本机，通过 SSH，不开 HTTP 写接口）。平时用 `npm run release -- <工具…>` / `auto` 和 `npm run release -- promote <工具> <版本>`，它们调用下面的底层命令；`platform-status`、`platform-compress`、`platform-prune` 照旧直接用：
 
 ```
 npm run package:platform -- --only notes               # 先用平台模式打包：release/platform/AMO Notes/
@@ -125,6 +131,23 @@ npm run relay:mac -- platform-prune [--dry-run] [--keep 3]   # 删各工具的�
 - 清单和 `channels.json` 都先写临时文件再改名，平台不会读到写了一半的文件，也不会读到文件还没传完的清单。
 - 这几个命令都可以加 `--target-dir <本机目录>`：不走 SSH，直接发布到这个目录。用来测试，也可以在本机起一个带平台目录的服务做联调：`node release/relay/amo-relay.mjs serve --port 47130 --data <临时目录> --platform-dir <同一个目录>`。
 - 核心逻辑在 `scripts/platform-publish.mjs`（测试 `scripts/platform-publish.test.mjs`），工具表在 `scripts/amo-tools.mjs`。
+
+## 工具镜像：Claude Code、Codex（2026-11-03 起）
+
+服务定时从官方下好 Claude Code 和 Codex，AMO 平台的「环境」页可以从这里安装、更新（也可以选从官方下）。方案在 `plans/claude-code-mirror.md`，代码在 `src/mirror.ts`。
+
+- 带 `--platform-dir` 启动的服务默认开（团队服务器就是）；`--mirror` 强制开，`--no-mirror` 关。第一次检查在启动 30 秒后。
+- 设置和状态在管理页 `/admin`，每个工具一张卡片（「Claude Code 镜像」「Codex 镜像」）：开关、检查间隔（默认 60 分钟）、平台（默认只要 win32-x64）、保留几版（默认 3），各管各的，改了马上生效；「现在检查」立刻查一次。
+- **Claude Code**：每次检查 GET `https://downloads.claude.ai/claude-code-releases/latest`；有新版就拿它的 `manifest.json`，下 `<版本>/<平台>/claude.exe.zst`（约 120 MB）。解压后 sha256 和大小对上清单才算备好。
+- **Codex**：每次检查 GET `https://registry.npmjs.org/@openai%2fcodex/latest`（npm 的正式版）；有新版就拿平台包 `@openai/codex@<版本>-<平台>` 的 `dist.integrity`，下 `@openai/codex/-/codex-<版本>-<平台>.tgz`（约 180 MB，原样存）。sha512 对上才算备好。
+- 两个都是断了用 Range 接着下（60 秒没数据算卡住，一轮最多 6 次）。
+- 文件在 `<数据目录>/mirror/`：`settings.json`（`{"claude-code": …, "codex": …}`）、`<工具>/index.json`、`claude-code/<版本>/manifest.json`、`<工具>/<版本>/<平台>/<文件>`（下载中是 `.part`）。Mac 上就是 `~/Services/amo-relay/data/mirror/`。
+- 接口（要登录，和平台的文件一样）：
+  - `GET /api/platform/mirror/<工具>`：备好的版本、官方最新、正在准备的进度；
+  - `GET /platform/mirror/claude-code/<版本>/manifest.json`；
+  - `GET /platform/mirror/<工具>/<版本>/<平台>/<文件>`：支持 Range。
+- 管理页的接口：`GET /api/admin/mirror`（`{tools: [...]}`）；`POST /api/admin/mirror/settings` 和 `POST /api/admin/mirror/check`，body 里带 `tool`。
+- 日志里以 `[Claude Code 镜像]`、`[Codex 镜像]` 开头：备好、断了重试、删旧版本、检查失败。
 
 ## 给同事用
 
@@ -161,7 +184,7 @@ MCP 提供这几个工具：
 ## 命令行
 
 ```
-amo-relay serve | passwd | register | login | whoami | people | prompt | mcp | ask --json <file|-> | replies [id] | wait <id>
+amo-relay serve | passwd | admin-password | rename | register | login | whoami | people | prompt | mcp | ask --json <file|-> | replies [id] | wait <id>
           | send <id> --body … [--then ask|done] | queue | handoff <id> --note …
 ```
 
@@ -206,13 +229,23 @@ Studio 的 Host 用平台登录的 key、以「账号 + 设备编号」（`%APPD
 
 | | |
 |---|---|
-| `POST /api/devices/pair` `{device, deviceName, to}` | B 向账号 `to` 发配对请求（同一台设备重复发只续期） |
-| `GET /api/devices/pair?device=` | `{incoming, outgoing}`：发给我这个账号的、这台设备发出去的 |
-| `POST /api/devices/pair/:id/answer` `{device, deviceName, allow}` | `to` 账号的某台设备允许 / 拒绝；允许就建立配对（这台是 owner） |
+| `POST /api/devices/pair` `{device, deviceName, to, toDevice?}` | B 向账号 `to` 发配对请求（同一台设备重复发只续期）；带 `toDevice` 时只发给那个账号的这一台设备 |
+| `GET /api/devices/online?device=` | `{devices: [{device, name, since}]}`：同一个账号下现在在线的其他设备（不含自己），给 Studio 远程页的「配对设备」弹窗选 |
+| `GET /api/devices/pair?device=` | `{incoming, outgoing}`：发给我这个账号的（指定了别的设备的不算）、这台设备发出去的 |
+| `POST /api/devices/pair/:id/answer` `{device, deviceName, allow}` | `to` 账号的某台设备（指定了设备时只能是那台）允许 / 拒绝；允许就建立配对（这台是 owner） |
 | `DELETE /api/devices/pair/:id?device=` | B 撤回请求，或收起已看过的回复 |
 | `GET /api/devices/pairs?device=` | 这台设备的配对，带对方是否在线、离线多久 |
 | `POST /api/devices/unpair` `{device, peerAccount, peerDevice}` | 解除配对（两个方向都删），告诉对方 |
 | `WS /api/devices/ws?device=&name=` | key 放 `Authorization` 头或 `?key=`。推送 `hello` / `pair-request` / `pair-request-closed` / `pair-answered` / `unpaired` / `presence` / `relay` / `relay-error`；收 `relay {to, id, kind, re?, body}`（只转给配对过、在线的设备）和 `name`。服务每 15 秒 ping 一次，60 秒没回应就断开；同一台设备再连上来，旧连接以 4001 关掉 |
+
+### 待办（便签的待办窗口，2026-11-01）
+
+每个账号：每台设备一张表（`device:<设备编号>`）和一张共通的表（`shared`），同账号的设备都能看、能改。便签程序留一份副本和没发出去的改动，连上就补交。格式和冲突规则见 `src/todo-protocol.ts`，方案见 `plans/todo.md`。
+
+| | |
+|---|---|
+| `GET /api/todo?device=&deviceName=&since=` | `{rev, items, devices, full}`：`since` 之后改过的（删掉的带 `deleted`）；`since` 是 0 或早于留着的删除标记时给全部（`full`） |
+| `POST /api/todo/ops` `{device, deviceName, ops}` | 按顺序应用改动：`put` 只写它带的字段（新的要有 `list`、`text`），`delete` 留 30 天标记；删掉的不会被 `put` 救回来。不合规的跳过，在 `rejected` 里按位置说明 |
 
 ## 测试
 

@@ -105,7 +105,7 @@ test("a third-party Claude channel runs Claude Code against its address; the las
   await expect(studio.api("PUT", `/api/profiles/${channel.id}/hidden`, { hidden: true })).rejects.toThrow(/至少要留一个/);
 });
 
-test("设置 → 额度: which accounts show at the bottom of the left column and in Focus", async () => {
+test("设置 → 额度: which accounts show at the bottom of the left column (Focus shows none since 2026-10-29)", async () => {
   studio = await launchStudio();
   const { page, app } = studio;
   const channel = await studio.api<ModelChannel>("POST", "/api/channels", { kind: "codex", label: "中转 GPT", baseUrl: studio.mock!.baseUrl, key: "mock-channel-key", balance: { template: "general" } });
@@ -118,14 +118,12 @@ test("设置 → 额度: which accounts show at the bottom of the left column an
   const row = dialog.locator(`[data-testid="quota-row"][data-id="${channel.id}"]`);
   await expect(row).toContainText("余额 · 余额 $12.50");
   await expect(row.getByTestId("quota-footer")).toBeChecked();
-  await expect(row.getByTestId("quota-focus")).not.toBeChecked();
-  await row.getByTestId("quota-focus").click();
-  await expect(row.getByTestId("quota-focus")).toBeChecked();
+  await expect(row.getByTestId("quota-focus")).toHaveCount(0);
   await row.getByTestId("quota-footer").click();
   await expect(row.getByTestId("quota-footer")).not.toBeChecked();
   await screenshot(app, "stage-14", "S14-H-quota", page);
   const settings = await studio.api<StudioSettings>("GET", "/api/settings");
-  expect(settings.quotaDisplay[channel.id]).toEqual({ footer: false, focus: true });
+  expect(settings.quotaDisplay[channel.id]).toMatchObject({ footer: false });
   await page.keyboard.press("Escape");
   await expect(footer).not.toContainText("中转 GPT");
 });
@@ -327,4 +325,48 @@ test("a Claude channel's page names the Claude Code its sessions run on", async 
   // A source checkout: the SDK's own copy.
   await expect(section.getByTestId("claude-code-state")).toContainText(/SDK 附带的（源码运行） · 版本 \d+\.\d+\.\d+/);
   await expect(dialog.getByTestId("channel-unavailable")).toHaveCount(0);
+});
+
+// 问题 #14 (2026-11-03): hiding the model a form has picked moves it to the default at once (it used to keep the one it
+// opened with), and Claude 订阅's page says where its requests go as the person's Claude Code setup has it.
+test("hiding the picked model moves 新建任务 to the default; Claude 订阅 shows its request address", async () => {
+  studio = await launchStudio();
+  const { page, app } = studio;
+  await page.getByRole("button", { name: "+ 新任务" }).click();
+  const tiles = page.getByRole("group", { name: "模型" }).getByTestId("model-tile");
+  await expect(tiles.filter({ hasText: "Mock 模型" })).toHaveAttribute("aria-pressed", "true");
+
+  // The Host reads the person's real ~/.claude here, so the page gets a stand-in answer.
+  await page.route("**/api/profiles/claude-subscription/endpoint", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        url: "https://relay.example.com/claude",
+        from: String.raw`C:\Users\me\.claude\settings.json 的 env.ANTHROPIC_BASE_URL`,
+        model: "kimi-k3",
+        modelFrom: String.raw`C:\Users\me\.claude\settings.json 的 env.ANTHROPIC_MODEL`,
+        note: "项目自己的 .claude/settings.json 或 settings.local.json 另设了的，那个项目里以项目的为准",
+        readAt: new Date().toISOString(),
+      }),
+    }),
+  );
+  await page.getByRole("button", { name: "设置" }).click();
+  const dialog = page.getByRole("dialog", { name: "设置" });
+  await dialog.getByRole("tab", { name: "模型" }).click();
+  await dialog.locator('[data-testid="channel-nav"][data-id="claude-subscription"]').click();
+  const endpoint = dialog.getByTestId("channel-page").getByTestId("channel-endpoint");
+  await expect(endpoint.getByTestId("channel-endpoint-url").first()).toHaveText("https://relay.example.com/claude");
+  await expect(endpoint).toContainText("kimi-k3");
+  await screenshot(app, "studio", "issue-14-claude-endpoint", page);
+  // The models Studio routes itself have no such row (their address is in the line under the name).
+  await dialog.locator('[data-testid="channel-nav"][data-id="claude-mock"]').click();
+  await expect(dialog.getByTestId("channel-page")).toHaveAttribute("data-id", "claude-mock");
+  await expect(dialog.getByTestId("channel-endpoint")).toHaveCount(0);
+
+  await dialog.locator('[data-testid="channel-nav"][data-id="codex-mock"]').click();
+  await dialog.getByTestId("channel-page").getByTestId("channel-hidden").check();
+  await expect(dialog.locator('[data-testid="channel-nav"][data-id="codex-mock"]')).toContainText("已隐藏");
+  await page.keyboard.press("Escape");
+  await expect(tiles.filter({ hasText: "Mock 模型" })).toHaveCount(0);
+  await expect(page.getByRole("group", { name: "模型" }).locator('[data-testid="model-tile"][aria-pressed="true"]')).toHaveCount(1);
 });

@@ -3,35 +3,42 @@ import { readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { RelayClient, RelayClientError, clientFromSettings, readSettings, relayHome, writeSettings } from "./client.js";
+import { RelayClient, RelayClientError, clientFromSettings, loadSettings, relayHome, writeSettings } from "./client.js";
 import { createRelayMcp } from "./mcp.js";
 import { RELAY_DEFAULT_PORT, type NewMessage, type NewRequest, type TaskStatus } from "./protocol.js";
 import { startRelayServer } from "./server.js";
+import { createMirrors } from "./mirror.js";
 import { RelayStore } from "./store.js";
-import { notesAsText, sessionStateText, taskAsText, threadAsText, usagePrompt } from "./usage.js";
+import { takeInbox } from "./inbox.js";
+import { newRepliesText, notesAsText, sessionStateText, taskAsText, threadAsText, usagePrompt } from "./usage.js";
 import { typeOf } from "./types.js";
 
 // amo-relay: the relay service, this machine's identity, and the relay for AIs without MCP (plans/relay.md).
 //   serve [--port 47120] [--host 0.0.0.0] [--data <dir>] [--public <dir>] [--platform-dir <dir>] [--name 策划组] [--passphrase <邀请口令>]
 //         (passphrase also from AMO_RELAY_PASSPHRASE; public = client/ + downloads/, default: next to this file;
-//         platform dir = the AMO platform's files, platform.ts, also from AMO_RELAY_PLATFORM_DIR, default: none)
+//         platform dir = the AMO platform's files, platform.ts, also from AMO_RELAY_PLATFORM_DIR, default: none;
+//         [--mirror | --no-mirror]: 工具镜像 (Claude Code, Codex), mirror.ts, in <data>/mirror — on by default with a
+//         platform dir)
 //   passwd --data <dir> <名字> <新密码>        on the service machine, while it is stopped or running
 //   register --server <host:port> --name <名字> --password <密码> [--role …] [--passphrase …] | login --server … --name … --password …
 //   whoami | people | prompt | mcp
-//   ask --json <file|->   replies [threadId] [--after n]   wait <threadId> [--minutes n]
-//   send <threadId> --body <text> [--then ask|done]   queue   handoff <threadId> --note <text>
+//   ask --json <file|-> [--conv <mark>]   inbox --conv <mark>   replies [threadId] [--after n]   wait <threadId> [--minutes n]
+//   send <threadId> --body <text> [--then ask|done] [--conv <mark>]   queue   handoff <threadId> --note <text>
 //   tasks [--mine]   task <taskId>   transfer <taskId> --to <名字> [--status …] --reason <text>
 
 const USAGE = `amo-relay <command>
-  serve    [--port ${RELAY_DEFAULT_PORT}] [--host 0.0.0.0] [--data <dir>] [--public <dir>] [--platform-dir <dir>] [--name <服务名>] [--passphrase <邀请口令>]
+  serve    [--port ${RELAY_DEFAULT_PORT}] [--host 0.0.0.0] [--data <dir>] [--public <dir>] [--platform-dir <dir>] [--mirror | --no-mirror] [--name <服务名>] [--passphrase <邀请口令>]
   passwd   [--data <dir>] <名字> <新密码>          （在服务那台机器上重设某人的密码）
+  admin-password [--data <dir>] <密码>            （管理页 /admin 的密码）
+  rename   [--data <dir>] <旧名字> <新名字>        （改登录名；服务在跑时改完要重启它）
   register --server <地址:端口> --name <名字> --password <密码> [--role <负责什么>] [--passphrase <邀请口令>]
   login    --server <地址:端口> --name <名字> --password <密码>
   whoami | people | prompt | mcp
-  ask      --json <文件|->
+  ask      --json <文件|-> [--conv <标记>]          （标记：这个 AI 对话的，inbox 只取它发出的）
+  inbox    --conv <标记>                           （一次取回这个对话发出、已经回到我这边的会话的新回复）
   replies  [threadId] [--after n]
   wait     <threadId> [--minutes n]
-  send     <threadId> --body <文字>|--body-file <文件> [--then ask|done] [--questions <文件|->]
+  send     <threadId> --body <文字>|--body-file <文件> [--then ask|done] [--questions <文件|->] [--conv <标记>]
                                                    （ask：追问，会话回到对方手里，--questions 是新一轮问题的 JSON 数组；done：收尾并标记完成）
   queue                                            （待我这边处理的会话）
   handoff  <threadId> --note <文字>                 （交给本人处理）
@@ -65,11 +72,13 @@ function textArg(value: string | undefined, file: string | undefined): string | 
 
 /** What the command line writes counts as the person's AI: it is what agents without MCP use. */
 const CLI_VIA = { kind: "ai", client: "amo-relay cli" } as const;
+/** CLI_VIA with this conversation's mark (--conv), so `inbox` finds what it sent. */
+const viaWith = (conv: string | undefined) => (conv?.trim() ? { ...CLI_VIA, conv: conv.trim() } : CLI_VIA);
 
 const cliCommand = () => `node "${fileURLToPath(import.meta.url)}"`;
 
-function joined(): { client: RelayClient; me: string } {
-  const s = readSettings();
+async function joined(): Promise<{ client: RelayClient; me: string }> {
+  const s = await loadSettings();
   if (!s) throw new Error(`这台机器还没加入中转：先登录（AMO Relay 客户端，或 amo-relay login；身份在 ${relayHome()}）`);
   return { client: clientFromSettings(s), me: s.name };
 }
@@ -98,9 +107,15 @@ async function main(): Promise<void> {
       const platformGiven = flags["platform-dir"] ?? process.env.AMO_RELAY_PLATFORM_DIR;
       const platformDir = platformGiven && platformGiven !== "true" ? resolve(platformGiven) : undefined;
       const store = new RelayStore(join(data, "relay.db"));
-      const server = await startRelayServer({ store, passphrase, publicDir, platformDir, filesDir: join(data, "files"), name: flags.name, host: flags.host, port: flags.port ? Number(flags.port) : RELAY_DEFAULT_PORT });
-      out(`AMO 中转服务已启动：端口 ${server.port}；数据 ${data}；客户端 ${publicDir}；平台 ${platformDir ?? "（没有指定）"}；${passphrase ? "注册要邀请口令" : "任何人都能注册"}`);
-      const stop = () => void server.close().then(() => (store.close(), process.exit(0)));
+      // 工具镜像 (mirror.ts, 2026-11-03: Claude Code, Codex): on the service that hands out the platform's tools (the team
+      // server), or with --mirror; --no-mirror turns it off. A service started only for trying things never downloads
+      // hundreds of MB on its own. Each tool can still be switched off on the admin page.
+      const withMirror = flags["no-mirror"] ? false : !!flags.mirror || !!platformDir;
+      const mirrors = withMirror ? createMirrors({ dir: join(data, "mirror"), log: (line) => out(`${new Date().toISOString()} ${line}`) }) : undefined;
+      const server = await startRelayServer({ store, passphrase, publicDir, platformDir, filesDir: join(data, "files"), dataDir: data, name: flags.name, host: flags.host, port: flags.port ? Number(flags.port) : RELAY_DEFAULT_PORT, mirrors });
+      for (const m of Object.values(mirrors ?? {})) m.start();
+      out(`AMO 中转服务已启动：端口 ${server.port}；数据 ${data}；客户端 ${publicDir}；平台 ${platformDir ?? "（没有指定）"}；工具镜像（Claude Code、Codex）${mirrors ? "开着（设置在管理页）" : "没开"}；${passphrase ? "注册要邀请口令" : "任何人都能注册"}`);
+      const stop = () => void Promise.all([...Object.values(mirrors ?? {}).map((m) => m.close()), server.close()]).then(() => (store.close(), process.exit(0)));
       process.on("SIGINT", stop);
       process.on("SIGTERM", stop);
       return;
@@ -111,6 +126,22 @@ async function main(): Promise<void> {
       store.setPassword(pos[0], pos[1]);
       store.close();
       out(`已重设「${pos[0]}」的密码；他之前的登录都失效了。`);
+      return;
+    }
+    case "admin-password": {
+      if (pos.length < 1) throw new Error("用法：amo-relay admin-password [--data <dir>] <密码>");
+      const store = new RelayStore(join(resolve(flags.data ?? join(relayHome(), "server")), "relay.db"));
+      store.setAdminPassword(pos[0]);
+      store.close();
+      out("已设好管理页的密码：打开 http://<服务器>:<端口>/admin");
+      return;
+    }
+    case "rename": {
+      if (pos.length < 2) throw new Error("用法：amo-relay rename [--data <dir>] <旧名字> <新名字>");
+      const store = new RelayStore(join(resolve(flags.data ?? join(relayHome(), "server")), "relay.db"));
+      const done = store.renameMember(pos[0], pos[1]);
+      store.close();
+      out(`已把「${done.from}」改成「${done.to}」。服务在跑的话重启一下它；请他在 AMO 平台里用新名字重新登录。`);
       return;
     }
     case "register":
@@ -124,18 +155,18 @@ async function main(): Promise<void> {
       return;
     }
     case "whoami": {
-      const { client } = joined();
+      const { client } = await joined();
       const me = await client.me();
       out(`${me.name}${me.role ? `（${me.role}）` : ""} @ ${client.server} · ${me.service}`);
       return;
     }
     case "people": {
-      const { client, me } = joined();
+      const { client, me } = await joined();
       for (const m of await client.members()) if (m.name !== me) out(`${m.name}${m.role ? `（${m.role}）` : ""}${m.online ? " · 在线" : ""}`);
       return;
     }
     case "prompt": {
-      const { client } = joined();
+      const { client } = await joined();
       const [me, members, settings] = await Promise.all([client.me(), client.members(), client.settings().catch(() => null)]);
       out(usagePrompt({ me: me.name, role: me.role, members, cli: cliCommand(), flow: settings?.flow }));
       return;
@@ -147,14 +178,23 @@ async function main(): Promise<void> {
     }
     case "ask": {
       if (!flags.json) throw new Error("用法：amo-relay ask --json <文件|->");
-      const { client } = joined();
+      const { client } = await joined();
       const req = (await readJsonArg(flags.json)) as NewRequest;
-      const res = await client.ask({ ...req, via: CLI_VIA });
+      const res = await client.ask({ ...req, via: viaWith(flags.conv) });
       out(`已发给 ${res.thread.request?.to}。threadId: ${res.thread.id}`);
       return;
     }
+    case "inbox": {
+      if (!flags.conv?.trim()) throw new Error("用法：amo-relay inbox --conv <标记>（发会话时用的那个）");
+      const { client, me } = await joined();
+      const conv = flags.conv.trim();
+      const items = await takeInbox(client, me, (c) => c === conv);
+      if (!items.length) out("这个对话发出的会话还没有新回复。");
+      else out(items.map((i) => newRepliesText(i.thread, i, `用 relay replies ${i.thread.id}`)).join("\n\n---\n\n"));
+      return;
+    }
     case "replies": {
-      const { client, me } = joined();
+      const { client, me } = await joined();
       if (pos[0]) {
         const { thread, messages } = await client.messages(pos[0], Number(flags.after ?? 0), { ai: true });
         out(threadAsText(thread, messages));
@@ -168,7 +208,7 @@ async function main(): Promise<void> {
     }
     case "wait": {
       if (!pos[0]) throw new Error("用法：amo-relay wait <threadId> [--minutes n]");
-      const { client, me } = joined();
+      const { client, me } = await joined();
       const { messages: all } = await client.messages(pos[0]);
       const after = all.reduce((n, m) => (m.author === me ? Math.max(n, m.seq) : n), 0);
       const minutes = Math.max(0.1, Math.min(Number(flags.minutes ?? 5), 10));
@@ -187,19 +227,19 @@ async function main(): Promise<void> {
       if (!pos[0] || (!body && then !== "done") || !["ask", "done", "note"].includes(then)) throw new Error("用法：amo-relay send <threadId> --body <文字>|--body-file <文件> [--then ask|done] [--questions <文件|->]");
       const questions = flags.questions ? ((await readJsonArg(flags.questions)) as NewMessage["questions"]) : undefined;
       if (questions && then !== "ask") throw new Error("--questions 只能和 --then ask 一起用");
-      const { client } = joined();
+      const { client } = await joined();
       if (body) {
-        const res = await client.send(pos[0], { kind: "text", body, pass: then === "ask", questions, via: CLI_VIA });
+        const res = await client.send(pos[0], { kind: "text", body, pass: then === "ask", questions, via: viaWith(flags.conv) });
         out(then === "ask" ? `已追问（#${res.message.seq}），会话回到对方手里。` : `已发出（#${res.message.seq}）。`);
       }
       if (then === "done") {
-        await client.session(pos[0], "done", { via: CLI_VIA });
+        await client.session(pos[0], "done", { via: viaWith(flags.conv) });
         out("已标记完成。");
       }
       return;
     }
     case "queue": {
-      const { client, me } = joined();
+      const { client, me } = await joined();
       const live = (await client.threads()).filter((t) => t.request && t.request.state !== "done" && t.request.waitingOn === me);
       if (!live.length) out("没有待处理的会话。");
       for (const t of live) {
@@ -211,20 +251,20 @@ async function main(): Promise<void> {
     }
     case "newtask": {
       if (!flags.title) throw new Error("用法：amo-relay newtask --title <标题> [--desc <文字>|--desc-file <文件>] [--holder <名字>] [--status <状态>]");
-      const { client } = joined();
+      const { client } = await joined();
       const t = await client.createTask({ title: flags.title, description: textArg(flags.desc, flags["desc-file"]) ?? "", holder: flags.holder, status: flags.status as TaskStatus | undefined, via: CLI_VIA });
       out(`已新建任务「${t.title}」，在 ${t.holder} 手里，${t.status}。taskId: ${t.id}`);
       return;
     }
     case "settask": {
       if (!pos[0]) throw new Error("用法：amo-relay settask <taskId> [--title <标题>] [--desc <文字>|--desc-file <文件>] [--status <状态>]");
-      const { client } = joined();
+      const { client } = await joined();
       const t = await client.updateTask(pos[0], { title: flags.title, description: textArg(flags.desc, flags["desc-file"]), status: flags.status as TaskStatus | undefined, via: CLI_VIA });
       out(`已更新「${t.title}」：${t.status}，在 ${t.holder} 手里。`);
       return;
     }
     case "tasks": {
-      const { client, me } = joined();
+      const { client, me } = await joined();
       const list = (await client.tasks()).filter((t) => !t.archived && (!flags.mine || t.holder === me));
       if (!list.length) out("没有任务。");
       for (const t of list) out(`${t.title} · ${t.status} · 在 ${t.holder} 手里 · ${t.id}`);
@@ -232,21 +272,21 @@ async function main(): Promise<void> {
     }
     case "task": {
       if (!pos[0]) throw new Error("用法：amo-relay task <taskId>");
-      const { client } = joined();
+      const { client } = await joined();
       const { task, events } = await client.task(pos[0]);
       out(taskAsText(task, events));
       return;
     }
     case "transfer": {
       if (!pos[0] || !flags.to || !flags.reason) throw new Error("用法：amo-relay transfer <taskId> --to <名字> [--status …] --reason <文字>");
-      const { client } = joined();
+      const { client } = await joined();
       const t = await client.transferTask(pos[0], { to: flags.to, status: flags.status as TaskStatus | undefined, reason: flags.reason, via: CLI_VIA });
       out(`「${t.title}」已交给 ${t.holder}，${t.status}。`);
       return;
     }
     case "put": {
       if (!pos[0] || (!flags.task === !flags.thread)) throw new Error("用法：amo-relay put <本机文件> --task <taskId> | --thread <threadId> [--name <显示名>]");
-      const { client } = joined();
+      const { client } = await joined();
       const name = flags.name ?? basename(pos[0]);
       const f = await client.upload({ taskId: flags.task, threadId: flags.thread }, name, readFileSync(pos[0]), typeOf(name), { ai: true });
       out(`已上传 ${f.name} v${f.version}。fileId: ${f.id}`);
@@ -254,7 +294,7 @@ async function main(): Promise<void> {
     }
     case "file": {
       if (!pos[0]) throw new Error("用法：amo-relay file <fileId>");
-      const { client } = joined();
+      const { client } = await joined();
       const [versions, notes] = await Promise.all([client.versions(pos[0]), client.notes(pos[0])]);
       const f = versions.find((v) => v.id === pos[0])!;
       out(`## ${f.name} v${f.version} · ${f.type} · ${f.size} 字节\n`);
@@ -265,7 +305,7 @@ async function main(): Promise<void> {
     case "handoff": {
       const note = textArg(flags.note, flags["note-file"]);
       if (!pos[0] || !note) throw new Error("用法：amo-relay handoff <threadId> --note <文字>");
-      const { client } = joined();
+      const { client } = await joined();
       await client.session(pos[0], "handoff", { note, via: CLI_VIA });
       out("已交给本人。");
       return;

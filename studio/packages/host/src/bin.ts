@@ -44,6 +44,10 @@ function testModelOptions(): Partial<StartHostOptions> {
       ...(dshAgent ? [{ id: "dsh-mock", label: "Mock DSH", runtime: "dsh" as const, provider: "deepseek-official", model: null, credentialId: "mock" }] : []),
     ],
     ...(dshAgent && node ? { dshAgent: { command: node, args: [dshAgent] } } : {}),
+    // Claude 多账号: added accounts' dirs in the test's data folder, never the person's ~/.claude-accounts.
+    claudeAccountsDir: join(dataDir, "claude-accounts"),
+    // MCP 设置: the "person's" MCP servers from a file of the test's own, never the real ~/.claude.json.
+    claudeConfigFile: process.env.AMO_STUDIO_TEST_CLAUDE_CONFIG ?? join(dataDir, "test-claude.json"),
     // Off the network (2026-10-27): Studio's real sessions fetch the CLI's feature flags; tests must not.
     ...(claudeUrl
       ? {

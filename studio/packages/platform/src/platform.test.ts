@@ -1,13 +1,14 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { Protector } from "@amo-studio/account";
 import { listenInStudioRange, removeTempDir, startFakePlatformServer, type FakePlatformServer } from "@amo-studio/testkit";
 import { PlatformClient } from "./client.js";
 import { planLaunch, type LaunchSpec } from "./launch.js";
-import { Platform, type PlatformOptions } from "./platform.js";
+import { trayMenu } from "./tray.js";
+import { FOCUS_RECHECK_MS, Platform, type PlatformOptions } from "./platform.js";
 import { channelFromArgs } from "./settings.js";
 import { sessionCount, stopStudio, studioHealth, studioRestart, waitForExit, type StudioStop } from "./system.js";
 
@@ -87,6 +88,28 @@ describe("Platform", () => {
     expect(launched[0]!.env.ELECTRON_RUN_AS_NODE).toBeUndefined();
   });
 
+  it("asked again with an answer in hand: in the background (never 正在连接); coming forward asks the server only after a minute (2026-10-30)", async () => {
+    const { platform } = make();
+    await platform.init();
+    await platform.login(server.url, "小王", "secret");
+    const states: string[] = [];
+    platform.onChange((v) => states.push(v.connection.state));
+    const asked = () => server.requests.filter((r) => r.includes("/channels")).length;
+    const before = asked();
+    await platform.refresh();
+    expect(asked()).toBe(before + 1);
+    expect(states).not.toContain("checking");
+    // Coming forward right after: what runs is read again, the server is not asked.
+    await platform.refresh({ focus: true });
+    expect(asked()).toBe(before + 1);
+    expect(platform.view().connection.state).toBe("online");
+    // A minute on, it is.
+    (platform as unknown as { lastServerCheck: number }).lastServerCheck -= FOCUS_RECHECK_MS + 1;
+    await platform.refresh({ focus: true });
+    expect(asked()).toBe(before + 2);
+    expect(states).not.toContain("checking");
+  });
+
   it("an update while the tool runs is installed all the same and says it takes effect next time", async () => {
     const { platform, running } = make();
     await platform.init();
@@ -160,7 +183,7 @@ describe("Platform", () => {
   // Last in this group: the published relay stays on the fake server.
   it("AMO 中转 is a tool like the others (2026-10-28): listed after Studio, installed, opened with the team server's address", async () => {
     server.publish("relay", "0.9.0", { "AMO Relay.exe": "relay 0.9.0", "resources/app/package.json": "{}" }, { name: "AMO Relay", exe: "AMO Relay.exe", notes: "- 从平台发布" });
-    const { platform, launched } = make();
+    const { platform, launched, running } = make();
     await platform.init();
     await platform.login(server.url, "小王", "secret");
     expect(platform.view().tools.map((t) => [t.id, t.name])).toEqual([
@@ -176,8 +199,73 @@ describe("Platform", () => {
     expect(platform.installedTools()).toEqual([{ id: "relay", name: "AMO 中转" }]);
     expect(await platform.open("relay")).toEqual({ ok: true });
     expect(launched[0]!.file).toMatch(/\\relay\\0\.9\.0\\AMO Relay\.exe$/);
-    expect(launched[0]!.args).toEqual(["--server", server.url]);
+    expect(launched[0]!.args).toEqual(["--server", server.url, "--amo-tray=platform"]);
     expect(launched[0]!.env.AMO_STUDIO_DATA_DIR).toBeUndefined();
+    // 关闭 (2026-10-29): the same exe, asked to quit; the tray has its part.
+    expect(await platform.close("relay")).toEqual({ ok: true });
+    expect(launched[1]!.args).toEqual(["--server", server.url, "--amo-tray=platform", "--amo-quit"]);
+    // A running relay older than 0.9.2 does not know --amo-quit (it would only come to the front): said, not started.
+    running.push(launched[0]!.file);
+    expect(await platform.close("relay")).toMatchObject({ ok: false, message: expect.stringContaining("是 0.9.0 打开的，这个版本还不认识平台的「关闭」") });
+    expect(launched).toHaveLength(2);
+    running.length = 0;
+    expect(trayMenu(platform.trayState()).map((i) => (i.kind === "separator" ? "—" : i.label))).toEqual(["AMO 中转", "打开中转", "退出中转", "—", "AMO 平台", "打开 AMO 平台", "退出平台"]);
+    // 便签 with neither its own install nor Studio: nothing to start it with.
+    expect(platform.notesAvailable()).toBe(false);
+    expect(await platform.toggleNotes()).toMatchObject({ ok: false, reason: "not-installed" });
+  });
+
+  // 2026-11-04 (the user: 关闭 and 重启 slow): running.ts's layers — the tool's own running.json, what the platform
+  // started — before asking Windows. Uses the relay published above.
+  it("正在运行 and 关闭 go by what the tool says of itself and what the platform started; Windows only for the rest", async () => {
+    let scans = 0;
+    let exited: (left: number[]) => void = () => undefined;
+    const { platform, env } = make({
+      extra: {
+        runningPaths: async () => (scans++, []),
+        launch: async () => process.pid,
+        waitForExit: () => new Promise<number[]>((r) => (exited = r)),
+      },
+    });
+    const home = join(root, "relay-home");
+    Object.assign(env, { AMO_RELAY_HOME: home });
+    await platform.init();
+    await platform.login(server.url, "小王", "secret");
+    await platform.install("relay");
+    const relay = () => platform.view().tools.find((t) => t.id === "relay")!;
+    const dir = platform.installer.toolDir("relay");
+    mkdirSync(home, { recursive: true });
+    const say = (version: string) => writeFileSync(join(home, "running.json"), JSON.stringify({ pid: process.pid, exe: join(dir, version, "AMO Relay.exe") }));
+
+    // Said by the relay itself: running, and 关闭 asks Windows nothing; 正在关闭… until the process is gone.
+    say("0.9.5");
+    await platform.refresh();
+    expect(relay().running).toBe(true);
+    scans = 0;
+    expect(await platform.close("relay")).toEqual({ ok: true });
+    expect(scans).toBe(0);
+    expect(relay().result).toEqual({ tone: "busy", text: "正在关闭…" });
+    rmSync(join(home, "running.json"));
+    exited([]);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(relay()).toMatchObject({ running: false, result: null });
+
+    // An older relay it says of itself is refused as before, still without asking Windows.
+    say("0.9.0");
+    scans = 0;
+    expect(await platform.close("relay")).toMatchObject({ ok: false, message: expect.stringContaining("是 0.9.0 打开的") });
+    expect(scans).toBe(0);
+    rmSync(join(home, "running.json"));
+
+    // Started by the platform (layer 2): 正在运行 at once, remembered in launched.json.
+    expect(await platform.open("relay")).toEqual({ ok: true });
+    expect(relay().running).toBe(true);
+    expect(JSON.parse(readFileSync(join(env.AMO_HOME, "launched.json"), "utf8")).relay).toEqual([{ pid: process.pid, exe: expect.stringMatching(/\\relay\\0\.9\.0\\AMO Relay\.exe$/) }]);
+    // A record outside the tool's folder (a relay unpacked by hand, Studio from the sources) does not count.
+    writeFileSync(join(env.AMO_HOME, "launched.json"), "{}");
+    writeFileSync(join(home, "running.json"), JSON.stringify({ pid: process.pid, exe: join(root, "elsewhere", "AMO Relay.exe") }));
+    await platform.refresh();
+    expect(relay().running).toBe(false);
   });
 });
 
@@ -191,11 +279,13 @@ describe("launch and the machine", () => {
     expect(planLaunch("notes", undefined, { studioDataDir: null, env: {}, name: "AMO 便签" })).toMatchObject({ ok: false, message: "AMO 便签 还没装。" });
     expect(planLaunch("notes", { ...entry, exe: "Gone.exe" }, { studioDataDir: null, env: {} })).toMatchObject({ ok: false, reason: "not-installed" });
     const p = planLaunch("notes", entry, { studioDataDir: "D:\\d", env: { PATH: "x", AMO_PLATFORM_TEST: "1", CLAUDECODE: "1" } });
-    expect(p).toMatchObject({ ok: true, spec: { file: join(root, "1.0.0", "Tool.exe"), cwd: join(root, "1.0.0"), args: [], env: { PATH: "x" } } });
+    // Every tool leaves the tray to the platform (2026-10-29); what the tray or a card asks comes after.
+    expect(p).toMatchObject({ ok: true, spec: { file: join(root, "1.0.0", "Tool.exe"), cwd: join(root, "1.0.0"), args: ["--amo-tray=platform"], env: { PATH: "x" } } });
+    expect(planLaunch("notes", entry, { studioDataDir: null, env: {}, args: ["--amo-quit"] })).toMatchObject({ ok: true, spec: { args: ["--amo-tray=platform", "--amo-quit"] } });
     // Only AMO 中转 is handed the server (it fills in its address the first time); without a login, nothing.
-    expect(planLaunch("notes", entry, { studioDataDir: null, env: {}, server: "http://s:1" })).toMatchObject({ ok: true, spec: { args: [] } });
-    expect(planLaunch("relay", entry, { studioDataDir: null, env: {}, server: "http://s:1" })).toMatchObject({ ok: true, spec: { args: ["--server", "http://s:1"] } });
-    expect(planLaunch("relay", entry, { studioDataDir: null, env: {}, server: null })).toMatchObject({ ok: true, spec: { args: [] } });
+    expect(planLaunch("notes", entry, { studioDataDir: null, env: {}, server: "http://s:1" })).toMatchObject({ ok: true, spec: { args: ["--amo-tray=platform"] } });
+    expect(planLaunch("relay", entry, { studioDataDir: null, env: {}, server: "http://s:1" })).toMatchObject({ ok: true, spec: { args: ["--server", "http://s:1", "--amo-tray=platform"] } });
+    expect(planLaunch("relay", entry, { studioDataDir: null, env: {}, server: null })).toMatchObject({ ok: true, spec: { args: ["--amo-tray=platform"] } });
     expect(channelFromArgs(["--channel=test"])).toBe("test");
     expect(channelFromArgs(["--channel", "beta"])).toBeNull();
   });
@@ -203,6 +293,67 @@ describe("launch and the machine", () => {
   it("a service with no platform folder or nothing published (404) has no tools, not an error", async () => {
     const notFound = (async () => new Response(JSON.stringify({ error: "not_found", message: "还没有发布过" }), { status: 404 })) as unknown as typeof fetch;
     expect(await new PlatformClient("http://127.0.0.1:1", "k", notFound).channels()).toEqual({ stable: {}, test: {} });
+  });
+
+  it("a manifest cut short on the way is asked for once more, then said to be cut short — not 「不是 JSON 对象」 (2026-11-03)", async () => {
+    const whole = JSON.stringify({ tool: "studio", version: "0.9.28", exe: "AMO Studio.exe", files: [{ path: "AMO Studio.exe", size: 3, sha256: "a".repeat(64) }] });
+    const answers: string[] = [];
+    const cut = (async () => {
+      const body = answers.shift() ?? whole;
+      return new Response(body, { status: 200, headers: { "content-length": String(Buffer.byteLength(whole)), "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+    const client = new PlatformClient("http://127.0.0.1:1", "k", cut);
+    answers.push(whole.slice(0, 40));
+    expect((await client.manifest("studio", "0.9.28")).files).toHaveLength(1);
+    answers.push(whole.slice(0, 40), whole.slice(0, 60));
+    await expect(client.manifest("studio", "0.9.28")).rejects.toMatchObject({ code: "unreachable", message: expect.stringContaining(`只读到 60 / ${Buffer.byteLength(whole)} 字节`) });
+    // Whole but not a manifest: still the manifest's fault.
+    const junk = (async () => new Response("<html>", { status: 200 })) as unknown as typeof fetch;
+    await expect(new PlatformClient("http://127.0.0.1:1", "k", junk).manifest("studio", "0.9.28")).rejects.toThrow("不是 JSON 对象");
+  });
+
+  it("a download that breaks off is tried again from the start, twice; then it says why (2026-11-03)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "amo-platform-dl-"));
+    try {
+      let breaks = 0;
+      const broken = () =>
+        new ReadableStream<Uint8Array>({
+          pull(c) {
+            c.enqueue(new TextEncoder().encode("hal"));
+            c.error(Object.assign(new TypeError("terminated"), { cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }) }));
+          },
+        });
+      const server = (async () => (breaks-- > 0 ? new Response(broken()) : new Response("hello"))) as unknown as typeof fetch;
+      const client = new PlatformClient("http://s", "k", server);
+      const dest = join(dir, "f");
+      let counted = 0;
+      breaks = 2;
+      await client.download("a".repeat(64), dest, (n) => (counted += n));
+      // The bytes of the broken tries are taken back: the bar ends at the file's size, not past it.
+      expect(readFileSync(dest, "utf8")).toBe("hello");
+      expect(counted).toBe(5);
+      breaks = 3;
+      await expect(client.download("a".repeat(64), dest, () => {})).rejects.toMatchObject({ code: "unreachable", message: expect.stringContaining("中途断了（terminated：UND_ERR_SOCKET other side closed）") });
+    } finally {
+      removeTempDir(dir);
+    }
+  });
+
+  it("what is shown of a version is its summary; a server without …/summary hands the manifest instead (2026-11-03)", async () => {
+    const manifest = { tool: "studio", name: "AMO Studio", version: "0.9.29", builtAt: 5, exe: "AMO Studio.exe", notes: "- 新", files: [{ path: "AMO Studio.exe", size: 3, sha256: "a".repeat(64) }] };
+    const asked: string[] = [];
+    const server = (withSummary: boolean) =>
+      (async (url: string) => {
+        asked.push(new URL(url).pathname);
+        if (url.endsWith("/summary")) return withSummary ? new Response(JSON.stringify({ ...manifest, files: undefined, fileCount: 1, size: 3 })) : new Response(JSON.stringify({ message: "没有这个接口" }), { status: 404 });
+        return new Response(JSON.stringify(manifest));
+      }) as unknown as typeof fetch;
+    const shown = { tool: "studio", name: "AMO Studio", version: "0.9.29", builtAt: 5, exe: "AMO Studio.exe", notes: "- 新" };
+    expect(await new PlatformClient("http://s", "k", server(true)).summary("studio", "0.9.29")).toEqual(shown);
+    expect(asked).toEqual(["/api/platform/tools/studio/0.9.29/summary"]);
+    asked.length = 0;
+    expect(await new PlatformClient("http://s", "k", server(false)).summary("studio", "0.9.29")).toEqual(shown);
+    expect(asked).toEqual(["/api/platform/tools/studio/0.9.29/summary", "/api/platform/tools/studio/0.9.29"]);
   });
 
   it("reads Studio's sessions from its Host, read only; no `running` field is unknown", async () => {
@@ -274,7 +425,7 @@ describe("launch and the machine", () => {
       reply = { status: 404, body: { error: { code: "not_found", message: "no route" } } };
       expect(await stopStudio(root)).toMatchObject({ ok: false, reason: "unsupported" });
       reply = { status: 200, body: { ok: true, running: 0 } };
-      expect(await stopStudio(root)).toEqual({ ok: true, pids: [4242, 4343] });
+      expect(await stopStudio(root)).toEqual({ ok: true, pids: [4242, 4343], host: 4242, shell: 4343 });
       expect(seen.every((r) => !r.body.includes("interrupt"))).toBe(true);
     } finally {
       await new Promise<void>((r) => host.close(() => r()));
@@ -293,11 +444,22 @@ describe("launch and the machine", () => {
     let stop: StudioStop = { ok: false, reason: "running", running: 1 };
     let left: number[] = [];
     const waited: Array<readonly number[]> = [];
-    const { platform, launched, picks } = make({
+    const killed: number[] = [];
+    // While the restart waits: 打开 and 关闭 are refused (2026-11-05).
+    let duringWait: Array<{ ok: boolean }> = [];
+    const { platform, launched, picks, running } = make({
       extra: {
         fetch: routed,
         stopStudio: async () => stop,
-        waitForExit: async (pids) => (waited.push(pids), left),
+        waitForExit: async (pids) => {
+          waited.push(pids);
+          if (!duringWait.length) duringWait = [await platform.open("studio"), await platform.close("studio")];
+          return left.filter((p) => pids.includes(p));
+        },
+        killProcess: (pid) => {
+          killed.push(pid);
+          left = left.filter((p) => p !== pid);
+        },
       },
     });
     await platform.init();
@@ -331,6 +493,18 @@ describe("launch and the machine", () => {
     expect(waited.at(-1)).toEqual([4242, 4343]);
     expect(card().result).toMatchObject({ tone: "error", text: expect.stringContaining("旧的 Studio 还没退出（进程 4343") });
     expect(launched).toEqual([]);
+    expect(duringWait).toEqual([
+      { ok: false, reason: "failed", message: "正在重启 Studio，等它做完再试。" },
+      { ok: false, reason: "failed", message: "正在重启 Studio，等它做完再试。" },
+    ]);
+    expect(killed).toEqual([]);
+    // The Host is still stopping: it gets the rest of the minute, the shell is not ended while it runs.
+    stop = { ok: true, pids: [4242, 4343], host: 4242, shell: 4343 };
+    left = [4242, 4343];
+    await platform.restartStudio();
+    expect(waited.slice(-3)).toEqual([[4242, 4343], [4242], [4242, 4343]]);
+    expect(killed).toEqual([]);
+    expect(launched).toEqual([]);
     // Both ended: the installed Studio opens with its data dir.
     left = [];
     health = { ok: true, pid: 5000, running: 0, version: "0.9.0" };
@@ -340,9 +514,30 @@ describe("launch and the machine", () => {
     expect(launched[0]!.file).toMatch(/\\0\.9\.0\\AMO Studio\.exe$/);
     expect(launched[0]!.env.AMO_STUDIO_DATA_DIR).toBe(data);
     expect(card().studio).toEqual({ hostUp: true, sessions: 0, version: "0.9.0", restart: "none", restarting: false });
+    // 2026-11-05: the Host is gone, its shell hangs (windows closed, the process left): ended, and the new one opens.
+    left = [4343];
+    await platform.restartStudio();
+    expect(killed).toEqual([4343]);
+    expect(launched).toHaveLength(2);
+    expect(card().result).toEqual({ tone: "ok", text: "已重启 Studio，现在是 0.9.0（旧的 Studio 关掉窗口后 10 秒没退出，平台把它结束了；会话在后台里，不受影响）" });
     // A Host too old to say its version.
     health = { ok: true, pid: 5000, running: 0 };
     await platform.refreshStudio();
     expect(card().studio).toMatchObject({ version: null, restart: "unsupported" });
+
+    // 关闭 (2026-10-30): the version Studio says counts, not a helper left in an old folder (Claude Code's exe) or 便签
+    // through an older Studio; a Studio that says nothing: only its own exe counts.
+    const studioDir = dirname(launched[0]!.file);
+    const old = join(dirname(studioDir), "0.8.0");
+    running.push(join(old, "resources", "claude.exe"));
+    health = { ok: true, pid: 5000, running: 0, version: "0.9.9" };
+    expect(await platform.close("studio")).toEqual({ ok: true });
+    expect(launched.at(-1)!.args).toContain("--amo-quit");
+    health = { ok: true, pid: 5000, running: 0, version: "0.9.7" };
+    expect(await platform.close("studio")).toMatchObject({ ok: false, message: expect.stringContaining("是 0.9.7 打开的") });
+    health = { ok: true, pid: 5000, running: 0 };
+    expect(await platform.close("studio")).toEqual({ ok: true });
+    running.push(join(old, "AMO Studio.exe"));
+    expect(await platform.close("studio")).toMatchObject({ ok: false, message: expect.stringContaining("是 0.8.0 打开的") });
   });
 });

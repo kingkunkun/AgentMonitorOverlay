@@ -1,5 +1,5 @@
 import { asyncPrompts, type Id, type Session, type TurnRetry, type TurnState } from "@amo-studio/protocol";
-import { messageImage } from "../items.js";
+import { messageImage, withDelivery } from "../items.js";
 import type { ServerNotification } from "./rpc-client.js";
 import type { CodexServerHandle } from "./server-manager.js";
 import type { CodexAsks } from "./asks.js";
@@ -20,6 +20,8 @@ export class CodexEvents {
     private readonly asks: CodexAsks,
     /** account/rateLimits/updated: the profile's quota as the server last told it. */
     private readonly onRateLimits: (profileId: Id, limits: { primary: CodexRateWindow; secondary: CodexRateWindow }) => void,
+    /** A turn ended (completed, interrupted or failed): steered messages it never read go on as the next turn. */
+    private readonly afterTurn: (sessionId: Id) => void = () => undefined,
   ) {}
 
   /** A notice row; the same key again in this turn updates that row (with a count) instead of adding another. */
@@ -69,8 +71,15 @@ export class CodexEvents {
 
   handlerFailed(method: string, threadId: string | undefined, err: unknown): void {
     this.core.log(`failed to handle ${method}: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
-    const s = threadId ? this.core.findByThread(threadId) : undefined;
-    if (s) this.notice(s.id, "warning", `Studio 处理 Codex 的一条消息（${method}）时出错，这条可能没显示出来：${firstLineOf(err instanceof Error ? err.message : String(err))}。详情在 host.log。`, `handler-error:${method}`);
+    // 2026-11-04: this is where a failed message ends, so it must not throw itself — it runs in the RPC client's event
+    // handler, and a throw there is an uncaught exception. Seen: a message arriving while the Host shuts down (the store
+    // closed: "database is not open"), which made the full unit run exit 1 and stopped 自动打包 (AMO 中转 0.9.7).
+    try {
+      const s = threadId ? this.core.findByThread(threadId) : undefined;
+      if (s) this.notice(s.id, "warning", `Studio 处理 Codex 的一条消息（${method}）时出错，这条可能没显示出来：${firstLineOf(err instanceof Error ? err.message : String(err))}。详情在 host.log。`, `handler-error:${method}`);
+    } catch (again) {
+      this.core.log(`could not note the failure of ${method} in its session: ${again instanceof Error ? again.message : String(again)}`);
+    }
   }
 
   onNotification(handle: CodexServerHandle, n: ServerNotification): void {
@@ -122,6 +131,7 @@ export class CodexEvents {
         } else {
           this.core.setStatus(s.id, s.kind !== "sub" ? "idle" : turn.status === "interrupted" ? "interrupted" : "completed");
         }
+        if (s.kind !== "sub") this.afterTurn(s.id);
         return;
       }
       case "item/started":
@@ -352,6 +362,14 @@ export class CodexEvents {
       case "userMessage": {
         // In review mode the message is Codex's own review prompt (the person's /code-review opened the turn).
         if (!done || review) return;
+        // Shown when it was sent (a steer, or a message sent again): the echo settles that row (立即发送, 2026-11-02).
+        const clientId = (item as { clientId?: unknown }).clientId;
+        const sent = typeof clientId === "string" ? st.sent.get(clientId) : undefined;
+        if (sent) {
+          st.sent.delete(clientId as string);
+          this.core.updateItem(sent.itemId, (it) => (it.type === "user" ? withDelivery(it, undefined) : it));
+          return;
+        }
         const content = (item.content ?? []) as Array<{ type?: string; text?: unknown; path?: unknown }>;
         const text = content.map((c) => (c && typeof c === "object" && typeof c.text === "string" ? c.text : "")).join("");
         const images = content.filter((c) => c?.type === "localImage" && typeof c.path === "string").map((c) => messageImage(c.path as string));

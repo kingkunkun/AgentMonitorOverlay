@@ -34,6 +34,48 @@ export interface NewSessionInput {
   attachments?: Id[];
   /** Model, effort and permissions; the profile's defaults otherwise. */
   options?: SessionOptions;
+  /**
+   * 接续已有会话 (2026-11-05, plans/resume-cli-sessions.md): the id of a Claude session started outside Studio (a terminal,
+   * the Claude desktop app; GET /api/claude/outside-sessions). The session goes on from a copy of it, its conversation
+   * imported; the original is left as it is. Claude subscription only.
+   */
+  resumeFrom?: string;
+}
+
+/** 接续已有会话 (2026-11-05): a Claude session started outside Studio, as GET /api/claude/outside-sessions lists it. */
+export interface OutsideSession {
+  /** Claude Code's session id. */
+  id: string;
+  /** Its title (/rename), else Claude Code's summary or first prompt. */
+  title: string;
+  firstPrompt?: string;
+  /** The folder it worked in. */
+  cwd: string;
+  /** The project whose folder is that one or holds it (the deepest); null when none does. */
+  workspaceId: Id | null;
+  /** Where it was started: `cli` (a terminal), `desktop` (the Claude desktop app), `other` (an IDE, …). */
+  source: "cli" | "desktop" | "other";
+  lastModified: Timestamp;
+  createdAt?: Timestamp;
+  /** Size of its transcript in bytes. */
+  bytes?: number;
+  gitBranch?: string;
+}
+
+export interface OutsideSessionList {
+  sessions: OutsideSession[];
+  /** Why nothing can be listed (the Claude subscription does not use the local Claude Code login); absent when it can. */
+  unavailable?: string;
+}
+
+/** The end of an outside session's conversation, for recognising it before 接续. */
+export interface OutsideSessionPreview {
+  /** The last messages (text only), oldest first. */
+  messages: Array<{ role: "user" | "assistant"; text: string }>;
+  /** How many messages the conversation has since its last compaction (what is imported). */
+  total: number;
+  /** It was compacted: what comes before the last compaction is not imported. */
+  compacted: boolean;
 }
 
 /** A model a profile can run, as its CLI lists it. */
@@ -129,13 +171,6 @@ export interface TerminalAttach {
   launched: boolean;
 }
 
-/** A task template picked when creating a task: which workspace's pack, which template. */
-export interface TaskTemplateChoice {
-  workspaceId: Id;
-  pack: string;
-  template: string;
-}
-
 /**
  * A file Studio keeps for a conversation or the scratchpad: an image pasted or dropped in, stored in the data folder
  * (`attachments/`), never in a project. `path` is where agents read it.
@@ -155,11 +190,24 @@ export const ATTACHMENT_MIMES = ["image/png", "image/jpeg", "image/gif", "image/
 export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 
 /** Features the person can turn off (设置 → 功能): their pages, panels and agent tools go away; their data stays. */
-export type OptionalFeature = "packs" | "planning";
+export type OptionalFeature = "planning";
 
 export const OPTIONAL_FEATURES: readonly { id: OptionalFeature; label: string; hint: string }[] = [
-  { id: "packs", label: "扩展包", hint: "项目里 .amo/packs 的规范文档、任务模板和会话预设" },
   { id: "planning", label: "整体待办与调度", hint: "画布侧栏的整体待办、调度 agent 和它的提案" },
+];
+
+/**
+ * 设置 → 测试功能 (2026-11-01, the user: 设置里加个测试功能页，这个功能加个开关): features still being tried out. The
+ * opposite of OPTIONAL_FEATURES: off until the person turns one on, and the settings list the ones turned on.
+ */
+export type ExperimentalFeature = "panorama";
+
+export const EXPERIMENTAL_FEATURES: readonly { id: ExperimentalFeature; label: string; hint: string }[] = [
+  {
+    id: "panorama",
+    label: "全景",
+    hint: "左边栏「全部任务」下面多一个「全景」：把所有专题画成一张地图，每个专题一块区域，每个任务一条路，会话是路上的节点，等你处理的会话立着牌子，点「N 件等你」依次飞过去。还在测试，只读不改数据，样子和内容以后会变。",
+  },
 ];
 
 /** Studio-wide settings kept by the Host (the look of the UI is per install, in the UI itself). */
@@ -173,6 +221,19 @@ export interface StudioSettings {
   presets: SessionPreset[];
   /** Optional features turned off. */
   disabledFeatures: OptionalFeature[];
+  /** Features still being tried out that the person turned on (设置 → 测试功能); off by default. */
+  experimentalFeatures: ExperimentalFeature[];
+  /**
+   * 设置 → 测试功能 → 开发界面目录 (2026-11-05, the user: iterate 全景's view without a release each time): a folder holding
+   * a UI build (its index.html) the Host serves instead of the installed one; null when off. Kept in memory only, so
+   * restarting Studio (the Host) goes back to the installed UI.
+   */
+  devUiDir: string | null;
+  /**
+   * 设置 → 功能 → 中转 (2026-10-30, the user: 开启后不用审批自动发送): what a session asks someone on the team through
+   * 中转 (team_ask, team_followup) goes at once instead of waiting for the person's 发送. Off by default.
+   */
+  teamAutoSend: boolean;
   /** Global shortcut that shows and hides the scratchpad window, as an Electron accelerator; "" when off. */
   scratchpadShortcut: string;
   /**
@@ -183,6 +244,8 @@ export interface StudioSettings {
   /** How the Claude subscription signs in (设置 → 模型); sessions keep the way they were started. */
   /** The person's own Claude Code config dir and whether it holds a login (null: cannot tell on this system). */
   claudeLocal: { dir: string; signedIn: boolean | null };
+  /** Claude 多账号 (2026-11-03): the accounts the Claude subscription can run on and which one it runs on now. */
+  claudeAccounts: ClaudeAccountsState;
   /** Per profile id: model order and defaults (设置 → 模型). */
   modelPrefs: Record<string, ModelPrefs>;
   /** Per profile id: where its quota (subscription use or balance) shows (设置 → 额度); absent = the defaults. */
@@ -281,6 +344,45 @@ export const DEFAULT_QUOTA_DISPLAY: QuotaDisplay = { footer: true, focus: false 
 export type ClaudeLogin = "token" | "local";
 
 /**
+ * Claude 多账号 (2026-11-03, the user): Claude Code keeps one login per config dir (CLAUDE_CONFIG_DIR, its documented
+ * way to use several accounts). "default" is the person's own Claude Code dir (~/.claude, what a terminal uses); each
+ * account added in 设置 → 模型 gets its own dir under ~/.claude-accounts, which shares the default dir's conversation
+ * records (projects), skills, plugins, CLAUDE.md and settings.json, so a session can go on under another account.
+ * Claude subscription sessions run on the current account; switching waits until no Claude session is at work.
+ */
+export interface ClaudeAccount {
+  id: Id;
+  /** The person's name for it, or the account's email when they gave none. */
+  label: string;
+  dir: string;
+  /** The person's own Claude Code dir (cannot be removed). */
+  isDefault: boolean;
+  /** Whether the dir holds a login (Windows: `.credentials.json`); null when this system cannot tell. */
+  signedIn: boolean | null;
+  /** From `claude auth status` (read after signing in and now and then). */
+  email: string | null;
+  /** "max", "pro", … */
+  plan: string | null;
+  /** A sign-in under way in Studio (设置 → 模型 → 添加账号 / 重新登录). */
+  login: ClaudeAccountLogin | null;
+}
+
+export interface ClaudeAccountLogin {
+  state: "waiting" | "failed";
+  /** The sign-in page, when the browser did not open by itself. */
+  url: string | null;
+  /** Why it failed. */
+  error: string | null;
+}
+
+export interface ClaudeAccountsState {
+  current: Id;
+  accounts: ClaudeAccount[];
+  /** Why switching is not possible now (a Claude session is at work); null when it is. */
+  switchBlocked: string | null;
+}
+
+/**
  * 设置 → 模型 (2026-10-24): the Claude Code that Claude sessions run on. The portable build ships none: the person's own
  * install is used, and without one the channels on Claude Code are `unavailable`. `source`: "bundled" = the copy that
  * comes with the SDK (a source checkout), "installed" = the person's, "env" = AMO_STUDIO_CLAUDE.
@@ -303,10 +405,15 @@ export interface ClaudeCodeStatus {
 export interface DshStatus {
   /** Where DSH comes from (2026-10-26): "auto" = the desktop app when installed, else the clone; "clone" = the clone. */
   source: "auto" | "clone";
-  /** The installed desktop app, if any. */
-  desktop: { path: string; version: string | null } | null;
-  /** Where the desktop app is looked for. */
+  /**
+   * The installed desktop app, if any, and where it was found (2026-11-02): AMO_STUDIO_DSH_DESKTOP, the folder chosen
+   * in 设置, the usual folder, or where the registry says it was installed.
+   */
+  desktop: { path: string; version: string | null; from: "env" | "chosen" | "default" | "registry" } | null;
+  /** The usual folder of the desktop app (or AMO_STUDIO_DSH_DESKTOP's). */
   desktopDir: string | null;
+  /** The desktop app's folder chosen in 设置 (installed somewhere else), or null: looked for. */
+  desktopChosen: string | null;
   /** What sessions run on now; null when nothing usable (`unavailable` says why). */
   active: { kind: "desktop" | "clone"; version: string | null } | null;
   unavailable: string | null;
@@ -320,6 +427,15 @@ export interface DshStatus {
   /** The Node that runs DSH and its version (DSH needs 22.19 or newer). */
   node: { path: string; version: string | null } | null;
   check: DshCheck | null;
+  /**
+   * How the built-in DeepSeek signs in (2026-11-03): "account" — the DeepSeek account signed in in the DSH desktop app
+   * (no key); "key" — the API key saved in Studio. Third-party DeepSeek channels always use their own key.
+   */
+  auth: "account" | "key";
+  /** The desktop app's credentials file and whether a DeepSeek account is signed in there. */
+  account: { file: string; signedIn: boolean };
+  /** Whether the built-in DeepSeek's API key is saved. */
+  keySaved: boolean;
 }
 
 export interface DshCheck {
@@ -377,20 +493,6 @@ export interface CredentialStatus {
   writable: boolean;
 }
 
-/** Whether git leaves a project's `.amo/` (its extension packs) out: by `.git/info/exclude`, a .gitignore or the global one. */
-export interface GitExcludeState {
-  /** The folder is in a git repository. */
-  git: boolean;
-  /** git ignores `.amo/` already. */
-  excluded: boolean;
-  /** The rule that does, as git names it (`.git/info/exclude:12`, `.gitignore:3`). */
-  source: string | null;
-  /** The line 一键忽略 adds to `.git/info/exclude`: `/.amo/`, or `/<sub>/.amo/` for a project inside a larger repository. */
-  entry: string;
-  /** Files under `.amo/` git tracks already; ignoring does not apply to them. */
-  tracked: number;
-}
-
 /** Every REST route as `"METHOD /path"` with its request body and response. `:id` segments are path params. */
 export interface HostRoutes {
   "GET /api/state": { req: void; res: StateSnapshot };
@@ -415,10 +517,6 @@ export interface HostRoutes {
   "POST /api/workspaces/:id/archive": { req: void; res: { workspace: Workspace; tasks: Task[] } };
   /** Restores the project and the tasks that were archived with it. */
   "POST /api/workspaces/:id/unarchive": { req: void; res: { workspace: Workspace; tasks: Task[] } };
-  /** Whether git leaves the project's `.amo/` out. */
-  "GET /api/workspaces/:id/git-exclude": { req: void; res: GitExcludeState };
-  /** Adds `.amo/` to the repository's `.git/info/exclude` (this machine only; the project's .gitignore is not touched). */
-  "POST /api/workspaces/:id/git-exclude": { req: void; res: GitExcludeState };
   "GET /api/settings": { req: void; res: StudioSettings };
   /** The Claude Code that Claude sessions run on (2026-10-24). */
   "GET /api/claude-code": { req: void; res: ClaudeCodeStatus };
@@ -427,7 +525,7 @@ export interface HostRoutes {
   /** The DSH clone DeepSeek · DSH sessions use (stage 17). */
   "GET /api/dsh": { req: void; res: DshStatus };
   /** Sets (or with null clears) the clone's folder; it must hold a DSH checkout (`apps/cli`). */
-  "PUT /api/dsh": { req: { path?: string | null; source?: "auto" | "clone" }; res: DshStatus };
+  "PUT /api/dsh": { req: { path?: string | null; source?: "auto" | "clone"; desktopPath?: string | null; auth?: "account" | "key" }; res: DshStatus };
   /** Starts DSH over ACP and opens a session in a scratch folder, without a model call; the result is kept. */
   "POST /api/dsh/check": { req: void; res: DshStatus };
   /**
@@ -454,12 +552,36 @@ export interface HostRoutes {
    * accounts now (GPT: may start its app-server); otherwise the last numbers read.
    */
   "GET /api/usage": { req: void; res: AccountUsage[] };
+  /**
+   * 接续已有会话 (2026-11-05): Claude sessions started outside Studio (a terminal, the Claude desktop app) that are not
+   * Studio's and were not taken on yet, most recent first. Start one with `firstSession.resumeFrom` (POST /api/tasks).
+   */
+  "GET /api/claude/outside-sessions": { req: void; res: OutsideSessionList };
+  "GET /api/claude/outside-sessions/:id/preview": { req: void; res: OutsideSessionPreview };
+  /** Claude 多账号 (2026-11-03): the accounts (also in `settings.claudeAccounts`, which follows every change). */
+  "GET /api/claude-accounts": { req: void; res: ClaudeAccountsState };
+  /** 添加账号: a new account dir, and Claude Code's sign-in started for it (the browser opens; `login.url` otherwise). */
+  "POST /api/claude-accounts": { req: { label?: string; /** Test runs only (AMO_STUDIO_TEST=1): no sign-in started. */ signIn?: false }; res: ClaudeAccountsState };
+  /** 重新登录: the sign-in again for an account (expired or signed out). */
+  "POST /api/claude-accounts/:id/login": { req: void; res: ClaudeAccountsState };
+  /** The code the sign-in page shows, when the browser could not hand it back by itself. */
+  "POST /api/claude-accounts/:id/login/code": { req: { code: string }; res: ClaudeAccountsState };
+  /** Stops a sign-in; a new account that never signed in goes with it. */
+  "DELETE /api/claude-accounts/:id/login": { req: void; res: ClaudeAccountsState };
+  /** Reads email and plan again (`claude auth status`). */
+  "POST /api/claude-accounts/:id/refresh": { req: void; res: ClaudeAccountsState };
+  /** Renames an account. */
+  "PATCH /api/claude-accounts/:id": { req: { label: string }; res: ClaudeAccountsState };
+  /** 切换: the Claude subscription runs on this account from now on; refused (conflict) while a Claude session is at work. */
+  "PUT /api/claude-accounts/current": { req: { id: Id }; res: ClaudeAccountsState };
+  /** Removes an added account: its login and dir (the shared records stay with the default account). Not the default or current one. */
+  "DELETE /api/claude-accounts/:id": { req: void; res: ClaudeAccountsState };
   /** `commonDir`: moves the common space to this folder (created if missing; it must not be a registered project). */
   /** Raw bytes in the body (not JSON), the type in `content-type`, the file name in `?name=`. */
   "POST /api/attachments": { req: void; res: Attachment };
   /** The file itself; also accepts `?token=` so an <img> can load it. */
   "GET /api/attachments/:id": { req: void; res: Blob };
-  "PUT /api/settings": { req: { commonDir?: string; presets?: SessionPreset[]; disabledFeatures?: OptionalFeature[]; scratchpadShortcut?: string; modelPrefs?: Record<string, ModelPrefs | null>; scratchpadSafeNewlines?: boolean; quotaDisplay?: Record<string, QuotaDisplay | null>; quickModels?: QuickModel[]; autoCompactTokens?: number | null; autoCompactProfiles?: Record<string, AutoCompactChoice | null>; projectGroups?: Array<Omit<ProjectGroup, "id"> & { id?: Id }>; topicGroups?: Array<Omit<TopicGroup, "id"> & { id?: Id }>; subsessionNotes?: SubsessionNote[] }; res: StudioSettings };
+  "PUT /api/settings": { req: { commonDir?: string; devUiDir?: string | null; presets?: SessionPreset[]; disabledFeatures?: OptionalFeature[]; experimentalFeatures?: ExperimentalFeature[]; teamAutoSend?: boolean; scratchpadShortcut?: string; modelPrefs?: Record<string, ModelPrefs | null>; scratchpadSafeNewlines?: boolean; quotaDisplay?: Record<string, QuotaDisplay | null>; quickModels?: QuickModel[]; autoCompactTokens?: number | null; autoCompactProfiles?: Record<string, AutoCompactChoice | null>; projectGroups?: Array<Omit<ProjectGroup, "id"> & { id?: Id }>; topicGroups?: Array<Omit<TopicGroup, "id"> & { id?: Id }>; subsessionNotes?: SubsessionNote[] }; res: StudioSettings };
   /** Models (with reasoning efforts) and permission settings of a profile, asked from its CLI. */
   "GET /api/profiles/:id/choices": { req: void; res: ProfileChoices };
   "GET /api/credentials": { req: void; res: CredentialStatus[] };
@@ -467,25 +589,20 @@ export interface HostRoutes {
   /** Saves a writable credential (the Claude subscription token) in the Windows Credential Manager. */
   "PUT /api/credentials/:id": { req: { secret: string }; res: CredentialStatus[] };
   "DELETE /api/credentials/:id": { req: void; res: CredentialStatus[] };
-  /** Extension packs in the workspace's `.amo/packs`, valid or not (design/pack-format.md). */
-  "GET /api/workspaces/:id/packs": { req: void; res: import("./packs.js").WorkspacePack[] };
-  "GET /api/workspaces/:id/packs/:pack/docs/:doc": { req: void; res: import("./packs.js").PackDocContent };
-  /** Fills a pack's session preset in for a task; nothing is started (the person confirms in the new-session form). */
-  "POST /api/workspaces/:id/packs/:pack/presets/:preset/draft": { req: { taskId: Id }; res: import("./packs.js").PresetDraft };
   /**
    * `workspaceId` null or absent: the common space. `topicId`: put it in that topic. Without `firstSession` the task is
-   * only filed (column `todo` unless given); with it, the first session starts. `template`: a task template from an
-   * extension pack; the task gets its title prefix and its steps as a checklist.
+   * only filed (column `todo` unless given); with it, the first session starts.
    */
   "POST /api/tasks": {
-    req: { title?: string; workspaceId?: Id | null; topicId?: Id | null; column?: TaskColumn; lead?: boolean; firstSession?: NewSessionInput; template?: TaskTemplateChoice };
+    /** `firstMessage`: filed without a session (放进待办), the sentence its first session will start from. */
+    req: { title?: string; workspaceId?: Id | null; topicId?: Id | null; column?: TaskColumn; lead?: boolean; firstSession?: NewSessionInput; firstMessage?: string };
     res: { task: Task; session: Session | null };
   };
   /**
    * `workspaceId` (null: the common space) only while the task has no sessions. `topicId` moves the task to another
    * topic or out of its topic (null); its place, group and dependencies on the old topic's canvas are removed.
    */
-  "PATCH /api/tasks/:id": { req: { title?: string; description?: string; lead?: boolean; relayAuto?: boolean; column?: TaskColumn; workspaceId?: Id | null; topicId?: Id | null }; res: Task };
+  "PATCH /api/tasks/:id": { req: { title?: string; description?: string; firstMessage?: string; lead?: boolean; relayAuto?: boolean; column?: TaskColumn; workspaceId?: Id | null; topicId?: Id | null }; res: Task };
   /** Archives the task and all its sessions; returns the task. */
   "POST /api/tasks/:id/archive": { req: void; res: Task };
   "POST /api/tasks/:id/unarchive": { req: void; res: Task };
@@ -524,8 +641,16 @@ export interface HostRoutes {
    * blocks); `text` may then be empty. Steered and queued messages carry them too.
    */
   /** `annotations`: annotations of this session the message refers to (批注1…); they go after the text, see composeAnnotationRefs. */
-  "POST /api/sessions/:id/messages": { req: { text: string; attachments?: Id[]; annotations?: Id[] }; res: { mode: "start" | "steer" | "queue" } };
+  /**
+   * `now` (立即发送, 2026-11-02; Claude and Codex): while a turn runs, the model reads the message at once — the turn's
+   * current step gives way (Ctrl+Enter); `mode` stays what the message would have been without it.
+   */
+  "POST /api/sessions/:id/messages": { req: { text: string; attachments?: Id[]; annotations?: Id[]; now?: boolean }; res: { mode: "start" | "steer" | "queue" } };
   "POST /api/sessions/:id/interrupt": { req: void; res: { ok: true } };
+  /** 立即发送 on a message still waiting (delivery `waiting`): the running turn gives way and the model reads it now. Nothing when it is not waiting any more. */
+  "POST /api/sessions/:id/items/:itemId/send-now": { req: void; res: { ok: true } };
+  /** 重新发送 a message its process never read (delivery `unsent`): the same item goes again. */
+  "POST /api/sessions/:id/items/:itemId/resend": { req: void; res: { mode: "start" | "steer" | "queue" } };
   /** Claude (stage 15): stop the session's loop, or switch going on by itself after a usage limit (Session.wake). */
   "POST /api/sessions/:id/wake": { req: { stopLoop: true } | { autoContinue: boolean }; res: Session };
   "POST /api/sessions/:id/fork": { req: { profileId?: Id }; res: Session };
@@ -617,6 +742,14 @@ export interface HostRoutes {
    * 主控), beside that session; returns it. `profileId`: its model (the laying session's otherwise).
    */
   "POST /api/topics/:id/canvas/items/:itemId/discuss": { req: { profileId?: Id }; res: Session };
+  /** 会话里用中转 (2026-10-30): what sessions asked to send through 中转 — pending ones, and those decided in the last day. */
+  "GET /api/teamrelay/sends": { req: void; res: import("./entities.js").TeamSend[] };
+  /** The person says send it: it goes to 中转 as them (AI 代发). */
+  "POST /api/teamrelay/sends/:id/send": { req: void; res: import("./entities.js").TeamSend };
+  /** Not sent; the session hears so. */
+  "POST /api/teamrelay/sends/:id/dismiss": { req: void; res: import("./entities.js").TeamSend };
+  /** The 中转 sessions this computer's sessions sent, as last seen. */
+  "GET /api/teamrelay/threads": { req: void; res: import("./entities.js").TeamThread[] };
 }
 
 export type HostRoute = keyof HostRoutes;
@@ -638,12 +771,20 @@ export type HostEvent = { seq: number } & (
   | { type: "topicdoc.removed"; topicId: Id; docId: Id }
   | { type: "taskplan.upserted"; plan: TaskPlan }
   | { type: "relay.upserted"; relay: Relay }
+  | { type: "teamsend.upserted"; send: import("./entities.js").TeamSend }
+  /** The 中转 sessions this computer's sessions sent, all of them, when one changed. */
+  | { type: "teamthreads.changed"; threads: import("./entities.js").TeamThread[] }
   | { type: "session.upserted"; session: Session }
   | { type: "item.appended"; item: SessionItem }
   /** Full replacement, e.g. a finished agent message or an approval that changed state. */
   | { type: "item.updated"; item: SessionItem }
   /** Streaming text appended to an agent item; not persisted as a separate event. */
   | { type: "item.delta"; sessionId: Id; itemId: Id; append: string }
+  /**
+   * Many items of a session were written at once (a remote copy catching up after being away, 2026-11-01): read the
+   * session's items again instead of one item.appended each.
+   */
+  | { type: "items.reloaded"; sessionId: Id }
   | { type: "annotation.upserted"; annotation: Annotation }
   | { type: "annotation.removed"; sessionId: Id; annotationId: Id }
   | { type: "scratchpad.updated"; scratchpad: Scratchpad }
@@ -661,19 +802,51 @@ export type HostEvent = { seq: number } & (
   | { type: "profiles.updated"; profiles: ModelProfile[] }
   /** File marks (S12-D) changed: one was added, edited or removed (`workspaceId` is its project, null for 其他). */
   | { type: "marks.changed"; markId: Id; workspaceId: Id | null; topicId?: Id | null }
+  /** 提示词模板 (2026-10-31): one was added, edited or removed. */
+  | { type: "prompt-templates.changed"; templateId: Id }
+  /** MCP 设置 (2026-11-04): a server, the global or a project's choices changed, or a session reported statuses. */
+  | { type: "mcp.changed"; workspaceId?: Id; sessionId?: Id }
   /** Something failed inside the Host outside any one request; it logged the details and keeps running. */
   | { type: "host.error"; message: string }
   /** 外部打开 Review (2026-10-18): the main window opens a review window on this (events older than a minute are stale). */
-  | { type: "review.open"; target: import("./gitreview.js").ReviewOpenTarget; at: Timestamp }
+  | {
+      type: "review.open";
+      target: import("./gitreview.js").ReviewOpenTarget;
+      at: Timestamp;
+      /**
+       * 远程 Reviewer (2026-11-02), on the computer a granted task runs on: the turn was started from the device it is
+       * granted to, which shows it; shown here too only when 「我也关心」 is ticked for this task.
+       */
+      onlyIfAlsoMine?: Id;
+    }
   /** 查看包 (2026-10-23): a pack was made or grew; `open` asks the workbench to show it (new, or sent to again). */
   | { type: "viewpack.upserted"; pack: import("./viewpacks.js").ViewPack }
-  | { type: "viewpack.open"; packId: Id; at: Timestamp; /** The item this open added (or joined): shown first. */ itemId?: Id }
+  | {
+      type: "viewpack.open";
+      packId: Id;
+      at: Timestamp;
+      /** The item this open added (or joined): shown first. */
+      itemId?: Id;
+      /** 远程 Reviewer (2026-11-02), on B: the pack is this remote task's, read from the computer it runs on. */
+      remote?: Id;
+      /** 远程 Reviewer: shown only when 「我也关心」 is ticked here for this task (as review.open). */
+      onlyIfAlsoMine?: Id;
+    }
   /** Deleted for good from 设置 → 数据管理: drop them from every list. */
   | { type: "data.purged"; workspaceIds: Id[]; topicIds: Id[]; taskIds: Id[]; sessionIds: Id[] }
   /** 远程 (2026-10-29): the connection, the paired devices or the pairing requests changed. Not kept in the log. */
   | { type: "remote.updated"; remote: import("./remote.js").RemoteState }
   /** 远程 step 3: how far a file being fetched from a paired device has come (`fetchId` as POST /api/remote/files was given). Not kept in the log. */
   | { type: "remote.file"; fetchId: string; received: number; total: number }
+  /**
+   * 远程 Reviewer (2026-11-02): what a remote task's Reviewer windows show came from its computer just now (`stale`
+   * null), or is the copy from last time because that computer cannot be reached (`stale` says so). Not kept in the log.
+   */
+  | { type: "remote.view"; taskId: Id; stale: string | null }
+  /** 远程 (2026-10-30): a paired device says what may be picked creating a task on it changed (RemoteCatalog). Not kept in the log. */
+  | { type: "remote.catalog"; account: string; device: string; catalog: import("./remote.js").RemoteCatalog }
+  /** 值守 (2026-10-31): its items, runs or what runs now changed. Not kept in the log. */
+  | { type: "duty.updated"; duty: import("./duty.js").DutyState }
 );
 
 export type HostEventType = HostEvent["type"];
@@ -824,6 +997,23 @@ export interface HostRoutes {
   /** Note, topic or order of either kind (a line range only for files). */
   "PATCH /api/bookmarks/:id": { req: import("./marks.js").FileMarkPatch; res: import("./marks.js").Bookmark };
   "DELETE /api/bookmarks/:id": { req: void; res: { ok: true } };
+  // 提示词模板 (2026-10-31).
+  /** Every template, or (`?workspace=<id>`) those a composer in that project offers: the global ones and the project's (`global`: only the global ones). */
+  "GET /api/prompt-templates": { req: void; res: import("./prompt-templates.js").PromptTemplate[] };
+  "POST /api/prompt-templates": { req: import("./prompt-templates.js").NewPromptTemplate; res: import("./prompt-templates.js").PromptTemplate };
+  "PATCH /api/prompt-templates/:id": { req: import("./prompt-templates.js").PromptTemplatePatch; res: import("./prompt-templates.js").PromptTemplate };
+  "DELETE /api/prompt-templates/:id": { req: void; res: { ok: true } };
+  /** MCP 设置 (2026-11-04, plans/mcp.md). */
+  "GET /api/mcp": { req: void; res: import("./mcp.js").McpState };
+  "PUT /api/mcp": { req: { loadLocal?: boolean; choices?: import("./mcp.js").McpChoices }; res: import("./mcp.js").McpState };
+  "POST /api/mcp/servers": { req: import("./mcp.js").NewStudioMcpServer; res: import("./mcp.js").StudioMcpServer };
+  "PATCH /api/mcp/servers/:id": { req: import("./mcp.js").StudioMcpServerPatch; res: import("./mcp.js").StudioMcpServer };
+  "DELETE /api/mcp/servers/:id": { req: void; res: { ok: true } };
+  "GET /api/mcp/projects/:id": { req: void; res: import("./mcp.js").McpProjectState };
+  "PUT /api/mcp/projects/:id": { req: { choices: import("./mcp.js").McpChoices }; res: import("./mcp.js").McpProjectState };
+  "GET /api/sessions/:id/mcp": { req: void; res: import("./mcp.js").McpSessionState };
+  /** `apply`: when the change reaches the session. */
+  "PUT /api/sessions/:id/mcp": { req: { choices: import("./mcp.js").McpChoices }; res: import("./mcp.js").McpSessionState & { apply: import("./mcp.js").McpApply } };
 }
 
 // ---- files named in a conversation (stage 12, S12-C): which exist, so only those become links -------------------
@@ -901,6 +1091,8 @@ export interface HostRoutes {
   "PUT /api/profiles/:id/hidden": { req: { hidden: boolean }; res: ModelProfile[] };
   /** `?refresh=1` asks the site again; otherwise the last answer within a minute. */
   "GET /api/profiles/:id/balance": { req: void; res: import("./channels.js").ChannelBalance };
+  /** 问题 #14: Claude 订阅's and GPT's request address as the person's Claude Code / Codex setup has it; null for other profiles. */
+  "GET /api/profiles/:id/endpoint": { req: void; res: import("./channels.js").ProfileEndpoint | null };
 }
 
 // ---- 设置 → 维护 (2026-10-20): how Studio was started, a model's CLI in a terminal at the repo (maintenance.ts) ------
@@ -910,13 +1102,20 @@ export interface HostRoutes {
   "POST /api/maintenance/terminal": { req: import("./maintenance.js").MaintenanceTerminalRequest; res: import("./maintenance.js").MaintenanceTerminalResult };
 }
 
-// ---- 设置 → 远程 (2026-10-29, plans/remote-session.md step 1): this computer as a device, pairing (remote.ts) ---------
+// ---- 远程 (2026-10-29, its own page since 10-29 evening; plans/remote-session.md step 1): this computer as a device, pairing (remote.ts) ---------
 export interface HostRoutes {
   "GET /api/remote": { req: void; res: import("./remote.js").RemoteState };
   /** Renames this computer (device.json, shared with the AMO platform). */
   "PUT /api/remote/device": { req: { name: string }; res: import("./remote.js").RemoteState };
-  /** Asks account `account` to pair with this computer; a device of it allows or refuses. */
-  "POST /api/remote/pair": { req: { account: string }; res: import("./remote.js").RemoteState };
+  /** 2026-10-30: turns remote on or off for the account logged in now (on needs the AMO platform's login). */
+  "PUT /api/remote/enabled": { req: { enabled: boolean }; res: import("./remote.js").RemoteState };
+  /**
+   * Asks account `account` to pair with this computer; a device of it allows or refuses. `device` (远程页的配对弹窗,
+   * 2026-10-29): only that device of the account, picked from GET /api/remote/devices/online.
+   */
+  "POST /api/remote/pair": { req: { account: string; device?: string }; res: import("./remote.js").RemoteState };
+  /** The other devices of this computer's account connected to the team server now (the pair dialog lists them). */
+  "GET /api/remote/devices/online": { req: void; res: import("./remote.js").RemoteOnlineDevices };
   /** Allows or refuses a request to pair with this computer. */
   "POST /api/remote/requests/:id/answer": { req: { allow: boolean }; res: import("./remote.js").RemoteState };
   /** Withdraws a request this computer sent, or puts a refusal away. */
@@ -927,8 +1126,6 @@ export interface HostRoutes {
   "POST /api/remote/ping": { req: { account: string; device: string }; res: import("./remote.js").RemotePingResult };
   /** Tries to connect now (after a failure, without waiting for the next attempt). */
   "POST /api/remote/reconnect": { req: void; res: import("./remote.js").RemoteState };
-  "POST /api/remote/disable": { req: void; res: import("./remote.js").RemoteState };
-  "POST /api/remote/enable": { req: void; res: import("./remote.js").RemoteState };
   /** Step 2: grants a task (and every session in it) to a device this computer allowed to pair. */
   "POST /api/remote/grants": { req: { taskId: Id; account: string; device: string }; res: import("./remote.js").RemoteState };
   /** Step 2: takes a grant back (the device keeps what it has, readable, and reaches the task no more). */
@@ -948,4 +1145,31 @@ export interface HostRoutes {
   "POST /api/remote/task-requests/:id/accept": { req: import("./remote.js").RemoteAcceptInput; res: import("./remote.js").RemoteState };
   /** Step 4, on A: refuses a request, saying why (or not). */
   "POST /api/remote/task-requests/:id/refuse": { req: { reason?: string }; res: import("./remote.js").RemoteState };
+  /** 远程创建 (2026-10-29), on A: 远端允许的项目 — where paired devices may create tasks on this computer. */
+  "PUT /api/remote/allowed-projects": { req: import("./remote.js").RemoteAllowedProjects; res: import("./remote.js").RemoteState };
+  /** 安全 (2026-10-29): which paired devices' tasks start without a yes here. */
+  "PUT /api/remote/security": { req: import("./remote.js").RemoteSecurity; res: import("./remote.js").RemoteState };
+  /** 远程创建, on B: what a paired device (one that allowed this computer) lets this computer pick creating a task there. `?account=&device=` */
+  "GET /api/remote/catalog": { req: void; res: import("./remote.js").RemoteCatalog };
+  /** 远程创建, on B (问题 #1): the device's templates for a task created there in that project (rt.createTemplates). `?account=&device=&workspace=` (no workspace: the common folder) */
+  "GET /api/remote/catalog/prompt-templates": { req: void; res: import("./prompt-templates.js").PromptTemplate[] };
+  /** A remote copy's templates as its own computer offers them (rt.templates). */
+  "GET /api/remote/tasks/:id/prompt-templates": { req: void; res: import("./prompt-templates.js").PromptTemplate[] };
+  /**
+   * 远程 Reviewer (2026-11-02): the key a remote copy's pictures are served under (/api/remote/files/<key>/…), for the
+   * Markdown and HTML a 查看包 of it shows rendered.
+   */
+  "GET /api/remote/tasks/:id/files-key": { req: void; res: { key: string } };
+  /** 远程创建, on B: creates a task on that device, granted to this computer and running; answers once the copy is here (or after a while). */
+  "POST /api/remote/create": { req: import("./remote.js").RemoteCreateAsk & { account: string; device: string; /** Pictures uploaded here (POST /api/attachments); files go in the text's 引用文件 block. */ attachments?: Id[] }; res: import("./remote.js").RemoteCreateResult };
+}
+
+// ---- 值守 (2026-10-31, plans/issues.md): items that run at set times — a session, a command, or one of Studio's jobs ---------
+export interface HostRoutes {
+  "GET /api/duty": { req: void; res: import("./duty.js").DutyState };
+  "POST /api/duty/items": { req: import("./duty.js").DutyItemInput; res: import("./duty.js").DutyState };
+  "PATCH /api/duty/items/:id": { req: import("./duty.js").DutyItemInput; res: import("./duty.js").DutyState };
+  "DELETE /api/duty/items/:id": { req: void; res: import("./duty.js").DutyState };
+  /** Runs it now (not when it is running already). */
+  "POST /api/duty/items/:id/run": { req: void; res: import("./duty.js").DutyState };
 }

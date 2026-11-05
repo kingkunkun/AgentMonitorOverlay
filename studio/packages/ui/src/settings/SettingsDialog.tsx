@@ -1,19 +1,20 @@
 import { useEffect, useState } from "react";
-import { projectWorkspaces, type ModelProfile, type StudioSettings, type Task, type Topic, type Workspace } from "@amo-studio/protocol";
+import type { StateSnapshot, StudioSettings } from "@amo-studio/protocol";
 import { call, HostApiError, type HostLink } from "../host/client.js";
-import { onHostEvent } from "../host/events.js";
 import { setThemePref, THEME_LABELS, themePref, type ThemePref } from "../lib/theme.js";
 import { ModelsPage } from "./ModelsPage.js";
 import { SubsessionPage } from "./SubsessionPage.js";
 import { FeaturesSection } from "./FeaturesSection.js";
+import { DevUiSection } from "./DevUi.js";
+import { ExperimentalSection } from "./ExperimentalSection.js";
 import { ScratchpadSettings } from "../scratchpad/ScratchpadSettings.js";
 import { DataPage } from "./DataPage.js";
 import { QuotaPage } from "./QuotaPage.js";
 import { StatsPage } from "./StatsPage.js";
 import { useDialogSize } from "./dialogSize.js";
 import { MaintenancePage } from "./MaintenancePage.js";
-import { RemotePage } from "./RemotePage.js";
-import { remoteWaiting, useRemote } from "./remote.js";
+import { DutyPage } from "./DutyPage.js";
+import { McpPage } from "./McpPage.js";
 import { FolderAccessSection } from "./FolderAccessSection.js";
 import { setScrollOnSend, setTranscriptView, TRANSCRIPT_VIEW_HINTS, TRANSCRIPT_VIEW_LABELS, useScrollOnSend, useTranscriptView, type TranscriptView } from "../chat/prefs.js";
 import { useChatSettings } from "../chat/cli/chatSettings.js";
@@ -21,25 +22,6 @@ import { defaultFolder, setDefaultFolder } from "../lib/profiles.js";
 import { BotArt, MascotArt, ReaderArt } from "../focus/PixelBot.js";
 import { PET_SKINS, usePetSkin, writePetSkin, type PetSkin } from "../focus/petSkin.js";
 import { pickDirectory } from "../folders/FolderPicker.js";
-
-/** Studio-wide settings from the Host, kept live. */
-export function useSettings(link: HostLink): StudioSettings | null {
-  const [settings, setSettings] = useState<StudioSettings | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    call(link, "GET /api/settings")
-      .then((s) => !cancelled && setSettings(s))
-      .catch(() => undefined);
-    const off = onHostEvent((e) => {
-      if (e.type === "settings.updated") setSettings(e.settings);
-    });
-    return () => {
-      cancelled = true;
-      off();
-    };
-  }, [link]);
-  return settings;
-}
 
 /** The pages of 设置, one per area, in the left column. */
 const PAGES = [
@@ -50,9 +32,11 @@ const PAGES = [
   { id: "stats", label: "统计" },
   { id: "common", label: "项目与目录" },
   { id: "features", label: "功能" },
+  { id: "mcp", label: "MCP" },
+  { id: "experimental", label: "测试功能" },
+  { id: "duty", label: "值守" },
   { id: "scratchpad", label: "便签" },
   { id: "data", label: "数据管理" },
-  { id: "remote", label: "远程" },
   { id: "maintenance", label: "维护" },
 ] as const;
 export type SettingsPage = (typeof PAGES)[number]["id"];
@@ -65,9 +49,8 @@ let lastPage: SettingsPage = "ui";
  * new tasks, and the common folder for sessions that belong to no single project: the scheduler's rounds, and the default
  * for cross-workspace sessions), 功能 and 便签.
  */
-export function SettingsDialog({ link, settings, workspaces = [], tasks = [], topics = [], profiles = [], page: startPage, onClose }: { link: HostLink; settings: StudioSettings | null; workspaces?: readonly Workspace[]; /** 远程: the tasks granted to other devices, and the models they may use. */ tasks?: readonly Task[]; /** 远程 step 4: where an allowed request's task may go. */ topics?: readonly Topic[]; profiles?: readonly ModelProfile[]; /** Opens on this page (Focus's 「在设置里看」). */ page?: SettingsPage; onClose(): void }) {
+export function SettingsDialog({ link, state, settings, page: startPage, onClose, onOpenRemote }: { link: HostLink; /** The window's live snapshot (值守's forms offer its tasks, projects and models). */ state: StateSnapshot; settings: StudioSettings | null; /** Opens on this page. */ page?: SettingsPage; onClose(): void; /** 远程 left 设置 for a page of its own (2026-10-29): the line on 界面 opens it. */ onOpenRemote?: () => void }) {
   const [page, setPage] = useState<SettingsPage>(startPage ?? lastPage);
-  const remoteWaits = remoteWaiting(useRemote(link)) > 0;
   const [theme, setTheme] = useState<ThemePref>(themePref);
   const view = useTranscriptView();
   const jumpOnSend = useScrollOnSend();
@@ -140,7 +123,6 @@ export function SettingsDialog({ link, settings, workspaces = [], tasks = [], to
                 }}
               >
                 {p.label}
-                {p.id === "remote" && remoteWaits && <span className="settings-dot" aria-label="有请求或回复" title="有配对请求、任务请求或对方的回复等你看" data-testid="settings-remote-dot" />}
               </button>
             ))}
           </div>
@@ -231,6 +213,16 @@ export function SettingsDialog({ link, settings, workspaces = [], tasks = [], to
                   </div>
                 </div>
                 <span className="settings-hint">Claude 会话每轮回答后，在输入框上方给出建议的下一句，点一下填进输入框。默认关闭：每轮会多一次很小的模型请求。</span>
+                {/* 2026-10-29: 远程 was a page of 设置 until it got its own; this line is for whoever looks for it here. */}
+                <div className="settings-row" data-testid="settings-remote-moved">
+                  <span className="settings-label">远程</span>
+                  <span className="settings-hint">远程功能在顶栏的「远程」里。</span>
+                  {onOpenRemote && (
+                    <button type="button" className="link-btn" onClick={onOpenRemote} data-testid="settings-open-remote">
+                      打开
+                    </button>
+                  )}
+                </div>
                 {message && (
                   <span className={message.error ? "form-error" : "settings-hint"} role={message.error ? "alert" : "status"} data-testid="settings-message">
                     {message.text}
@@ -270,10 +262,17 @@ export function SettingsDialog({ link, settings, workspaces = [], tasks = [], to
               </section>
             )}
             {page === "common" && <FolderAccessSection link={link} />}
-            {page === "features" && <FeaturesSection link={link} disabled={settings?.disabledFeatures ?? []} />}
+            {page === "features" && <FeaturesSection link={link} disabled={settings?.disabledFeatures ?? []} teamAutoSend={settings?.teamAutoSend ?? false} />}
+            {page === "experimental" && (
+              <>
+                <ExperimentalSection link={link} on={settings?.experimentalFeatures ?? []} />
+                <DevUiSection link={link} dir={settings?.devUiDir ?? null} />
+              </>
+            )}
             {page === "scratchpad" && <ScratchpadSettings link={link} settings={settings} />}
             {page === "data" && <DataPage link={link} />}
-            {page === "remote" && <RemotePage link={link} tasks={tasks} profiles={profiles} workspaces={workspaces} topics={topics} />}
+            {page === "duty" && <DutyPage link={link} state={state} />}
+            {page === "mcp" && <McpPage link={link} />}
             {page === "maintenance" && <MaintenancePage link={link} />}
           </div>
         </div>

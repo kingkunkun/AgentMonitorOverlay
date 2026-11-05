@@ -1,14 +1,14 @@
 // What the platform's window shows, as the main process hands it over (platform:view). Types only: the page
 // (packages/ui/src/platform) imports them too, so nothing here may need Node.
-import type { EnvironmentView } from "./environment-view.js";
+import type { EnvironmentView, EnvTaskView, EnvUpdateResult } from "./environment-view.js";
 
 export type Channel = "stable" | "test";
 
 export interface TaskView {
   kind: "install" | "update" | "rollback" | "uninstall";
   version: string | null;
-  /** manifest → linking → downloading → switching. */
-  phase: "manifest" | "linking" | "downloading" | "switching" | "removing";
+  /** manifest → linking → downloading → switching; 用完整包: manifest → package (the zip) → unpacking → linking → … */
+  phase: "manifest" | "linking" | "downloading" | "switching" | "removing" | "package" | "unpacking";
   doneBytes: number;
   totalBytes: number;
   doneFiles: number;
@@ -53,8 +53,8 @@ export interface ToolView {
   /** A short line under the status (e.g. Studio already brings the Reviewer). */
   hint: string | null;
   task: TaskView | null;
-  /** How the last action on it ended, until the next one. */
-  result: { tone: "ok" | "warn" | "error"; text: string } | null;
+  /** How the last action on it ended, until the next one; busy: one under way (正在关闭…). */
+  result: { tone: "ok" | "warn" | "error" | "busy"; text: string } | null;
   /** Studio only: whether its Host runs and how many sessions it has going (read only). */
   studio: StudioHealthView | null;
 }
@@ -128,6 +128,10 @@ export interface PlatformView {
   root: RootView;
   dirs: { root: string; apps: string; studioData: string | null; settings: string };
   openAtLogin: boolean;
+  /** 设置 → 主题 (2026-10-29): the main process makes every window (and the tray menu) follow it. */
+  theme: "light" | "dark" | "system";
+  /** 环境 → 安装 / 更新 Claude Code under way (2026-11-03), or null. */
+  envTask: EnvTaskView | null;
 }
 
 /** What the page can ask the main process to do (platform:call). */
@@ -147,6 +151,8 @@ export interface PlatformCalls {
   rollback(tool: string): Promise<void>;
   uninstall(tool: string): Promise<void>;
   open(tool: string): Promise<OpenResult>;
+  /** 关闭 (2026-10-29): the running tool quits its own way (Studio asks first when sessions are at work, as its 完全退出 does). */
+  close(tool: string): Promise<OpenResult>;
   /**
    * 重启 Studio (2026-10-29): the running Studio and its Host stop (refused by the Host while sessions are at work), then
    * the installed Studio opens. Only when clicked (AGENTS.md, constraint 6).
@@ -156,15 +162,20 @@ export interface PlatformCalls {
   refreshStudio(): Promise<void>;
   setChannel(channel: Channel): Promise<void>;
   setOpenAtLogin(on: boolean): Promise<void>;
+  setTheme(theme: "light" | "dark" | "system"): Promise<void>;
   pickStudioDataDir(): Promise<void>;
   openPath(which: "root" | "apps" | "studioData" | "settings"): Promise<void>;
   dismiss(tool: string): Promise<void>;
   /** 环境 (environment-view.ts): the last check, or a new one. */
   environment(fresh?: boolean): Promise<EnvironmentView>;
+  /** 环境 → 更新 (2026-10-29): Claude Code or Codex to the newest version, the way it was installed; checked again after. */
+  updateEnvironment(id: string, from?: "server" | "official"): Promise<EnvUpdateResult>;
   openDownload(id: string): Promise<void>;
   copyInstallCommand(): Promise<void>;
   /** 更新平台: the channel's platform into <root>\apps\platform, made current; the running one stays until 重启平台. */
   updateSelf(): Promise<void>;
+  /** 用完整包更新 (2026-11-03): the platform from one zip, when 更新平台 does not go through. */
+  updateSelfFull(): Promise<void>;
   /** 重启平台 / 打开那个: <root>\apps\platform\current's platform starts and this one quits. */
   restartSelf(): Promise<void>;
   /** 知道了 on the platform's update result. */

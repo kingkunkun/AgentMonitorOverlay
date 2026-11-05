@@ -1,12 +1,14 @@
 /// <reference lib="dom" />
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { createHash, randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import { removeTempDir, startFakePlatformServer, type FakePlatformServer } from "@amo-studio/testkit";
+import { programLaunch } from "../support/packed.js";
 import { screenshot, studioRoot } from "../support/studio.js";
 
 // AMO 平台 (plans/amo-lan-platform.md, step 2) against testkit's fake team server: log in, install a stand-in tool
@@ -14,13 +16,11 @@ import { screenshot, studioRoot } from "../support/studio.js";
 // Everything under temp folders (AMO_HOME, AMO_LOCAL_HOME; the self-update tests unpack the platform there instead and
 // point %LOCALAPPDATA% there): the real %APPDATA%\AMO and %LOCALAPPDATA%\AMO stay untouched.
 
-const require = createRequire(import.meta.url);
-const electronPath = require("electron") as unknown as string;
 const MAIN = join(studioRoot, "packages", "platform", "dist", "main.js");
 
 /** A pretend tool: its "exe" is a .cmd that leaves a mark (with Studio's data dir, for Studio) and ends. */
 const tool = (id: string, version: string, extra: Record<string, string> = {}) => ({
-  "run.cmd": `@echo off\r\necho ${id} ${version} %AMO_STUDIO_DATA_DIR%>"%AMO_FAKE_TOOL_MARK%.${id}"\r\n`,
+  "run.cmd": `@echo off\r\necho ${id} ${version} %AMO_STUDIO_DATA_DIR% %*>"%AMO_FAKE_TOOL_MARK%.${id}"\r\n`,
   "resources/app.txt": `${id} ${version}`,
   "resources/runtime.bin": "R".repeat(256 * 1024),
   "LICENSE.txt": "MIT",
@@ -45,7 +45,7 @@ test.afterEach(async () => {
 function cleanEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !/^(CLAUDE|ANTHROPIC_|AMO_)/.test(k)) env[k] = v;
-  return { ...env, AMO_PLATFORM_TEST: "1", AMO_HOME: join(root, "roaming"), AMO_LOCAL_HOME: join(root, "local"), AMO_FAKE_TOOL_MARK: join(root, "launched") };
+  return { ...env, AMO_PLATFORM_TEST: "1", AMO_HOME: join(root, "roaming"), AMO_LOCAL_HOME: join(root, "local"), AMO_NOTES_HOME: join(root, "notes"), AMO_FAKE_TOOL_MARK: join(root, "launched"), AMO_PLATFORM_NPM_REGISTRY: "http://127.0.0.1:9", AMO_PLATFORM_CLAUDE_BASE: "http://127.0.0.1:9" };
 }
 
 /**
@@ -54,7 +54,8 @@ function cleanEnv(): Record<string, string> {
  */
 async function launch(args: string[] = [], machine?: (root: string) => Record<string, string>, again = false): Promise<{ app: ElectronApplication; page: Page }> {
   if (!again || !root) root = mkdtempSync(join(tmpdir(), "amo-platform-e2e-"));
-  app = await _electron.launch({ executablePath: electronPath, args: [MAIN, ...args], env: { ...cleanEnv(), ...machine?.(root) } });
+  const launched = programLaunch("platform", MAIN);
+  app = await _electron.launch({ executablePath: launched.executablePath, args: [...launched.args, ...args], env: { ...cleanEnv(), ...machine?.(root) } });
   const page = await app.firstWindow();
   await page.waitForLoadState("domcontentloaded");
   return { app, page };
@@ -74,7 +75,7 @@ test("log in → install → a new version → update → 回滚 → 卸载; Stu
   const realLocal = join(process.env.LOCALAPPDATA ?? "", "AMO");
   const before = [realHome, realLocal].map((p) => (existsSync(p) ? statSync(p).mtimeMs : null));
   server.publish("reviewer", "1.0.0", tool("reviewer", "1.0.0"), { name: "AMO Reviewer", exe: "run.cmd", notes: "- 第一版：Git Review 和查看器", channel: "test" });
-  server.publish("studio", "0.9.0", tool("studio", "0.9.0"), { name: "WorkStudio", exe: "run.cmd", notes: "- 看板、任务、会话", channel: "test" });
+  server.publish("studio", "0.9.0", tool("studio", "0.9.0"), { name: "AMO Studio", exe: "run.cmd", notes: "- 看板、任务、会话", channel: "test" });
   server.publish("platform", "0.9.0", { "AMO Platform.exe": "p" }, { exe: "AMO Platform.exe", channel: "test" });
 
   const { app, page } = await launch(["--channel", "test"]);
@@ -134,6 +135,8 @@ test("log in → install → a new version → update → 回滚 → 卸载; Stu
   server.delayObjects(1500);
   await row(page, "reviewer").getByRole("button", { name: "更新到 1.1.0" }).click();
   await expect(row(page, "reviewer").getByRole("status", { name: "AMO Reviewer 进度" })).toContainText("正在下载");
+  // The bar only moves forward (2026-10-29): a width from the start, never the sliding block around the download.
+  await expect(row(page, "reviewer").locator(".pf-bar-fill")).not.toHaveClass(/busy/);
   await screenshot(app, "platform", "P6-updating", page);
   await expect(status(page, "reviewer")).toHaveText("✓ 1.1.0 · 已是最新", { timeout: 20_000 });
   server.delayObjects(0);
@@ -190,7 +193,7 @@ test("log in → install → a new version → update → 回滚 → 卸载; Stu
   await screenshot(app, "platform", "P11-dirs", page);
   await page.getByRole("navigation", { name: "页面" }).getByRole("button", { name: "工具" }).click();
   await row(page, "studio").getByRole("button", { name: "打开" }).click();
-  await expect.poll(() => (existsSync(join(root, "launched.studio")) ? readFileSync(join(root, "launched.studio"), "utf8").trim() : "")).toBe(`studio 0.9.0 ${dataDir}`);
+  await expect.poll(() => (existsSync(join(root, "launched.studio")) ? readFileSync(join(root, "launched.studio"), "utf8").trim() : "")).toBe(`studio 0.9.0 ${dataDir} --amo-tray=platform`);
 
   // ---- 设置: the channel from --channel, starting with Windows recorded (not registered) in tests
   await page.getByRole("navigation", { name: "页面" }).getByRole("button", { name: "设置" }).click();
@@ -204,9 +207,34 @@ test("log in → install → a new version → update → 回滚 → 卸载; Stu
   await expect(page.getByTestId("pf-self-hint")).toHaveCount(0);
   await screenshot(app, "platform", "P12-settings", page);
   expect(JSON.parse(readFileSync(join(root, "roaming", "platform.json"), "utf8"))).toMatchObject({ server: server.url, recentServers: [server.url], studioDataDir: dataDir, openAtLogin: true });
+  // 主题 (2026-10-29): 浅色 unless chosen; 深色 turns the system colours of its windows (and the tray menu) dark.
+  const pageBg = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+  // Playwright pretends a light system unless told not to: the page is to see the one the platform sets.
+  await page.emulateMedia({ colorScheme: null });
+  await expect(page.getByRole("radiogroup", { name: "主题" }).getByRole("radio", { name: "浅色" })).toHaveAttribute("aria-checked", "true");
+  const lightBg = await pageBg();
+  await page.getByRole("radiogroup", { name: "主题" }).getByRole("radio", { name: "深色" }).click();
+  await expect.poll(() => app.evaluate(({ nativeTheme }) => nativeTheme.themeSource)).toBe("dark");
+  await expect.poll(pageBg).not.toBe(lightBg);
+  expect(JSON.parse(readFileSync(join(root, "roaming", "platform.json"), "utf8"))).toMatchObject({ theme: "dark" });
+  await screenshot(app, "platform", "P12-settings-dark", page);
+  await page.getByRole("radiogroup", { name: "主题" }).getByRole("radio", { name: "浅色" }).click();
+  await expect.poll(pageBg).toBe(lightBg);
 
-  // ---- the tray: 打开 for what is installed; closing the window leaves the program running
-  expect(await app.evaluate(() => (globalThis as { __platformTray?: () => string[] }).__platformTray!())).toEqual(["打开 AMO 平台", "—", "打开 WorkStudio", "—", "退出"]);
+  // ---- the tray (2026-10-29): one part per installed tool, not folded (便签 through Studio, which carries it); a click
+  // opens 便签 or Studio as chosen; closing the window leaves the program running
+  const trayNow = () => app.evaluate(() => (globalThis as { __platformTray?: () => string[] }).__platformTray!());
+  expect(await trayNow()).toEqual(["# AMO Studio", "打开 Studio", "完全退出 Studio", "—", "# AMO 便签", "显示 / 隐藏便签", "显示待办", "便签设置…", "退出便签", "—", "# AMO 平台", "打开 AMO 平台", "● 单击图标：打开便签", "○ 单击图标：打开 Studio", "退出平台"]);
+  const studioMark = () => (existsSync(join(root, "launched.studio")) ? readFileSync(join(root, "launched.studio"), "utf8").trim() : "");
+  await app.evaluate(() => (globalThis as { __platformTrayIconClick?: () => void }).__platformTrayIconClick!());
+  await expect.poll(studioMark).toBe(`studio 0.9.0 ${dataDir} --amo-tray=platform --amo-app=notes --amo-toggle`);
+  await app.evaluate(() => (globalThis as { __platformTrayClick?: (l: string) => void }).__platformTrayClick!("单击图标：打开 Studio"));
+  await expect.poll(trayNow).toContain("● 单击图标：打开 Studio");
+  expect(JSON.parse(readFileSync(join(root, "roaming", "platform.json"), "utf8"))).toMatchObject({ trayClick: "studio" });
+  await app.evaluate(() => (globalThis as { __platformTrayIconClick?: () => void }).__platformTrayIconClick!());
+  await expect.poll(studioMark).toBe(`studio 0.9.0 ${dataDir} --amo-tray=platform`);
+  await app.evaluate(() => (globalThis as { __platformTrayClick?: (l: string) => void }).__platformTrayClick!("完全退出 Studio"));
+  await expect.poll(studioMark).toBe(`studio 0.9.0 ${dataDir} --amo-tray=platform --amo-quit`);
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.close());
   await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(0);
   const reopened = app.waitForEvent("window");
@@ -491,6 +519,37 @@ test("平台更新: tools go into the unpacked folder's apps → 更新平台 �
   expect([realHome, realLocal].map((p) => (existsSync(p) ? statSync(p).mtimeMs : null))).toEqual(before);
 });
 
+test("用完整包更新 (2026-11-03): the way out when 更新平台 gets stuck — the whole zip on Electron's network stack, going on where it broke off, unpacked, 重启平台", async () => {
+  const own = await startFakePlatformServer({ users: { 小王: "secret" } });
+  try {
+    own.publish("platform", "0.9.2", { "AMO Platform.exe": "a stand-in platform", "resources/app/package.json": '{"version":"0.9.2"}', "resources/app/main.js": "platform 0.9.2", "使用说明.txt": "0.9.2" }, { name: "AMO Platform", exe: "AMO Platform.exe", notes: "- 平台更新卡住时可以用完整包更新" });
+    const v092 = () => join(root, "TOOLS", "AMO Platform", "apps", "platform", "0.9.2");
+    const { page } = await launch([], (r) => asPlatform(r, join(unpackedPlatform(r, "TOOLS"), "AMO Platform.exe"), "0.9.1"));
+    const form = page.getByRole("form", { name: "登录" });
+    await form.getByLabel("服务器地址").fill(own.url.replace("http://", ""));
+    await form.getByLabel("名字").fill("小王");
+    await form.getByLabel("密码").fill("secret");
+    await form.getByRole("button", { name: "登录" }).click();
+    await page.getByTestId("pf-self-hint").click();
+    const section = page.getByRole("region", { name: "平台更新" });
+    await expect(section.getByTestId("pf-self-full")).toContainText("「更新平台」卡住时可以用完整包更新");
+    await screenshot(app!, "platform", "P44-self-full-offered", page);
+    // Breaks off once on the way: the second request goes on from there (Range), all on Electron's session.fetch.
+    own.breakZip(1);
+    await section.getByTestId("pf-self-full-button").click();
+    await expect(section.getByTestId("pf-self-status")).toHaveText("✓ 0.9.2 已装好，点「重启平台」换成新版", { timeout: 20_000 });
+    await expect(section.getByTestId("pf-self-result")).toHaveText(/已用完整包装好 0\.9\.2/);
+    const zips = own.requests.filter((r) => r.startsWith("GET /platform/zip/"));
+    expect(zips).toHaveLength(2);
+    expect(readFileSync(join(v092(), "resources", "app", "main.js"), "utf8")).toBe("platform 0.9.2");
+    expect(readFileSync(join(v092(), "使用说明.txt"), "utf8")).toBe("0.9.2");
+    await expect(section.getByTestId("pf-self-full")).toHaveCount(0);
+    await screenshot(app!, "platform", "P45-self-full-done", page);
+  } finally {
+    await own.close();
+  }
+});
+
 test("a platform folder it cannot write to (no administrator rights): 工具 says to move it; 安装 and 更新平台 are greyed out", async () => {
   const own = await startFakePlatformServer({ users: { 小王: "secret" } });
   const who = `${process.env.USERDOMAIN ?? "."}\\${process.env.USERNAME ?? ""}`;
@@ -603,12 +662,25 @@ test("环境: what the tools run on, found where Studio looks; 去下载 opens t
   // and git here are not what is found. Claude Code: a file named claude.exe that is no program (found, does not answer);
   // no DSH app, no Codex, no git (Codex turns up later: a .cmd that says its version).
   const bin = () => join(root, "bin");
+  // npm's registry, standing in: Codex's newest is 0.200.0 (2026-10-29: 已安装 / 最新 and 更新), with its platform
+  // package's sha512 and .tgz (2026-11-03: the platform downloads that itself, then hands it to npm).
+  const codexTgz = randomBytes(60_000);
+  const integrity = `sha512-${createHash("sha512").update(codexTgz).digest("base64")}`;
+  const registry = createServer((req, res) => {
+    const path = req.url ?? "";
+    if (path.endsWith("/codex-0.200.0-win32-x64.tgz")) return void res.writeHead(200, { "content-length": String(codexTgz.length) }).end(codexTgz);
+    if (/0\.200\.0-win32-x64$/.test(path)) return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ version: "0.200.0-win32-x64", dist: { integrity } }));
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ version: "0.200.0" }));
+  });
+  await new Promise<void>((ok) => registry.listen(0, "127.0.0.1", ok));
+  const registryUrl = `http://127.0.0.1:${(registry.address() as AddressInfo).port}`;
   const { app, page } = await launch([], (r) => {
     const dirs = { bin: join(r, "bin"), home: join(r, "home"), appdata: join(r, "appdata"), local: join(r, "localappdata") };
     for (const d of Object.values(dirs)) mkdirSync(d, { recursive: true });
     mkdirSync(join(dirs.home, ".local", "bin"), { recursive: true });
     writeFileSync(join(dirs.home, ".local", "bin", "claude.exe"), "not a program");
-    return { PATH: [dirs.bin, join(process.env.SystemRoot ?? "C:\\Windows", "System32")].join(";"), USERPROFILE: dirs.home, APPDATA: dirs.appdata, LOCALAPPDATA: dirs.local };
+    mkdirSync(join(dirs.appdata, "npm"), { recursive: true });
+    return { PATH: [join(dirs.appdata, "npm"), dirs.bin, join(process.env.SystemRoot ?? "C:\\Windows", "System32")].join(";"), USERPROFILE: dirs.home, APPDATA: dirs.appdata, LOCALAPPDATA: dirs.local, AMO_PLATFORM_NPM_REGISTRY: registryUrl, AMO_STUDIO_DSH_REGISTRY: "0" };
   });
   const form = page.getByRole("form", { name: "登录" });
   await form.getByLabel("服务器地址").fill(server.url.replace("http://", ""));
@@ -644,17 +716,157 @@ test("环境: what the tools run on, found where Studio looks; 去下载 opens t
   await expect(item("claude").getByRole("button", { name: "已复制" })).toBeVisible();
   expect(await app.evaluate(() => (globalThis as { __platformCopied?: string }).__platformCopied)).toBe("irm https://claude.ai/install.ps1 | iex");
 
-  // Codex installed since: 重新检测 finds it (the page keeps the last check until then).
-  writeFileSync(join(bin(), "codex.cmd"), "@echo off\r\necho codex-cli 0.161.0\r\n");
+  // Codex installed since, with npm: 重新检测 finds it (the page keeps the last check until then).
+  const codexCmd = join(root, "appdata", "npm", "codex.cmd");
+  writeFileSync(codexCmd, "@echo off\r\necho codex-cli 0.161.0\r\n");
+  // npm, standing in: `cache add` and `install -g` both rewrite codex.cmd to say the newer version, a few seconds later
+  // (to see the progress, 问题 #9); what it was given is kept in npm-args.txt.
+  writeFileSync(join(bin(), "npm.cmd"), `@echo off\r\necho %*>>"${join(root, "npm-args.txt")}"\r\nping -n 3 127.0.0.1 >nul\r\necho added 1 package\r\necho @echo off>"${codexCmd}"\r\necho echo codex-cli 0.200.0>>"${codexCmd}"\r\n`);
   await page.getByRole("navigation", { name: "页面" }).getByRole("button", { name: "工具" }).click();
   await page.getByRole("navigation", { name: "页面" }).getByRole("button", { name: "环境" }).click();
   await expect(envStatus("codex")).toHaveText("○ 没装");
   await page.getByRole("button", { name: "重新检测" }).click();
-  await expect(envStatus("codex")).toHaveText("✓ 已安装 · 0.161.0", { timeout: 30_000 });
-  await expect(item("codex")).toContainText(join(root, "bin", "codex.cmd"));
+  await expect(envStatus("codex")).toHaveText("✓ 已安装 · 0.161.0 · 最新 0.200.0", { timeout: 30_000 });
+  await expect(item("codex")).toContainText(codexCmd);
   await expect(item("codex").getByRole("button", { name: "去下载" })).toHaveCount(0);
+  // The team server has no Codex here: only the official place (2026-11-03).
+  await expect(page.getByTestId("env-codex-from-server")).toHaveCount(0);
+  await expect(page.getByTestId("env-codex-install-official")).toHaveText("更新到 0.200.0");
+  await expect(page.getByTestId("env-codex-install-official")).toHaveAttribute("title", "下载后放进 npm 的缓存，再运行 npm install -g @openai/codex");
   await item("git").scrollIntoViewIfNeeded();
   await screenshot(app, "platform", "P18-environment-rechecked", page);
+  // 更新: the .tgz from npm, checked, then npm (cache add, install -g); the page checks again.
+  await page.getByTestId("env-codex-install-official").click();
+  // While npm runs: a moving bar and what it does.
+  await expect(page.getByTestId("env-codex-progress")).toContainText("正在运行 npm install -g @openai/codex@0.200.0（用刚下好的文件", { timeout: 15_000 });
+  await expect(page.getByTestId("env-codex-install-official")).toBeDisabled();
+  await screenshot(app, "platform", "P37-environment-updating", page);
+  await expect(page.getByTestId("env-codex-result")).toHaveText("✓ 已更新，现在是 0.200.0（从官方下载）", { timeout: 60_000 });
+  await expect(envStatus("codex")).toHaveText("✓ 已安装 · 0.200.0 · 已是最新");
+  await expect(page.getByTestId("env-codex-from-official")).toContainText("✓ 装的就是这版");
+  await expect(page.getByTestId("env-codex-progress")).toHaveCount(0);
+  await screenshot(app, "platform", "P36-environment-updated", page);
+  const tgzFile = join(root, "local", "downloads", "codex", "codex-0.200.0-win32-x64.tgz");
+  expect(readFileSync(join(root, "npm-args.txt"), "utf8").trim().split(/\r?\n/).map((l) => l.trim())).toEqual([`"cache" "add" "${tgzFile}"`, `"install" "-g" "@openai/codex@0.200.0" "--no-fund" "--no-audit"`]);
+  expect(existsSync(tgzFile)).toBe(false);
+  registry.close();
+});
+
+test("环境: 安装 Claude Code from the team server's mirror (2026-11-03) — the version and where from, the real progress, checked against Anthropic's manifest, put in versions", async () => {
+  // The server has "2.1.316" ready; its .zst comes slowly (20 parts) so the bar is seen. /claude-official/ stands in for
+  // Anthropic (its manifest checks the file). The "Claude Code" is Windows' own curl.exe: a real program that answers
+  // --version, so after the install (recorded; its launcher copy done as Claude Code does it, main.ts) checking again
+  // runs what was downloaded — and finds curl's version, not 2.1.316.
+  const own = await startFakePlatformServer({ users: { 小王: "secret" } });
+  const curl = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "curl.exe");
+  const exe = readFileSync(curl);
+  const curlVersion = /\d+\.\d+\.\d+/.exec(execFileSync(curl, ["--version"], { encoding: "utf8" }))![0];
+  own.mirrorClaude("2.1.316", exe, { slowMs: 150 });
+  try {
+    const { app, page } = await launch([], (r) => {
+      const dirs = { bin: join(r, "bin"), home: join(r, "home"), appdata: join(r, "appdata"), local: join(r, "localappdata") };
+      for (const d of Object.values(dirs)) mkdirSync(d, { recursive: true });
+      return { PATH: [dirs.bin, join(process.env.SystemRoot ?? "C:\\Windows", "System32")].join(";"), USERPROFILE: dirs.home, APPDATA: dirs.appdata, LOCALAPPDATA: dirs.local, AMO_STUDIO_DSH_REGISTRY: "0", AMO_PLATFORM_CLAUDE_BASE: `${own.url}/claude-official`, AMO_PLATFORM_TEST_CLAUDE_INSTALL: "1" };
+    });
+    const form = page.getByRole("form", { name: "登录" });
+    await form.getByLabel("服务器地址").fill(own.url.replace("http://", ""));
+    await form.getByLabel("名字").fill("小王");
+    await form.getByLabel("密码").fill("secret");
+    await form.getByRole("button", { name: "登录" }).click();
+    await expect(page.getByTestId("pf-connection")).toContainText("服务器在线", { timeout: 20_000 });
+    await page.getByRole("navigation", { name: "页面" }).getByRole("button", { name: "环境" }).click();
+    const envStatus = page.getByTestId("env-claude-status");
+    await expect(envStatus).toHaveText("○ 没装", { timeout: 30_000 });
+    // Both places, the person picks (the user, 2026-11-03).
+    await expect(page.getByTestId("env-claude-from-server")).toContainText("团队服务器2.1.316局域网 · ");
+    await expect(page.getByTestId("env-claude-from-official")).toContainText("官方2.1.316从 Anthropic 下载");
+    await expect(page.getByTestId("env-claude-install-server")).toHaveText("安装 2.1.316");
+    await expect(page.getByTestId("env-claude-install-official")).toHaveText("安装 2.1.316");
+    await screenshot(app, "platform", "P38-claude-install-offered", page);
+
+    await page.getByTestId("env-claude-install-server").click();
+    await expect(page.getByTestId("env-claude-install-official")).toBeDisabled();
+    await expect(page.getByTestId("env-claude-progress")).toContainText(/正在从团队服务器下载 2\.1\.316：.+ \/ .+（[1-9]\d*%）/, { timeout: 15_000 });
+    await screenshot(app, "platform", "P39-claude-installing", page);
+    await expect(page.getByTestId("env-claude-result")).toHaveText(`✓ 已安装，现在是 ${curlVersion}（从团队服务器下载）`, { timeout: 60_000 });
+    await expect(envStatus).toHaveText(`✓ 已安装 · ${curlVersion} · 已是最新`);
+    await expect(page.getByTestId("env-claude")).toContainText(join(root, "home", ".local", "bin", "claude.exe"));
+    await expect(page.getByTestId("env-claude-progress")).toHaveCount(0);
+    await screenshot(app, "platform", "P40-claude-installed", page);
+
+    // The unpacked exe where Claude Code keeps its versions, installed from there; the .zst asked of the server only,
+    // the manifest of Anthropic; nothing left in downloads.
+    const versionFile = join(root, "home", ".local", "share", "claude", "versions", "2.1.316");
+    expect(readFileSync(versionFile).equals(exe)).toBe(true);
+    expect(await app.evaluate(() => (globalThis as { __platformClaudeInstall?: unknown }).__platformClaudeInstall)).toEqual([{ exe: versionFile, args: ["install", "2.1.316"] }]);
+    expect(own.requests.filter((r) => r.includes("claude"))).toEqual(expect.arrayContaining(["GET /api/platform/mirror/claude-code", "GET /claude-official/2.1.316/manifest.json", "GET /platform/mirror/claude-code/2.1.316/win32-x64/claude.exe.zst"]));
+    expect(own.requests).not.toContain("GET /claude-official/2.1.316/win32-x64/claude.exe.zst");
+    expect(readdirSync(join(root, "local", "downloads", "claude-code"))).toEqual([]);
+  } finally {
+    await own.close();
+  }
+});
+
+test("环境: 安装 Codex (2026-11-03) — npm needed first; then the team server's or npm's version, the .tgz checked against npm's sha512, npm cache add + npm install -g", async () => {
+  // The server has 0.166.0 ready, npm's latest is 0.167.0 (/npm/ stands in for the registry). The "Codex" is curl.exe
+  // again: npm is recorded instead of run, its install putting the cached file where npm keeps global commands (main.ts).
+  const own = await startFakePlatformServer({ users: { 小王: "secret" } });
+  const curl = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "curl.exe");
+  const tgz = readFileSync(curl);
+  const curlVersion = /\d+\.\d+\.\d+/.exec(execFileSync(curl, ["--version"], { encoding: "utf8" }))![0];
+  own.mirrorCodex("0.166.0", tgz, { slowMs: 150, npmLatest: "0.167.0" });
+  try {
+    const { app, page } = await launch([], (r) => {
+      const dirs = { bin: join(r, "bin"), home: join(r, "home"), appdata: join(r, "appdata"), local: join(r, "localappdata") };
+      for (const d of Object.values(dirs)) mkdirSync(d, { recursive: true });
+      return { PATH: [join(dirs.appdata, "npm"), dirs.bin, join(process.env.SystemRoot ?? "C:\\Windows", "System32")].join(";"), USERPROFILE: dirs.home, APPDATA: dirs.appdata, LOCALAPPDATA: dirs.local, AMO_STUDIO_DSH_REGISTRY: "0", AMO_PLATFORM_NPM_REGISTRY: `${own.url}/npm`, AMO_PLATFORM_TEST_NPM_INSTALL: "1" };
+    });
+    const form = page.getByRole("form", { name: "登录" });
+    await form.getByLabel("服务器地址").fill(own.url.replace("http://", ""));
+    await form.getByLabel("名字").fill("小王");
+    await form.getByLabel("密码").fill("secret");
+    await form.getByRole("button", { name: "登录" }).click();
+    await expect(page.getByTestId("pf-connection")).toContainText("服务器在线", { timeout: 20_000 });
+    await page.getByRole("navigation", { name: "页面" }).getByRole("button", { name: "环境" }).click();
+    const envStatus = page.getByTestId("env-codex-status");
+    await expect(envStatus).toHaveText("○ 没装", { timeout: 30_000 });
+    // No npm here yet: the versions are shown, the buttons wait for Node.js (the user, 2026-11-03).
+    await expect(page.getByTestId("env-codex-from-server")).toContainText("0.166.0");
+    await expect(page.getByTestId("env-codex-from-official")).toContainText("官方0.167.0从 npm 下载");
+    await expect(page.getByTestId("env-codex-install-server")).toBeDisabled();
+    await expect(page.getByTestId("env-codex-blocked")).toContainText("这台电脑上没找到 npm：先装 Node.js");
+    await expect(page.getByTestId("env-codex-blocked").getByRole("button")).toHaveText("打开 Node.js 下载页");
+    await page.getByTestId("env-codex").scrollIntoViewIfNeeded();
+    await screenshot(app, "platform", "P41-codex-needs-npm", page);
+
+    // npm there (as if Node.js was installed): checking again lets it install.
+    writeFileSync(join(root, "bin", "npm.cmd"), "@echo off\r\n");
+    await page.getByRole("button", { name: "重新检测" }).click();
+    await expect(page.getByTestId("env-codex-blocked")).toHaveCount(0, { timeout: 30_000 });
+    await expect(page.getByTestId("env-codex-install-server")).toHaveText("安装 0.166.0");
+    await expect(page.getByTestId("env-codex-install-official")).toHaveText("安装 0.167.0");
+    await page.getByTestId("env-codex-install-server").click();
+    await expect(page.getByTestId("env-codex-progress")).toContainText(/正在从团队服务器下载 0\.166\.0：.+ \/ .+（[1-9]\d*%）/, { timeout: 15_000 });
+    await page.getByTestId("env-codex").scrollIntoViewIfNeeded();
+    await screenshot(app, "platform", "P42-codex-installing", page);
+    await expect(page.getByTestId("env-codex-result")).toHaveText(`✓ 已安装，现在是 ${curlVersion}（从团队服务器下载）`, { timeout: 60_000 });
+    await expect(envStatus).toHaveText(`✓ 已安装 · ${curlVersion} · 已是最新`);
+    await expect(page.getByTestId("env-codex")).toContainText(join(root, "appdata", "npm", "codex.exe"));
+    await page.getByTestId("env-codex").scrollIntoViewIfNeeded();
+    await screenshot(app, "platform", "P43-codex-installed", page);
+
+    // npm's sha512 asked, the .tgz from the server; npm given the checked file, then the version; nothing left.
+    const dl = join(root, "local", "downloads", "codex");
+    expect(await app.evaluate(() => (globalThis as { __platformNpm?: unknown }).__platformNpm)).toEqual([
+      { exe: join(root, "bin", "npm.cmd"), args: ["cache", "add", join(dl, "codex-0.166.0-win32-x64.tgz")] },
+      { exe: join(root, "bin", "npm.cmd"), args: ["install", "-g", "@openai/codex@0.166.0", "--no-fund", "--no-audit"] },
+    ]);
+    expect(own.requests).toEqual(expect.arrayContaining(["GET /api/platform/mirror/codex", "GET /npm/@openai%2fcodex/0.166.0-win32-x64", "GET /platform/mirror/codex/0.166.0/win32-x64/codex-0.166.0-win32-x64.tgz"]));
+    expect(own.requests).not.toContain("GET /npm/@openai/codex/-/codex-0.166.0-win32-x64.tgz");
+    expect(readdirSync(dl)).toEqual([]);
+  } finally {
+    await own.close();
+  }
 });
 
 test("AMO 中转 from the platform (2026-10-28): listed after Studio as 「AMO 中转」, installed, opened with the team server's address, updated", async () => {
@@ -662,10 +874,10 @@ test("AMO 中转 from the platform (2026-10-28): listed after Studio as 「AMO �
   try {
     // A stand-in relay client: records what it was started with (the server the platform hands it).
     const relayTool = (version: string) => ({ ...tool("relay", version), "run.cmd": `@echo off\r\necho relay ${version} %*>"%AMO_FAKE_TOOL_MARK%.relay"\r\n` });
-    own.publish("studio", "0.9.0", tool("studio", "0.9.0"), { name: "WorkStudio", exe: "run.cmd", notes: "- 看板、任务、会话" });
+    own.publish("studio", "0.9.0", tool("studio", "0.9.0"), { name: "AMO Studio", exe: "run.cmd", notes: "- 看板、任务、会话" });
     own.publish("notes", "1.0.0", tool("notes", "1.0.0"), { name: "AMO Notes", exe: "run.cmd" });
     own.publish("relay", "0.9.0", relayTool("0.9.0"), { name: "AMO Relay", exe: "run.cmd", notes: "- 第一个从 AMO 平台发布的版本" });
-    const { app, page } = await launch();
+    const { app, page } = await launch([], (r) => ({ AMO_RELAY_HOME: join(r, "relay-home") }));
     const form = page.getByRole("form", { name: "登录" });
     await form.getByLabel("服务器地址").fill(own.url.replace("http://", ""));
     await form.getByLabel("名字").fill("小王");
@@ -683,7 +895,34 @@ test("AMO 中转 from the platform (2026-10-28): listed after Studio as 「AMO �
     expect(programs().tools.relay).toEqual({ version: "0.9.0", dir: join(root, "local", "apps", "relay", "current"), exe: "run.cmd" });
     await screenshot(app, "platform", "P24-relay-installed", page);
     await row(page, "relay").getByRole("button", { name: "打开" }).click();
-    await expect.poll(() => (existsSync(join(root, "launched.relay")) ? readFileSync(join(root, "launched.relay"), "utf8").trim() : "")).toBe(`relay 0.9.0 --server ${own.url}`);
+    const relayMark = () => (existsSync(join(root, "launched.relay")) ? readFileSync(join(root, "launched.relay"), "utf8").trim() : "");
+    await expect.poll(relayMark).toBe(`relay 0.9.0 --server ${own.url} --amo-tray=platform`);
+
+    // Something waits in 中转 (2026-10-29): it has no tray of its own here, so the platform's icon turns into 中转's
+    // with the count, blinking while 中转's window is not looked at (from <AMO_RELAY_HOME>\attention.json, which 中转
+    // writes; this test's process stands in for the running 中转); a click opens 中转; nothing waiting, its own again.
+    type Look = { icon: string; count: number; blink: boolean; blinking: boolean; tooltip: string };
+    const look = () => app.evaluate(() => (globalThis as unknown as { __platformTrayLook: () => Look }).__platformTrayLook());
+    const trayNow = () => app.evaluate(() => (globalThis as { __platformTray?: () => string[] }).__platformTray!());
+    const relayHome = join(root, "relay-home");
+    mkdirSync(relayHome, { recursive: true });
+    const waiting = (count: number, blink: boolean, pid = process.pid) => writeFileSync(join(relayHome, "attention.json"), JSON.stringify({ count, blink, pid, at: new Date().toISOString() }));
+    expect(await look()).toEqual({ icon: "platform", count: 0, blink: false, blinking: false, tooltip: "AMO 平台" });
+    waiting(3, true);
+    await expect.poll(look).toEqual({ icon: "relay", count: 3, blink: true, blinking: true, tooltip: "AMO 平台 · 中转有 3 条待处理 / 未读" });
+    expect(await trayNow()).toContain("打开中转（3 条待处理 / 未读）");
+    rmSync(join(root, "launched.relay"));
+    await app.evaluate(() => (globalThis as { __platformTrayIconClick?: () => void }).__platformTrayIconClick!());
+    await expect.poll(relayMark).toBe(`relay 0.9.0 --server ${own.url} --amo-tray=platform`);
+    waiting(3, false);
+    await expect.poll(look).toMatchObject({ icon: "relay", count: 3, blinking: false });
+    waiting(0, false);
+    await expect.poll(look).toMatchObject({ icon: "platform", count: 0, blinking: false });
+    expect(await trayNow()).toContain("打开中转");
+    // Left by a 中转 that is gone: not shown.
+    waiting(5, true, 0x7ffffff0);
+    await new Promise((r) => setTimeout(r, 1500));
+    expect(await look()).toMatchObject({ icon: "platform" });
 
     // A new shell published: updated here like the others (a relay from the platform never replaces its own files).
     own.publish("relay", "0.9.1", relayTool("0.9.1"), { name: "AMO Relay", exe: "run.cmd", notes: "- 外壳的一处修正" });
@@ -739,7 +978,7 @@ test("Studio's card (2026-10-29): the Host's state and version; 重启 Studio wh
   const own = await startFakePlatformServer({ users: { 小王: "secret" } });
   let fake: ChildProcess | null = null;
   try {
-    own.publish("studio", "0.9.1", tool("studio", "0.9.1"), { name: "WorkStudio", exe: "run.cmd", notes: "- 托盘" });
+    own.publish("studio", "0.9.1", tool("studio", "0.9.1"), { name: "AMO Studio", exe: "run.cmd", notes: "- 托盘" });
     const { app, page } = await launch();
     const form = page.getByRole("form", { name: "登录" });
     await form.getByLabel("服务器地址").fill(own.url.replace("http://", ""));
@@ -789,7 +1028,7 @@ test("Studio's card (2026-10-29): the Host's state and version; 重启 Studio wh
     await button("重启 Studio").click();
     await expect(result(page, "studio")).toContainText("✓ 已重启 Studio，现在是 0.9.1", { timeout: 30_000 });
     expect(readFileSync(join(dataDir, "shutdown-requests.log"), "utf8").trim()).toBe("Bearer tok {}");
-    await expect.poll(() => (existsSync(join(root, "launched.studio")) ? readFileSync(join(root, "launched.studio"), "utf8").trim() : "")).toBe(`studio 0.9.1 ${dataDir}`);
+    await expect.poll(() => (existsSync(join(root, "launched.studio")) ? readFileSync(join(root, "launched.studio"), "utf8").trim() : "")).toBe(`studio 0.9.1 ${dataDir} --amo-tray=platform`);
     expect(fake.exitCode ?? (await new Promise((r) => fake!.once("exit", r)))).toBe(0);
     let shellAlive = true;
     try {

@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { gzipSync } from "node:zlib";
+import { crc32, gzipSync, zstdCompressSync } from "node:zlib";
 import { listenInStudioRange } from "./ports.js";
 
 // A stand-in for the team server's side of AMO 平台 (plans/amo-lan-platform.md, 「第一版的接口约定」), for the platform's
@@ -32,10 +32,14 @@ export interface FakePlatformServer {
   setChannel(channel: "stable" | "test", tool: string, version: string | null): void;
   /** The next downloads of this object send other bytes (a wrong sha256). */
   corruptObject(sha256: string): void;
-  /** The next downloads of this object send half the bytes and then drop the connection. */
-  breakObject(sha256: string): void;
+  /** The next download (or `times` downloads) of this object send half the bytes and then drop the connection. */
+  breakObject(sha256: string, times?: number): void;
+  /** The next download (or `times` downloads) of a whole zip (/platform/zip/…) send part of it and drop the connection. */
+  breakZip(times?: number): void;
   /** Holds every object download this long before sending it (to see the progress on screen). */
   delayObjects(ms: number): void;
+  /** Holds every channels request this long before answering (to see the platform while it is connecting). */
+  delayChannels(ms: number): void;
   /** Makes every later request with this key fail as logged out. */
   revokeKeys(): void;
   /** Every request, as "METHOD /path". */
@@ -46,6 +50,18 @@ export interface FakePlatformServer {
   profile(name: string): { role: string; nick: string; avatar: string | null } | null;
   /** Object downloads so far: the bytes sent on the wire (gzipped or not), the original bytes they carry, how many gzipped. */
   objectTraffic: { sent: number; original: number; gzipped: number };
+  /**
+   * Claude Code 镜像 (relay mirror.ts, 2026-11-03): a version ready on the server for win32-x64 (`exe` the unpacked file,
+   * sent as .zst with Range), and the same at `/claude-official/` standing in for Anthropic (latest, manifest, .zst; no
+   * login). `slowMs`: the .zst comes in 20 parts this far apart (to see the progress on screen).
+   */
+  mirrorClaude(version: string, exe: Buffer, options?: { slowMs?: number }): void;
+  /**
+   * Codex 镜像 (2026-11-03): `tgz` (the platform package's bytes) ready on the server for win32-x64 as
+   * codex-<version>-win32-x64.tgz with Range, and `/npm/` standing in for npm's registry (@openai/codex's latest —
+   * `npmLatest`, default `version` — the platform package's dist.integrity, the .tgz; no login). `slowMs` as for Claude Code.
+   */
+  mirrorCodex(version: string, tgz: Buffer, options?: { slowMs?: number; npmLatest?: string }): void;
   close(): Promise<void>;
 }
 
@@ -71,9 +87,51 @@ export async function startFakePlatformServer(options: { users?: Record<string, 
   const manifests = new Map<string, FakePlatformManifest>();
   const channels: Record<"stable" | "test", Record<string, string>> = { stable: {}, test: {} };
   const corrupt = new Set<string>();
-  const broken = new Set<string>();
+  const broken = new Map<string, number>();
+  let zipBreaks = 0;
+  /** A manifest's files as a zip (stored, under `AMO-<tool>/`), as the relay service gives it. */
+  const zipOf = (m: FakePlatformManifest): Buffer => {
+    const parts: Buffer[] = [];
+    const central: Buffer[] = [];
+    let offset = 0;
+    for (const f of m.files) {
+      const data = objects.get(f.sha256) ?? Buffer.alloc(0);
+      const name = Buffer.from(`AMO-${m.tool}/${f.path}`);
+      const crc = crc32(data) >>> 0;
+      const local = Buffer.alloc(30);
+      local.writeUInt32LE(0x04034b50, 0);
+      local.writeUInt16LE(20, 4);
+      local.writeUInt16LE(0x0800, 6);
+      local.writeUInt32LE(crc, 14);
+      local.writeUInt32LE(data.length, 18);
+      local.writeUInt32LE(data.length, 22);
+      local.writeUInt16LE(name.length, 26);
+      const cd = Buffer.alloc(46);
+      cd.writeUInt32LE(0x02014b50, 0);
+      cd.writeUInt16LE(20, 4);
+      cd.writeUInt16LE(20, 6);
+      cd.writeUInt16LE(0x0800, 8);
+      cd.writeUInt32LE(crc, 16);
+      cd.writeUInt32LE(data.length, 20);
+      cd.writeUInt32LE(data.length, 24);
+      cd.writeUInt16LE(name.length, 28);
+      cd.writeUInt32LE(offset, 42);
+      parts.push(local, name, data);
+      central.push(cd, name);
+      offset += 30 + name.length + data.length;
+    }
+    const cdBuf = Buffer.concat(central);
+    const end = Buffer.alloc(22);
+    end.writeUInt32LE(0x06054b50, 0);
+    end.writeUInt16LE(m.files.length, 8);
+    end.writeUInt16LE(m.files.length, 10);
+    end.writeUInt32LE(cdBuf.length, 12);
+    end.writeUInt32LE(offset, 16);
+    return Buffer.concat([...parts, cdBuf, end]);
+  };
   const requests: string[] = [];
   let delay = 0;
+  let channelsDelay = 0;
   // As the real server (10-28): stable is never older than test — pointing stable at a version moves test along when
   // test has an older one or none.
   const newer = (a: string, b: string) => {
@@ -111,6 +169,30 @@ export async function startFakePlatformServer(options: { users?: Record<string, 
     return h?.startsWith("Bearer ") ? h.slice(7) : url.searchParams.get("key");
   };
 
+  let claude: { version: string; exe: Buffer; zst: Buffer; slowMs: number } | null = null;
+  const claudeManifest = () => ({ version: claude!.version, platforms: { "win32-x64": { binary: "claude.exe", checksum: sha256Of(claude!.exe), size: claude!.exe.length } } });
+  /** A big file with Range; `slowMs`: in 20 parts this far apart. */
+  const sendRanged = (req: IncomingMessage, res: ServerResponse, file: Buffer, slowMs: number) => {
+    const m = /^bytes=(\d+)-$/.exec(req.headers.range ?? "");
+    const start = m ? Math.min(Number(m[1]), file.length) : 0;
+    const body = file.subarray(start);
+    res.writeHead(m ? 206 : 200, { "content-type": "application/octet-stream", "accept-ranges": "bytes", "content-length": body.length, ...(m ? { "content-range": `bytes ${start}-${file.length - 1}/${file.length}` } : {}) });
+    if (!slowMs) return void res.end(body);
+    const step = Math.ceil(body.length / 20);
+    let at = 0;
+    const next = () => {
+      if (res.destroyed) return;
+      if (at >= body.length) return void res.end();
+      res.write(body.subarray(at, at + step));
+      at += step;
+      setTimeout(next, slowMs);
+    };
+    next();
+  };
+  const sendZst = (req: IncomingMessage, res: ServerResponse) => sendRanged(req, res, claude!.zst, claude!.slowMs);
+  let codex: { version: string; tgz: Buffer; integrity: string; slowMs: number; npmLatest: string } | null = null;
+  const codexName = () => `codex-${codex!.version}-win32-x64.tgz`;
+
   const server = createServer((req, res) => {
     void (async () => {
       const url = new URL(req.url ?? "/", "http://localhost");
@@ -142,8 +224,42 @@ export async function startFakePlatformServer(options: { users?: Record<string, 
         if (!name || members.get(name)?.password !== body.password) return fail(res, 401, "unauthorized", "名字或密码不对");
         return send(res, 200, signIn(name));
       }
+      // Anthropic, standing in (no login).
+      if (req.method === "GET" && path.startsWith("/claude-official/")) {
+        const rest = path.slice("/claude-official/".length).split("/");
+        if (rest[0] === "latest" && claude) return res.end(claude.version);
+        if (claude && rest[0] === claude.version) {
+          if (rest[1] === "manifest.json") return send(res, 200, claudeManifest());
+          if (rest[1] === "win32-x64" && rest[2] === "claude.exe.zst") return sendZst(req, res);
+        }
+        return fail(res, 404, "not_found", "没有");
+      }
+      // npm's registry, standing in (no login).
+      if (req.method === "GET" && path.startsWith("/npm/")) {
+        const rest = path.slice("/npm/".length).replace(/%2f/i, "/");
+        if (codex && rest === "@openai/codex/latest") return send(res, 200, { name: "@openai/codex", version: codex.npmLatest });
+        if (codex && rest === `@openai/codex/${codex.version}-win32-x64`) return send(res, 200, { name: "@openai/codex", version: `${codex.version}-win32-x64`, dist: { integrity: codex.integrity } });
+        if (codex && rest === `@openai/codex/-/${codexName()}`) return sendRanged(req, res, codex.tgz, codex.slowMs);
+        return fail(res, 404, "not_found", "没有");
+      }
       const key = keyOf(req, url);
       if (!key || !keys.has(key)) return fail(res, 401, "unauthorized", "登录已失效，请重新登录");
+      if (req.method === "GET" && path === "/api/platform/mirror/claude-code") {
+        if (!claude) return fail(res, 404, "not_found", "这个服务没有开 Claude Code 镜像");
+        const file = { file: "claude.exe.zst", size: claude.zst.length, sha256: sha256Of(claude.exe), exeSize: claude.exe.length };
+        return send(res, 200, { official: claude.version, checkedAt: new Date().toISOString(), versions: [{ version: claude.version, readyAt: new Date().toISOString(), platforms: { "win32-x64": file } }], preparing: null });
+      }
+      const mirrored = /^\/platform\/mirror\/claude-code\/([^/]+)\/(.+)$/.exec(path);
+      if (req.method === "GET" && mirrored && claude && mirrored[1] === claude.version) {
+        if (mirrored[2] === "manifest.json") return send(res, 200, claudeManifest());
+        if (mirrored[2] === "win32-x64/claude.exe.zst") return sendZst(req, res);
+      }
+      if (req.method === "GET" && path === "/api/platform/mirror/codex") {
+        if (!codex) return fail(res, 404, "not_found", "这个服务没有开 codex 的镜像");
+        const file = { file: codexName(), size: codex.tgz.length, integrity: codex.integrity };
+        return send(res, 200, { official: codex.npmLatest, checkedAt: new Date().toISOString(), versions: [{ version: codex.version, readyAt: new Date().toISOString(), platforms: { "win32-x64": file } }], preparing: null });
+      }
+      if (req.method === "GET" && codex && path === `/platform/mirror/codex/${codex.version}/win32-x64/${codexName()}`) return sendRanged(req, res, codex.tgz, codex.slowMs);
       if (req.method === "POST" && path === "/api/logout") {
         keys.delete(key);
         return send(res, 200, { ok: true });
@@ -180,11 +296,35 @@ export async function startFakePlatformServer(options: { users?: Record<string, 
         looks.set(me, { nick: next.nick, avatar: next.avatar });
         return send(res, 200, { ok: true });
       }
-      if (req.method === "GET" && path === "/api/platform/channels") return send(res, 200, channels);
+      if (req.method === "GET" && path === "/api/platform/channels") {
+        if (channelsDelay) await new Promise((r) => setTimeout(r, channelsDelay));
+        return send(res, 200, channels);
+      }
       const tool = /^\/api\/platform\/tools\/([^/]+)\/([^/]+)$/.exec(path);
       if (req.method === "GET" && tool) {
         const m = manifests.get(`${decodeURIComponent(tool[1]!)}@${decodeURIComponent(tool[2]!)}`);
         return m ? send(res, 200, m) : fail(res, 404, "not_found", "没有这个版本");
+      }
+      // A version's whole zip (the relay service makes it from its objects, platform-zip.ts): here stored, with Range.
+      const zipPath = /^\/platform\/zip\/([^/]+)\/([^/]+)$/.exec(path);
+      if (req.method === "GET" && zipPath) {
+        const m = manifests.get(`${decodeURIComponent(zipPath[1]!)}@${decodeURIComponent(zipPath[2]!)}`);
+        if (!m) return fail(res, 404, "not_found", "没有这个版本");
+        const zip = zipOf(m);
+        const etag = `"zip-${createHash("sha256").update(zip).digest("hex").slice(0, 16)}"`;
+        const range = /^bytes=(\d+)-$/.exec(String(req.headers.range ?? ""));
+        const start = range && (!req.headers["if-range"] || req.headers["if-range"] === etag) ? Number(range[1]) : 0;
+        if (start >= zip.length && start > 0) return fail(res, 416, "bad_request", "超出范围");
+        const headers: Record<string, string | number> = { "content-type": "application/zip", "accept-ranges": "bytes", etag, "content-length": zip.length - start };
+        if (start) headers["content-range"] = `bytes ${start}-${zip.length - 1}/${zip.length}`;
+        res.writeHead(start ? 206 : 200, headers);
+        if (zipBreaks > 0) {
+          zipBreaks--;
+          res.write(zip.subarray(start, start + Math.max(1, Math.floor((zip.length - start) / 2))));
+          setTimeout(() => res.destroy(), 20);
+          return;
+        }
+        return res.end(zip.subarray(start));
       }
       const object = /^\/platform\/objects\/([0-9a-f]{64})$/.exec(path);
       if (req.method === "GET" && object) {
@@ -200,7 +340,9 @@ export async function startFakePlatformServer(options: { users?: Record<string, 
           return res.end(bad);
         }
         if (broken.has(sha)) {
-          broken.delete(sha);
+          const left = broken.get(sha)! - 1;
+          if (left > 0) broken.set(sha, left);
+          else broken.delete(sha);
           res.writeHead(200, { "content-type": "application/octet-stream", "content-length": data.length });
           res.write(data.subarray(0, Math.max(1, Math.floor(data.length / 2))));
           setTimeout(() => res.destroy(), 20);
@@ -248,9 +390,13 @@ export async function startFakePlatformServer(options: { users?: Record<string, 
       else point(channel, toolId, version);
     },
     delayObjects: (ms) => void (delay = ms),
+    delayChannels: (ms) => void (channelsDelay = ms),
     corruptObject: (sha) => void corrupt.add(sha),
-    breakObject: (sha) => void broken.add(sha),
+    breakObject: (sha, times = 1) => void broken.set(sha, times),
+    breakZip: (times = 1) => void (zipBreaks = times),
     revokeKeys: () => keys.clear(),
+    mirrorClaude: (version, exe, o = {}) => void (claude = { version, exe, zst: zstdCompressSync(exe), slowMs: o.slowMs ?? 0 }),
+    mirrorCodex: (version, tgz, o = {}) => void (codex = { version, tgz, integrity: `sha512-${createHash("sha512").update(tgz).digest("base64")}`, slowMs: o.slowMs ?? 0, npmLatest: o.npmLatest ?? version }),
     close: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections();

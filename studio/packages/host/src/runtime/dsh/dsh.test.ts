@@ -8,7 +8,8 @@ import { startHost, type RunningHost } from "../../host-process.js";
 import { FakeServers } from "../codex/fake-servers.test-support.js";
 import { dshPermissionMode } from "../choices.js";
 import { catalogPatchYaml, channelModels, dshModelId, dshModels, dshModelValue } from "./dsh-runtime.js";
-import { DSH_PATH_KEY, DSH_SOURCE_KEY, describeDsh, resolveDsh, type KvStore } from "./install.js";
+import { locateDshDesktop } from "@amo-studio/locate";
+import { DSH_AUTH_KEY, DSH_DESKTOP_PATH_KEY, DSH_PATH_KEY, DSH_SOURCE_KEY, accountPatchYaml, describeDsh, dshAccountFile, dshAccountSignedIn, dshStatus, readDshAuth, resolveDsh, type KvStore } from "./install.js";
 import { describeDshTool } from "./transcript.js";
 
 const CONFIG = [
@@ -118,6 +119,15 @@ describe("DSH clone setting", () => {
     expect(status).toMatchObject({ source: "clone", desktop: null, active: null });
     expect((await profile()).unavailable).toMatch(/还没有设置 DSH 源码位置/);
     await expect(call("PUT", "/api/dsh", { source: "npm" })).rejects.toThrow(/source must be/);
+
+    // The desktop app's folder (2026-11-02): only one that has the app; null goes back to looking for it.
+    await expect(call("PUT", "/api/dsh", { desktopPath: root })).rejects.toThrow(/里没有 DeepSeek Harness 桌面版/);
+    const app = join(root, "elsewhere", "DeepSeek Harness");
+    mkdirSync(join(app, "resources"), { recursive: true });
+    writeFileSync(join(app, "DeepSeek Harness.exe"), "");
+    writeFileSync(join(app, "resources", "app.asar"), "");
+    expect(await call<DshStatus>("PUT", "/api/dsh", { desktopPath: app })).toMatchObject({ desktopChosen: app, desktop: { path: app, from: "chosen" } });
+    expect(await call<DshStatus>("PUT", "/api/dsh", { desktopPath: null })).toMatchObject({ desktopChosen: null });
   });
 });
 
@@ -151,5 +161,53 @@ describe("DSH source (2026-10-26)", () => {
     const none = { AMO_STUDIO_DSH_DESKTOP: join(root, "nowhere"), AMO_STUDIO_NODE: process.execPath };
     expect(resolveDsh(kv({ [DSH_PATH_KEY]: clone }), none)).toMatchObject({ kind: "clone" });
     expect(resolveDsh(kv({}), none)).toEqual({ error: expect.stringMatching(/没找到 DeepSeek Harness 桌面版/) });
+  });
+
+  it("the desktop app in a folder chosen in 设置 (2026-11-02), else the usual one or the registry's", () => {
+    const chosen = join(root, "D", "DeepSeek Harness");
+    mkdirSync(join(chosen, "resources"), { recursive: true });
+    writeFileSync(join(chosen, "DeepSeek Harness.exe"), "");
+    writeFileSync(join(chosen, "resources", "app.asar"), "");
+    const env = { LOCALAPPDATA: join(root, "local"), AMO_STUDIO_DSH_REGISTRY: "0", AMO_STUDIO_NODE: process.execPath };
+    expect(resolveDsh(kv({ [DSH_DESKTOP_PATH_KEY]: chosen }), env)).toMatchObject({ kind: "desktop", command: join(chosen, "DeepSeek Harness.exe") });
+    expect(dshStatus(kv({ [DSH_DESKTOP_PATH_KEY]: chosen }), env)).toMatchObject({ desktop: { path: chosen, from: "chosen" }, desktopChosen: chosen });
+    expect(resolveDsh(kv({}), env)).toEqual({ error: expect.stringMatching(/没找到/) });
+    expect(locateDshDesktop(env, null, () => [join(root, "nowhere"), chosen])).toMatchObject({ dir: chosen, from: "registry" });
+    // AMO_STUDIO_DSH_DESKTOP set ("" = nowhere): no usual folder, no registry — but the chosen folder still counts.
+    expect(locateDshDesktop({ ...env, AMO_STUDIO_DSH_DESKTOP: "" }, null, () => [chosen])).toBeNull();
+    expect(locateDshDesktop({ ...env, AMO_STUDIO_DSH_DESKTOP: "" }, chosen, () => [])).toMatchObject({ dir: chosen, from: "chosen" });
+  });
+});
+
+describe("DeepSeek sign-in (2026-11-03)", () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "amo-studio-test-dshauth-"));
+  });
+  afterEach(() => removeTempDir(root));
+  const kv = (values: Record<string, string>): KvStore => ({ getKv: (k) => (k in values ? { value: values[k]! } : undefined), setKv: () => undefined });
+
+  it("uses the key when one is saved and nothing was chosen, else the desktop app's account; a choice wins", () => {
+    expect(readDshAuth(kv({}), true)).toBe("key");
+    expect(readDshAuth(kv({}), false)).toBe("account");
+    expect(readDshAuth(kv({ [DSH_AUTH_KEY]: "account" }), true)).toBe("account");
+    expect(readDshAuth(kv({ [DSH_AUTH_KEY]: "key" }), false)).toBe("key");
+  });
+
+  it("finds the desktop app's sign-in in its DSH home without reading the token out", () => {
+    const file = dshAccountFile({ DSH_HOME: root });
+    expect(file).toBe(join(root, ".credentials.yaml"));
+    expect(dshAccountFile({}).endsWith(join(".dsh", ".credentials.yaml"))).toBe(true);
+    expect(dshAccountSignedIn(file)).toBe(false);
+    writeFileSync(file, ["version: 1", "records:", "  deepseek-account-platform/device:", "    kind: grant", "refs:", "  DEEPSEEK_API_KEY: sk-x", ""].join("\n"));
+    expect(dshAccountSignedIn(file)).toBe(false);
+    writeFileSync(file, ["version: 1", "records:", "  deepseek-account-platform/default:", "    kind: grant", ""].join("\r\n"));
+    expect(dshAccountSignedIn(file)).toBe(true);
+    expect(dshStatus(kv({}), { DSH_HOME: root, AMO_STUDIO_DSH_DESKTOP: "" }, false)).toMatchObject({ auth: "account", keySaved: false, account: { file, signedIn: true } });
+  });
+
+  it("points DSH's credential store at the app's file and starts the ACP agent on the account", () => {
+    const yaml = accountPatchYaml(String.raw`C:\Users\me\.dsh\.credentials.yaml`, "deepseek-flash");
+    expect(yaml).toContain(["- id: credentials", "  config:", '    path: "C:\\\\Users\\\\me\\\\.dsh\\\\.credentials.yaml"', "- id: acp", "  config:", "    provider: deepseek-account", '    model: "deepseek-flash"', ""].join("\n"));
   });
 });

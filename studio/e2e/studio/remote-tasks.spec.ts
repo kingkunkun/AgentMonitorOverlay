@@ -70,6 +70,8 @@ test("A grants a task; B works in it, sees approvals A's Focus leaves to it, rid
   studios.push(a);
   const b = await launchStudio({ env: { AMO_HOME: await home("笔记本的我", keyB, "B 笔记本") } });
   studios.push(b);
+  // 远程 is off until turned on (2026-10-30).
+  await Promise.all([a, b].map((x) => x.api("PUT", "/api/remote/enabled", { enabled: true })));
 
   // Paired as step 1 does it (its own spec walks through the screens): B asks, A allows.
   await until(() => b.api<RemoteState>("GET", "/api/remote"), (s) => s.connection.state === "online", "B online");
@@ -95,21 +97,35 @@ test("A grants a task; B works in it, sees approvals A's Focus leaves to it, rid
   await dialog.getByTestId("grant-confirm").click();
   await expect(dialog).toHaveCount(0);
   await expect(a.page.getByTestId("granted-banner")).toContainText("B 笔记本 可以远程使用这个任务");
-  // 设置 → 远程 lists it, offers 远端允许的模型, and 解除配对 says which grants go with it.
-  await a.page.getByRole("button", { name: "设置" }).first().click();
-  const settings = a.page.getByRole("dialog", { name: "设置" });
-  await settings.getByRole("tab", { name: /远程/ }).click();
-  await expect(settings.getByTestId("remote-grant")).toContainText("远程一起做的任务");
-  await expect(settings.getByTestId("remote-grant")).toContainText("B 笔记本");
-  await expect(settings.getByTestId("remote-allowed-item").filter({ hasText: "Mock" }).first()).toBeVisible();
-  await settings.getByTestId("remote-peer").getByTestId("remote-unpair").click();
+  // 远程 (the top bar's, a dialog) lists it under 「授权给别的设备的」, opens it again, offers 远端允许的模型 under
+  // 远程设置 (a second dialog), and 解除配对 says which grants go with it.
+  await a.page.getByTestId("topbar-remote").click();
+  const remote = a.page.getByRole("dialog", { name: "远程", exact: true });
+  const grant = remote.getByTestId("remote-grants").getByTestId("remote-grant");
+  await expect(grant).toContainText("远程一起做的任务");
+  await expect(grant).toContainText("B 笔记本");
+  await expect(grant).toContainText("在线");
+  // 打开: the task page; the dialog closes.
+  await grant.getByTestId("remote-grant-open").click();
+  await expect(remote).toHaveCount(0);
+  await expect(a.page.getByTestId("task-title")).toHaveText("远程一起做的任务");
+  await a.page.getByTestId("topbar-remote").click();
+  await remote.getByTestId("remote-peer").getByTestId("remote-unpair").click();
   await expect(a.page.getByTestId("remote-unpair-grants")).toContainText("同时收回授权给它的 1 个任务：「远程一起做的任务」");
   await screenshot(a.app, "studio", "remote-unpair-grants", a.page);
   await a.page.getByTestId("remote-unpair-confirm").getByRole("button", { name: "取消" }).click();
+  await remote.getByTestId("remote-settings-open").click();
+  const settings = a.page.getByRole("dialog", { name: "远程设置", exact: true });
+  await expect(settings.getByTestId("remote-allowed-item").filter({ hasText: "Mock" }).first()).toBeVisible();
+  await expect(settings.getByTestId("remote-security")).toContainText("别的账号的设备");
   await settings.getByTestId("remote-allowed").scrollIntoViewIfNeeded();
   await screenshot(a.app, "studio", "remote-a-settings", a.page);
+  // Escape closes 远程设置 first, then 远程.
   await a.page.keyboard.press("Escape");
   await expect(settings).toHaveCount(0);
+  await expect(remote).toBeVisible();
+  await a.page.keyboard.press("Escape");
+  await expect(remote).toHaveCount(0);
   // The board card on A says it is granted.
   await a.page.getByTestId("back").click();
   await expect(a.page.getByTestId("task-card").filter({ hasText: "远程一起做的任务" }).getByTestId("card-granted")).toHaveText("已授权给 B 笔记本");
@@ -120,11 +136,25 @@ test("A grants a task; B works in it, sees approvals A's Focus leaves to it, rid
   await expect(card).toHaveAttribute("data-remote", "online", { timeout: 30_000 });
   await expect(card.getByTestId("card-remote")).toHaveText("远程在 A 台式机 上");
   await screenshot(b.app, "studio", "remote-b-board", b.page);
+  // 2026-11-04: the reply A's session ended with before the grant is not 完成待审核 in B's Focus (B never opened it).
+  const bFocus = await turnOnFocus(b.page, b.app);
+  await expect(bFocus.getByTestId("focus-needs")).toHaveText("没有待处理", { timeout: 30_000 });
+  await b.page.waitForTimeout(800);
+  await expect(bFocus.getByTestId("focus-entry")).toHaveCount(0);
   await card.click();
   await expect(b.page.getByTestId("task-title")).toHaveText("远程一起做的任务");
   await expect(b.page.getByTestId("remote-banner")).toHaveAttribute("data-state", "online");
   await expect(b.page.getByTestId("task-remote-where")).toContainText("在 A 台式机 上（台式机的我）");
   await expect(b.page.getByTestId("msg-agent").last()).toContainText("MOCK", { timeout: 30_000 });
+  // 2026-10-30: one line — where it runs and its model; the explanation folds out under the title.
+  const banner = b.page.getByTestId("remote-banner");
+  await expect(banner.getByTestId("remote-banner-watch")).toContainText("Mock");
+  await expect(banner.getByTestId("remote-banner-detail")).toHaveCount(0);
+  await screenshot(b.app, "studio", "remote-b-banner", b.page);
+  await banner.getByTestId("remote-banner-toggle").click();
+  await expect(banner.getByTestId("remote-banner-detail")).toContainText("模型调用和命令都在那台电脑上");
+  await screenshot(b.app, "studio", "remote-b-banner-open", b.page);
+  await banner.getByTestId("remote-banner-toggle").click();
   // What only A does is not offered: Git Review, 分支, 在终端打开, 书签 of the task.
   await expect(b.page.getByTestId("task-review")).toHaveCount(0);
   await expect(b.page.getByTestId("session-fork")).toHaveCount(0);
@@ -136,6 +166,44 @@ test("A grants a task; B works in it, sees approvals A's Focus leaves to it, rid
   await expect(b.page.getByTestId("msg-agent").filter({ hasText: "从 B 发来的消息" })).toBeVisible({ timeout: 60_000 });
   await expect(a.page.getByTestId("msg-user").filter({ hasText: "从 B 发来的消息" })).toBeVisible({ timeout: 30_000 });
   await screenshot(b.app, "studio", "remote-b-conversation", b.page);
+
+  // 提示词模板 (2026-10-31): B's template window lists A's templates after its own, read-only; one pastes like B's.
+  await a.api("POST", "/api/prompt-templates", { title: "A 上的巡检", body: "在 A 上看一遍" });
+  await b.api("POST", "/api/prompt-templates", { title: "B 自己的", body: "b" });
+  await composer(b.page).fill("@");
+  await b.page.getByTestId("suggest").getByRole("option", { name: /提示词模板/ }).click();
+  const templates = b.page.getByTestId("prompt-dialog");
+  await expect(templates.getByTestId("prompt-item")).toHaveCount(2);
+  await templates.getByTestId("prompt-item").filter({ hasText: "A 上的巡检" }).click();
+  await expect(templates.getByTestId("prompt-preview")).toContainText("在 A 台式机 上 · 全局");
+  await expect(templates.getByTestId("prompt-preview")).toContainText("要改去那台电脑上改");
+  await screenshot(b.app, "studio", "remote-b-templates", b.page);
+  await templates.getByTestId("prompt-ok").click();
+  await expect(composer(b.page)).toHaveValue("在 A 上看一遍");
+  await composer(b.page).fill("");
+
+  // 2026-10-30: B renames the task and the session; the names change on A too.
+  await b.page.getByTestId("task-title").getByRole("button").click();
+  await b.page.getByRole("textbox", { name: "任务名" }).fill("远程一起做的任务（B 改名）");
+  await b.page.getByRole("textbox", { name: "任务名" }).press("Enter");
+  await expect(b.page.getByTestId("task-title")).toHaveText("远程一起做的任务（B 改名）");
+  await expect(a.page.getByTestId("task-title")).toHaveText("远程一起做的任务（B 改名）", { timeout: 30_000 });
+  await b.page.getByTestId("thread-head").locator(".thread-title button").click();
+  await b.page.getByRole("textbox", { name: "会话名" }).fill("B 起的会话名");
+  await b.page.getByRole("textbox", { name: "会话名" }).press("Enter");
+  await expect(b.page.getByTestId("thread-head")).toContainText("B 起的会话名");
+  await expect(a.page.getByTestId("thread-head")).toContainText("B 起的会话名", { timeout: 30_000 });
+  // 归档 from B too: archived on A, restored from B's banner.
+  await b.page.getByTestId("session-archive").click();
+  await expect(a.page.getByTestId("session-archived-banner")).toBeVisible({ timeout: 30_000 });
+  await expect(b.page.getByTestId("session-archived-banner")).toBeVisible();
+  await expect(b.page.getByTestId("archived-row").filter({ hasText: "B 起的会话名" })).toBeVisible();
+  await screenshot(b.app, "studio", "remote-b-archived", b.page);
+  await b.page.getByTestId("session-unarchive").click();
+  await expect(b.page.getByTestId("session-archived-banner")).toHaveCount(0);
+  await expect(b.page.getByTestId("archived-row")).toHaveCount(0);
+  await expect(b.page.getByTestId("thread-head")).toContainText("B 起的会话名");
+  await expect(a.page.getByTestId("session-archived-banner")).toHaveCount(0, { timeout: 30_000 });
 
   // An approval: it waits on B, and A's Focus leaves it to B (B is online).
   const aFocus = await turnOnFocus(a.page, a.app);
@@ -151,6 +219,20 @@ test("A grants a task; B works in it, sees approvals A's Focus leaves to it, rid
   await expect(bCard).toHaveAttribute("data-state", "accepted", { timeout: 30_000 });
   await expect(aCard).toHaveAttribute("data-state", "accepted", { timeout: 30_000 });
   await expect(b.page.getByTestId("msg-agent").last()).toContainText("MOCK-DONE", { timeout: 60_000 });
+
+  // 问题 #8 (2026-11-02): while B's turn runs, A's Focus leaves 进行中 to B too — until A ticks 「我也关心」 on its banner.
+  await composer(b.page).fill("[[wait]] B 在跑");
+  await composer(b.page).press("Enter");
+  await until(() => a.api<{ sessions: Session[] }>("GET", "/api/state").then((s) => s.sessions.filter((x) => x.taskId === task.id && x.status === "running")), (l) => l.length === 1, "A's session runs B's turn");
+  await expect(aFocus.getByTestId("focus-working-entry")).toHaveCount(0);
+  await expect(a.page.getByTestId("granted-banner")).toContainText("提醒和进行中只在它那边的 Focus 出现");
+  await a.page.getByTestId("granted-also-mine").locator("input").check();
+  await expect(a.page.getByTestId("granted-banner")).toContainText("这台电脑的 Focus 也照常显示");
+  await expect(aFocus.getByTestId("focus-working-entry")).toHaveCount(1, { timeout: 5_000 });
+  await screenshot(a.app, "studio", "remote-a-also-mine", a.page);
+  await a.page.getByTestId("granted-also-mine").locator("input").uncheck();
+  await expect(aFocus.getByTestId("focus-working-entry")).toHaveCount(0);
+  await expect(b.page.getByTestId("msg-agent").last()).toContainText("MOCK: [[wait]] B 在跑", { timeout: 60_000 });
 
   // A new session from B: only the model A allows (the one the task uses), started on A.
   await b.page.getByTestId("new-session-toggle").click();

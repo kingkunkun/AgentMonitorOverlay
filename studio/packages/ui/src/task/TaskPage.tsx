@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { remoteHeldTasks, type Annotation, type ApprovalDecision, type ChecklistItem, type PresetDraft, type ModelProfile, type Session, type SessionOptions, type Task, type TaskColumn, type Topic, type Workspace } from "@amo-studio/protocol";
+import { projectWorkspaces, remoteHeldTasks, type Annotation, type ApprovalDecision, type ChecklistItem, type ModelProfile, type Session, type SessionOptions, type Task, type TaskColumn, type TodoView, type Topic, type Workspace } from "@amo-studio/protocol";
 import { call, HostApiError, type HostLink, type Passage } from "../host/client.js";
 import { useSessionItems } from "../host/useSessionItems.js";
 import { useAnnotations } from "../review/useAnnotations.js";
@@ -13,19 +13,15 @@ import { SessionTree } from "./SessionTree.js";
 import { Thread } from "./Thread.js";
 import { flash } from "./ReplyNav.js";
 import { annotationRange, flashAnnotation, flashRange, highlightsSupported, scrollToBox } from "../review/highlights.js";
-import { REVEAL_ITEM_EVENT } from "../chat/Transcript.js";
-import { useSettings } from "../settings/SettingsDialog.js";
+import { REVEAL_ITEM_EVENT, type DeliveryAction } from "../chat/Transcript.js";
+import { useSettings } from "../settings/useSettings.js";
 import { showToast } from "../lib/toast.js";
 import { AnnotationPanel } from "../review/AnnotationPanel.js";
 import { MailPanel, useTaskMail } from "../collab/MailPanel.js";
 import { DecisionPanel, useOpenDecisions } from "../collab/DecisionPanel.js";
 import { NotesPanel, useTaskNotes } from "../collab/NotesPanel.js";
-import { PackDocsPanel } from "../packs/PackDocsPanel.js";
 import { ChecklistPanel } from "../collab/ChecklistPanel.js";
 import { EditableName } from "./EditableName.js";
-import { usePacks } from "../packs/usePacks.js";
-import { useFeature } from "../lib/features.js";
-import { PresetDraftForm } from "../packs/PresetDraftForm.js";
 import { openReview, useIsGitRepo } from "../gitreview/open.js";
 import { latestMainSession } from "../gitreview/logic.js";
 import { OnCanvasToggle } from "../canvas/OnCanvasToggle.js";
@@ -39,30 +35,25 @@ import { BackButton } from "../shell/BackButton.js";
 import { PopMenu, StatusMenu, TaskMeta, TopicPicker, below, useGitBranch, type Anchor } from "./TaskHead.js";
 import { SessionBanners, SessionHead } from "./SessionHead.js";
 import { DescriptionDialog } from "./DescriptionDialog.js";
+import { canBindTodo, loadTodoForBind, TodoBindDialog, type TodoBindTarget } from "./TodoBindDialog.js";
 import { PlanBanner, useTaskPlans } from "../taskplans/TaskPlans.js";
 import { RelayBanner, useRelays } from "../relays/Relays.js";
+import { TeamRelayBanner, useTeamSends, useTeamThreads } from "../teamrelay/TeamRelay.js";
 import type { ReadPlace } from "./readPlace.js";
-import { copyStatus, grantsOf, useRemote } from "../settings/remote.js";
+import { copyStatus, grantsOf, useRemote } from "../remote/remote.js";
 import { GrantDialog } from "./GrantDialog.js";
+import { RemoteBanner } from "./RemoteBanner.js";
+import { useStoredIds } from "../lib/storedIds.js";
+import { ALSO_MINE_KEY, PINNED_KEY } from "../focus/pins.js";
+import { readStored, writeStored } from "../lib/stored.js";
+import { writeSessionDraft } from "./sessionDraft.js";
 
 /** Whether the right column (进度、批注、留言…) shows; off by default, remembered per window. */
 const SIDEBAR_KEY = "amo.taskSidebar";
 /** Whether the session list is hidden (会话 in the head; the key is from when it folded to a strip). */
 const SESSIONS_KEY = "amo.sessionsFolded";
-function readFlag(key: string): boolean {
-  try {
-    return localStorage.getItem(key) === "1";
-  } catch {
-    return false;
-  }
-}
-function writeFlag(key: string, on: boolean): void {
-  try {
-    localStorage.setItem(key, on ? "1" : "0");
-  } catch {
-    // per-window convenience only
-  }
-}
+const readFlag = (key: string): boolean => readStored(key) === "1";
+const writeFlag = (key: string, on: boolean): void => writeStored(key, on ? "1" : "0");
 
 interface TaskPageProps {
   link: HostLink;
@@ -129,6 +120,11 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
   const copy = copyStatus(task, remote);
   const granted = grantsOf(remote, task.id);
   const remoteHeld = remoteHeldTasks(remote).has(task.id);
+  // 「我也关心」 (2026-11-02, 问题 #8): this computer's Focus keeps listing the granted task as usual (focus/pins.ts), and
+  // what agents open in the device's turns (查看包, Review) pops up here too (远程 Reviewer, the user 2026-11-02).
+  const alsoMine = useStoredIds(ALSO_MINE_KEY);
+  // 追踪 on the session bar (2026-11-03, 问题 #15): Focus's own 置顶 list, followed across windows.
+  const focusPins = useStoredIds(PINNED_KEY);
   const [granting, setGranting] = useState(false);
   // Git Review: only for a project under git; the branch shows in the line under the title.
   const gitRepo = useIsGitRepo(link, task.workspaceId) && !copy;
@@ -139,10 +135,16 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
   const [picking, setPicking] = useState<"topic" | null>(null);
   const [taskMenu, setTaskMenu] = useState<Anchor | null>(null);
   const [describing, setDescribing] = useState(false);
+  /** 绑定到待办 (问题 #10): the 便签's 待办 to pick from, for the task or one of its sessions. */
+  const [todoBind, setTodoBind] = useState<{ view: TodoView; target: TodoBindTarget } | null>(null);
+  const bindTodo = (target: TodoBindTarget) => void loadTodoForBind().then((view) => view && setTodoBind({ view, target }));
   // 拆任务提案 this task (a 主控) made, while they wait for the person (also on its topic's canvas).
   const plans = useTaskPlans(link).filter((p) => p.fromTaskId === task.id);
   // 传话 to this task, or from it (a 主控), waiting for the person.
   const relays = useRelays(link).filter((r) => r.toTaskId === task.id || r.fromTaskId === task.id);
+  // 会话里用中转 (2026-10-30): what its sessions ask to send through 中转, and whom they wait on there.
+  const teamSends = useTeamSends(link);
+  const teamThreads = useTeamThreads(link);
   const [sidebar, setSidebarState] = useState(() => readFlag(SIDEBAR_KEY));
   const setSidebar = (on: boolean) => {
     setSidebarState(on);
@@ -214,20 +216,17 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
       setStarting(null);
     }
   };
+  // A task filed with a first sentence (放进待办, 2026-11-05): the new session's composer starts with it, to be read
+  // and sent (not sent by itself: the person may have picked a model or want to add to it), and the task lets it go.
   const newSession = (input: { profileId: string; options?: SessionOptions }) =>
-    run(starts(input.profileId, () => call(link, "POST /api/tasks/:id/sessions", { id: task.id }, input)), (s) => setSelected(s.id));
-  const openPreset = (key: string) => {
-    const [workspaceId, pack, preset] = key.split("/") as [string, string, string];
-    void run(() => call(link, "POST /api/workspaces/:id/packs/:pack/presets/:preset/draft", { id: workspaceId, pack, preset }, { taskId: task.id }), setDraft);
-  };
-  const startPreset = (d: PresetDraft, input: { profileId: string; text: string }) =>
-    run(
-      starts(input.profileId, () => call(link, "POST /api/tasks/:id/sessions", { id: task.id }, { profileId: input.profileId, text: input.text })),
-      (s) => {
-        setDraft(null);
-        setSelected(s.id);
-      },
-    );
+    run(starts(input.profileId, () => call(link, "POST /api/tasks/:id/sessions", { id: task.id }, input)), (s) => {
+      const first = task.firstMessage;
+      if (first && !copy) {
+        writeSessionDraft(s.id, first);
+        void call(link, "PATCH /api/tasks/:id", { id: task.id }, { firstMessage: "" }).catch(() => undefined);
+      }
+      setSelected(s.id);
+    });
   const restore = (id: string) => run(() => call(link, "POST /api/sessions/:id/unarchive", { id }), () => setSelected(id));
   const archive = (id: string) =>
     run(() => call(link, "POST /api/sessions/:id/archive", { id }), () => {
@@ -252,13 +251,6 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
   const mail = useTaskMail(link, task, sessions);
   const decisions = useOpenDecisions(link);
   const notes = useTaskNotes(link, task.id);
-  const [draft, setDraft] = useState<PresetDraft | null>(null);
-  // The extension packs of the task's own project.
-  const packsOn = useFeature("packs");
-  const { packs } = usePacks(link, packsOn ? [task.workspaceId] : []);
-  const presetChoices = packs.flatMap((p) =>
-    p.manifest ? p.manifest.presets.map((pr) => ({ key: `${p.workspaceId}/${p.dirName}/${pr.id}`, label: `${p.manifest!.title} · ${pr.title}` })) : [],
-  );
   const unread = new Map<string, number>();
   for (const m of mail) if (m.state === "unread" && m.to.kind === "session") unread.set(m.to.sessionId, (unread.get(m.to.sessionId) ?? 0) + 1);
   const forwardMail = (m: { id: string }, sessionId: string) =>
@@ -337,11 +329,11 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
   const approve = (approvalId: string, decision: ApprovalDecision) =>
     session ? run(() => call(link, "POST /api/approvals/:approvalId", { approvalId }, { sessionId: session.id, decision })) : Promise.resolve();
   const interrupt = (id: string) => run(() => call(link, "POST /api/sessions/:id/interrupt", { id }));
-  async function send(text: string, attachments: string[]): Promise<boolean> {
+  async function send(text: string, attachments: string[], now = false): Promise<boolean> {
     if (!session) return false;
     try {
       const referred = annotationRefs.list.map((a) => a.id);
-      await call(link, "POST /api/sessions/:id/messages", { id: session.id }, { text, ...(attachments.length ? { attachments } : {}), ...(referred.length ? { annotations: referred } : {}) });
+      await call(link, "POST /api/sessions/:id/messages", { id: session.id }, { text, ...(attachments.length ? { attachments } : {}), ...(referred.length ? { annotations: referred } : {}), ...(now ? { now: true } : {}) });
       annotationRefs.sent();
       return true;
     } catch (err) {
@@ -349,6 +341,15 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
       return false;
     }
   }
+  /** 立即发送 a waiting message, 重新发送 one never read (2026-11-02). */
+  const deliver = (itemId: string, action: DeliveryAction) => {
+    if (!session) return;
+    const id = session.id;
+    void run(async () => {
+      if (action === "now") await call(link, "POST /api/sessions/:id/items/:itemId/send-now", { id, itemId });
+      else await call(link, "POST /api/sessions/:id/items/:itemId/resend", { id, itemId });
+    });
+  };
   const workdir = session ? workspaces.find((w) => w.id === session.workspaceId)?.path : undefined;
   const showError = (text: string) => setToast({ text, error: true });
 
@@ -362,7 +363,8 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
               value={task.title}
               placeholder="未命名任务"
               label="任务名"
-              disabled={!!task.archivedAt || !!copy}
+              // A remote task is renamed on its own computer (2026-10-30), not while it is away or the grant is gone.
+              disabled={!!task.archivedAt || (!!copy && (copy.state === "revoked" || !!copy.blocked))}
               onSave={(title) => void run(() => call(link, "PATCH /api/tasks/:id", { id: task.id }, { title }))}
             />
             {task.lead && (
@@ -520,6 +522,20 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
               {task.description ? "编辑说明…" : "添加说明…"}
             </button>
           )}
+          {!copy && canBindTodo() && (
+            <button
+              type="button"
+              role="menuitem"
+              title="选一条便签里的待办绑定到这个任务：在待办里点它就回到这里"
+              onClick={() => {
+                setTaskMenu(null);
+                bindTodo({ taskId: task.id, taskTitle: task.title });
+              }}
+              data-testid="task-bind-todo"
+            >
+              绑定到待办…
+            </button>
+          )}
           {!task.archivedAt && !copy && (
             <button
               type="button"
@@ -560,39 +576,19 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
         setToast({ text });
       }} />}
 
-      {copy && (
-        <div className={`remote-banner ${copy.state}`} role="status" data-testid="remote-banner" data-state={copy.state}>
-          <span className="remote-badge">远程</span>
-          <span className="remote-banner-text">
-            {copy.state === "revoked" ? (
-              <>
-                <b>授权已收回</b>
-                <span>
-                  {task.remote!.reason && task.remote!.reason !== "授权已收回" ? `${task.remote!.reason}。` : `${copy.name} 收回了这个任务的授权。`}已经同步的记录还能看，不会再连回去。归档会清掉这台电脑上的副本。
-                </span>
-              </>
-            ) : copy.state === "offline" ? (
-              <>
-                <b>{copy.label}</b>
-                <span>记录能看；现在不能发消息、不能审批，写好的消息留在输入框里。{copy.self ? "这台电脑连上团队服务器后" : `${copy.name} 回来后`}会自动重连，补齐这段时间的记录。</span>
-              </>
-            ) : (
-              <>
-                <b>在 {copy.name} 上运行</b>
-                <span>这是 {task.remote!.account} 的「{copy.name}」授权给这台电脑的任务：模型调用和命令都在那台电脑上。对话里的 HTML、Markdown 和图片可以点开看（从那台电脑取过来）；其他文件、Git Review、终端要在那边用。</span>
-              </>
-            )}
-          </span>
-        </div>
-      )}
+      {copy && <RemoteBanner task={task} copy={copy} sessions={own} profiles={profiles} />}
       {granted.length > 0 && (
         <div className="remote-banner granted" role="status" data-testid="granted-banner">
           <span className="remote-badge">已授权</span>
           <span className="remote-banner-text">
             <span>
-              {granted.map((g) => g.name).join("、")} 可以远程使用这个任务（会话还在这台电脑上跑）。{remoteHeld ? "它在线，这个任务的提醒只在它那边出现。" : ""}
+              {granted.map((g) => g.name).join("、")} 可以远程使用这个任务（会话还在这台电脑上跑）。{remoteHeld ? (alsoMine.has(task.id) ? "它在线，这台电脑的 Focus 也照常显示这个任务。" : "它在线，这个任务的提醒和进行中只在它那边的 Focus 出现。") : ""}
             </span>
           </span>
+          <label className="granted-also-mine" title="勾上后，对方在线时这台电脑的 Focus 也照常显示这个任务的提醒、完成待审核和进行中；对方发消息引出的那一轮里，agent 打开的查看包和 Review 也在这台电脑上弹（只记在这台电脑上）" data-testid="granted-also-mine">
+            <input type="checkbox" checked={alsoMine.has(task.id)} onChange={() => alsoMine.toggle(task.id)} />
+            我也关心
+          </label>
           {granted.map((g) => (
             <button key={`${g.account}\n${g.device}`} type="button" className="btn-ghost small" disabled={busy} onClick={() => void run(() => call(link, "POST /api/remote/grants/revoke", {}, { taskId: task.id, account: g.account, device: g.device }), () => setToast({ text: `已收回 ${g.name} 的授权` }))} data-testid="granted-revoke">
               收回{granted.length > 1 ? ` ${g.name}` : ""}
@@ -612,8 +608,10 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
         </div>
       )}
       {describing && <DescriptionDialog link={link} task={task} onClose={() => setDescribing(false)} />}
+      {todoBind && <TodoBindDialog view={todoBind.view} target={todoBind.target} onClose={() => setTodoBind(null)} />}
       <PlanBanner link={link} plans={plans} tasks={tasks} workspaces={workspaces} profiles={profiles} />
       <RelayBanner link={link} relays={relays} tasks={tasks} />
+      <TeamRelayBanner link={link} sends={teamSends} threads={teamThreads} sessions={own} />
 
       {task.archivedAt && (
         <div className="archived-banner task" role="status" data-testid="task-archived-banner">
@@ -644,24 +642,12 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
             onNewSession={(input) => void newSession(input)}
             onRestore={(id) => void restore(id)}
             unread={unread}
-            presets={presetChoices}
-            onPreset={openPreset}
             creating={creating}
             onCreating={setCreating}
             {...(copy ? { remote: { name: copy.name, allowed: task.remote!.allowed, blocked: copy.blocked } } : {})}
           />
         )}
         <div className="thread-col">
-          {draft && (
-            <PresetDraftForm
-              key={`${draft.workspaceId}/${draft.presetId}`}
-              draft={draft}
-              profiles={profiles}
-              busy={busy}
-              onStart={(input) => void startPreset(draft, input)}
-              onCancel={() => setDraft(null)}
-            />
-          )}
           {session && (
             <SessionHead
               link={link}
@@ -670,11 +656,13 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
               model={[shortModel(profile(session.profileId)), modelText].filter(Boolean).join(" · ")}
               workdir={workdir}
               busy={busy}
+              {...(!task.archivedAt ? { tracked: focusPins.has(task.id), onTrack: () => focusPins.toggle(task.id) } : {})}
               onRename={(title) => void run(() => call(link, "PATCH /api/sessions/:id", { id: session.id }, { title }))}
               onTerminal={() => void openTerminal(session)}
               onFork={() => void fork(session.id)}
               onArchive={() => void archive(session.id)}
               onError={showError}
+              {...(!copy && canBindTodo() ? { onBindTodo: () => bindTodo({ taskId: task.id, taskTitle: task.title, sessionId: session.id, sessionTitle: session.title }) } : {})}
             />
           )}
           {session && <SessionBanners session={session} taskArchived={!!task.archivedAt} busy={busy} onRestore={() => void restore(session.id)} onReclaim={() => void reclaim(session.id)} />}
@@ -684,11 +672,14 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
               {...(copy ? { remote: { blocked: copy.blocked, revoked: copy.state === "revoked" } } : {})}
               presets={settings?.presets ?? []}
               session={session}
+              {...(task.firstMessage ? { firstMessage: task.firstMessage } : {})}
               {...(session && profile(session.profileId) ? { profile: profile(session.profileId)! } : {})}
               profiles={profiles}
               subsessionNotes={settings?.subsessionNotes ?? []}
               tasks={tasks}
               sessions={sessions}
+              // A remote task runs on the other computer: this one's projects mean nothing there.
+              {...(copy ? {} : { projects: projectWorkspaces(workspaces) })}
               items={items}
               model={modelText ?? shortModel(session ? profile(session.profileId) : undefined)}
               busy={busy}
@@ -696,6 +687,7 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
               onJump={setSelected}
               onSend={send}
               onInterrupt={() => session && void interrupt(session.id)}
+              onDelivery={deliver}
               onSaveAnnotation={(anchor, note) => annotationCall(() => call(link, "POST /api/sessions/:id/annotations", { id: session!.id }, { ...anchor, note }))}
               onEditAnnotation={(id, note) => annotationCall(() => call(link, "PATCH /api/annotations/:id", { id }, { note }))}
               onDeleteAnnotation={(id) => void run(() => call(link, "DELETE /api/annotations/:id", { id }))}
@@ -739,7 +731,6 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
             />
             <ChecklistPanel link={link} items={checklist} sessions={sessions} />
             <NotesPanel link={link} taskId={task.id} notes={notes} sessions={sessions} />
-            <PackDocsPanel link={link} packs={packs} />
             </>
           }
           annotations={annotations}

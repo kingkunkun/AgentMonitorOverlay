@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef } from "react";
+import { OPEN_SETTINGS_EVENT } from "./mcp/shared.js";
 import type { Scope } from "./board/Board.js";
 import { ScopeNav } from "./board/ScopeNav.js";
 import { useHostState } from "./host/useHostState.js";
@@ -9,24 +10,33 @@ import { useOpenDecisions } from "./collab/DecisionPanel.js";
 import { useChecklist } from "./collab/ChecklistPanel.js";
 import { usePendingProposals } from "./planning/ProposalsPanel.js";
 import { useTodos } from "./planning/TodoTab.js";
-import { SettingsDialog, useSettings, type SettingsPage } from "./settings/SettingsDialog.js";
+import { SettingsDialog, type SettingsPage } from "./settings/SettingsDialog.js";
+import { useSettings } from "./settings/useSettings.js";
+import { DevUiBar } from "./settings/DevUi.js";
 import { setQuickModels } from "./lib/recents.js";
-import { TopBar, useFocusToggle, usePinToggle, ViewBar } from "./shell/TopBar.js";
+import { TopBar, useFocusToggle, ViewBar } from "./shell/TopBar.js";
 import { withOrigin, type View, type ViewContext, type ViewDef } from "./shell/views.js";
 import { readPlace, savePlace } from "./shell/lastPlace.js";
 import { SearchBox } from "./shell/SearchBox.js";
 import type { SearchHit } from "./shell/search.js";
 import { VIEWS } from "./features.js";
-import { featureOn, FeaturesProvider } from "./lib/features.js";
+import { experimentalOn, featureOn, FeaturesProvider } from "./lib/features.js";
 import { openMarks, useMarksShortcut } from "./marks/open.js";
 import { navHistory, useNavHistory } from "./shell/navHistory.js";
 import type { MarksTarget } from "./marks/logic.js";
 import { openReview } from "./gitreview/open.js";
 import { openViewer } from "./viewer/open.js";
+import { readIds } from "./lib/storedIds.js";
+import { remoteProjectPath } from "./remote/reviewer.js";
+import { ALSO_MINE_KEY } from "./focus/pins.js";
 import { onHostEvent } from "./host/events.js";
+import { setDutyOpener, useDuty, useDutyWatch } from "./duty/duty.js";
+import { DutyDialog } from "./duty/DutyDialog.js";
 import { HostErrorToast, PaneBoundary } from "./lib/ErrorBoundary.js";
 import { useMascotIcon } from "./focus/mascot.js";
-import { useSessionSeen } from "./lib/sessionSeen.js";
+import { useSessionSeen, withGrants } from "./lib/sessionSeen.js";
+import { remoteButton, useRemote } from "./remote/remote.js";
+import { RemoteDialog } from "./remote/RemoteDialog.js";
 
 // The shell: the Host connection, the scope and the view in front, the top bar and the left column. Pages come from
 // the features (features.ts); the data several of them share is loaded here once.
@@ -83,15 +93,32 @@ export function App() {
   // A task or new-task page remembers where it was opened from (stage 14), whoever opens it: its "←" goes back there.
   const setView = (next: View) => setShownView((current) => withOrigin(next, current));
   const focus = useFocusToggle();
-  const pin = usePinToggle();
   const unreadMail = useUnreadMail(host.kind === "ready" ? host.link : NO_LINK);
   const openDecisions = useOpenDecisions(host.kind === "ready" ? host.link : NO_LINK);
   const checklist = useChecklist(host.kind === "ready" ? host.link : NO_LINK);
   const proposals = usePendingProposals(host.kind === "ready" ? host.link : NO_LINK);
   const { todos } = useTodos(host.kind === "ready" ? host.link : NO_LINK);
   const settings = useSettings(host.kind === "ready" ? host.link : NO_LINK);
-  // Open, and on which page when something asked for one (Focus: a pairing request → 远程); `at` remounts it there.
+  // 远程 (2026-10-29): the top bar's button — 「远程 · N 在线」, a dot while something waits.
+  const remoteState = useRemote(host.kind === "ready" ? host.link : null);
+  // 值守 (2026-10-31): kept live for the top bar, its dialog and the marks on tasks and sessions.
+  useDutyWatch(host.kind === "ready" ? host.link : null);
+  const duty = useDuty();
+  const [dutyOpen, setDutyOpen] = useState(false);
+  useEffect(() => {
+    setDutyOpener(() => setDutyOpen(true));
+    return () => setDutyOpener(null);
+  }, []);
+  // Open, and on which page when something asked for one; `at` remounts it there.
   const [settingsOpen, setSettingsOpen] = useState<false | { page?: SettingsPage; at: number }>(false);
+  // 设置 on a page asked for from deep inside (the composer's MCP tray: 管理 MCP…).
+  useEffect(() => {
+    const open = (e: Event) => setSettingsOpen({ page: (e as CustomEvent<SettingsPage>).detail, at: Date.now() });
+    window.addEventListener(OPEN_SETTINGS_EVENT, open);
+    return () => window.removeEventListener(OPEN_SETTINGS_EVENT, open);
+  }, []);
+  // 远程 (2026-10-29 evening, the user): a dialog over whatever is in front, opened from the top bar or by Focus.
+  const [remoteOpen, setRemoteOpen] = useState(false);
   const [quickOpen, setQuickOpen] = useState(false);
 
   // Ctrl N: the quick bar from anywhere; Ctrl Shift N: the draft task page.
@@ -124,6 +151,13 @@ export function App() {
     () =>
       onHostEvent((e) => {
         if (e.type !== "review.open" || Date.now() - Date.parse(e.at) > 60_000) return;
+        // 远程 Reviewer (2026-11-02): a turn the device a task is granted to started shows here only with 「我也关心」 ticked.
+        if (e.onlyIfAlsoMine && !readIds(ALSO_MINE_KEY).includes(e.onlyIfAlsoMine)) return;
+        const remote = e.target.remote;
+        if (remote && e.target.mode === "file" && e.target.file) {
+          openViewer({ path: remoteProjectPath(e.target.file), remote, ...(e.target.line ? { line: e.target.line, ...(e.target.endLine ? { endLine: e.target.endLine } : {}) } : {}) });
+          return;
+        }
         if (e.target.mode === "file" && e.target.file) {
           openViewer({ path: e.target.file, workspaceId: e.target.workspaceId, sessionId: e.target.sessionId, line: e.target.line, endLine: e.target.endLine });
           return;
@@ -136,7 +170,9 @@ export function App() {
   useEffect(
     () =>
       onHostEvent((e) => {
-        if (e.type === "viewpack.open" && Date.now() - Date.parse(e.at) <= 60_000) openViewer({ path: "", pack: e.packId, ...(e.itemId ? { item: e.itemId } : {}) });
+        if (e.type !== "viewpack.open" || Date.now() - Date.parse(e.at) > 60_000) return;
+        if (e.onlyIfAlsoMine && !readIds(ALSO_MINE_KEY).includes(e.onlyIfAlsoMine)) return;
+        openViewer({ path: "", pack: e.packId, ...(e.itemId ? { item: e.itemId } : {}), ...(e.remote ? { remote: e.remote } : {}) });
       }),
     [],
   );
@@ -149,9 +185,11 @@ export function App() {
       // From Focus: a task (and session), or the board when no task is named (scheduler proposals).
       // From the bookmarks window too: a passage to scroll to and flash.
       window.amo?.onNavigate?.(({ taskId, sessionId, passage, topicId, calloutId, settings: settingsPage }) => {
-        // 远程 (2026-10-29): Focus's 「在设置里看」 on a pairing request.
+        // 远程 (2026-10-29): Focus's 「去处理」 on a pairing or task request → the 远程 dialog (设置 → 远程 before it was its
+        // own; the shell still asks with `settings: "remote"`).
         if (settingsPage === "remote") {
-          setSettingsOpen({ page: "remote", at: Date.now() });
+          setSettingsOpen(false);
+          setRemoteOpen(true);
           return;
         }
         const was = viewNow.current;
@@ -177,7 +215,8 @@ export function App() {
   // A place come back to that is gone (a deleted task, an archived topic or project): the board, everything in scope.
   const ready = host.kind === "ready" ? host.state : null;
   // 「AMO 娘」 (2026-10-26): while she is the 桌宠, the top-left icon and the window's are hers (focus/mascot.ts).
-  const seen = useSessionSeen();
+  const seenHere = useSessionSeen();
+  const seen = ready ? withGrants(seenHere, ready.tasks, ready.sessions) : seenHere;
   const mascot = useMascotIcon(ready?.sessions ?? null, seen);
   useEffect(() => window.amo?.setAppIcon?.(mascot?.file ?? null), [mascot?.file]);
   useEffect(() => {
@@ -192,8 +231,8 @@ export function App() {
   if (host.kind !== "ready") {
     return (
       <div className="app">
-        <TopBar onView={() => undefined} needs={0} scopeName="" focus={focus} pin={pin} />
-        <ViewBar views={VIEWS} view={view} scope={scope} onView={() => undefined} onNew={() => undefined} search={<SearchBox state={null} onOpen={() => undefined} disabled />} disabled />
+        <TopBar onView={() => undefined} needs={0} scopeName="" focus={focus} />
+        <ViewBar views={VIEWS.filter((d) => !d.experimental)} view={view} scope={scope} onView={() => undefined} onNew={() => undefined} search={<SearchBox state={null} onOpen={() => undefined} disabled />} disabled />
         <div className="placeholder" data-testid="host-status">
           {host.kind === "connecting" ? "正在连接 Host…" : `未连接：${host.reason}`}
         </div>
@@ -205,7 +244,9 @@ export function App() {
   const disabled = settings?.disabledFeatures ?? [];
   // 设置 → 模型 → 快速选择, for every model row of this window.
   setQuickModels(settings?.quickModels);
-  const views = VIEWS.filter((d) => featureOn(disabled, d.feature));
+  // 测试功能 (2026-11-01): their tabs and pages are there only while turned on; until the settings arrive, none are.
+  const experimental = settings?.experimentalFeatures ?? [];
+  const views = VIEWS.filter((d) => featureOn(disabled, d.feature) && experimentalOn(experimental, d.experimental));
   const planning = featureOn(disabled, "planning");
   const decisionsByTask = new Map<string, number>();
   for (const d of openDecisions) if (d.taskId) decisionsByTask.set(d.taskId, (decisionsByTask.get(d.taskId) ?? 0) + 1);
@@ -222,6 +263,7 @@ export function App() {
     scope,
     data: { unreadMail, openDecisions, decisionsByTask, checklist, proposals, todos },
     disabled,
+    experimental,
     setView,
   };
   // A page of a feature that was just turned off falls back to the board.
@@ -249,10 +291,12 @@ export function App() {
         needs={needs}
         scopeName={scopeName}
         focus={focus}
-        pin={pin}
         onMarks={() => openMarks(marksTarget())}
         nav={{ ...nav, go }}
+        remote={{ ...remoteButton(remoteState), current: remoteOpen, open: () => setRemoteOpen(true) }}
+        duty={{ on: duty?.items.filter((i) => i.enabled).length ?? 0, total: duty?.items.length ?? 0, running: (duty?.running.length ?? 0) > 0, open: () => setDutyOpen(true) }}
       />
+      <DevUiBar link={link} dir={settings?.devUiDir ?? null} />
       <div className="body">
         <ScopeNav
           link={link}
@@ -267,6 +311,8 @@ export function App() {
             setView({ kind: "board" });
           }}
           onSettings={() => setSettingsOpen({ at: Date.now() })}
+          // 全景 (11-04): from the left column, not a tab; a task opened from it counts as in it.
+          panorama={views.some((d) => d.kind === "panorama") ? { current: shown.kind === "panorama" || ("back" in shown && shown.back?.kind === "panorama"), open: () => setView({ kind: "panorama" }) } : undefined}
         />
         <div className="main-col">
           <ViewBar
@@ -284,12 +330,61 @@ export function App() {
         </div>
       </div>
       <HostErrorToast />
-      {settingsOpen && <SettingsDialog key={settingsOpen.at} link={link} settings={settings} workspaces={state.workspaces} tasks={state.tasks} topics={state.topics} profiles={state.profiles} {...(settingsOpen.page ? { page: settingsOpen.page } : {})} onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && (
+        <SettingsDialog
+          key={settingsOpen.at}
+          link={link}
+          state={state}
+          settings={settings}
+          {...(settingsOpen.page ? { page: settingsOpen.page } : {})}
+          onClose={() => setSettingsOpen(false)}
+          onOpenRemote={() => {
+            setSettingsOpen(false);
+            setRemoteOpen(true);
+          }}
+        />
+      )}
+      {dutyOpen && (
+        <DutyDialog
+          link={link}
+          state={state}
+          onClose={() => setDutyOpen(false)}
+          onOpenTask={(taskId, sessionId) => {
+            setDutyOpen(false);
+            setView({ kind: "task", taskId, ...(sessionId ? { sessionId } : {}), nav: Date.now() });
+          }}
+          onSettings={() => {
+            setDutyOpen(false);
+            setSettingsOpen({ page: "duty", at: Date.now() });
+          }}
+        />
+      )}
+      {remoteOpen && (
+        <RemoteDialog
+          link={link}
+          tasks={state.tasks}
+          profiles={state.profiles}
+          workspaces={state.workspaces}
+          topics={state.topics}
+          onClose={() => setRemoteOpen(false)}
+          onOpenTask={(taskId) => {
+            setRemoteOpen(false);
+            setView({ kind: "task", taskId, nav: Date.now() });
+          }}
+          // 远程创建 (2026-10-29): the new-task page in 「在别的设备上」.
+          onNewTaskOn={(peer) => {
+            setRemoteOpen(false);
+            setView({ kind: "new", remote: peer });
+          }}
+        />
+      )}
       {quickOpen && (
         <QuickStart
           link={link}
           workspaces={state.workspaces}
           topics={state.topics}
+          tasks={state.tasks}
+          sessions={state.sessions}
           profiles={state.profiles}
           onClose={() => setQuickOpen(false)}
           onExpand={() => {

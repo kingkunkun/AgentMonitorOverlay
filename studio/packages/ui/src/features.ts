@@ -1,7 +1,7 @@
 import type { AnyViewDef, BoardPanel } from "./shell/views.js";
 import { boardView } from "./board/view.js";
 import { canvasView } from "./canvas/view.js";
-import { packsView } from "./packs/view.js";
+import { panoramaView } from "./panorama/view.js";
 import { newTaskView } from "./newtask/view.js";
 import { taskView } from "./task/view.js";
 import { proposalsPanel } from "./planning/view.js";
@@ -12,4 +12,5 @@ import { proposalsPanel } from "./planning/view.js";
 /** Panels shown above the board, in order. */
 export const BOARD_PANELS: readonly BoardPanel[] = [proposalsPanel];
 
-export const VIEWS: readonly AnyViewDef[] = [boardView(BOARD_PANELS), canvasView, packsView, newTaskView, taskView];
+// 全景 (2026-11-01) after the canvas; it is a 测试功能, there only while turned on. 11-04: no tab; the left column opens it.
+export const VIEWS: readonly AnyViewDef[] = [boardView(BOARD_PANELS), canvasView, panoramaView, newTaskView, taskView];

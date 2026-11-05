@@ -1,12 +1,16 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, protocol, screen, shell, Tray } from "electron";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, protocol, screen, session, shell, Tray } from "electron";
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { amoLocalHome } from "@amo-studio/account";
+import { badgedImage, TrayMenu, type MenuEntry } from "@amo-studio/traymenu";
+import { RelayAttentionReader, trayLook, type RelayAttention, type TrayLook } from "./relay-attention.js";
 import { startDetached, startEnv, type LaunchSpec } from "./launch.js";
 import { Platform, type PlatformShell } from "./platform.js";
+import { logTiming } from "./running.js";
 import { afterPid, forwardArgs, forwardTarget } from "./self-update.js";
-import type { PlatformCalls, PlatformView } from "./view.js";
+import type { OpenResult, PlatformCalls, PlatformView } from "./view.js";
+import { trayClickAction, trayMenu, type TrayAction, type TrayItem, type TrayState } from "./tray.js";
 
 // AMO 平台 (plans/amo-lan-platform.md, step 2): a tray program that installs, updates and starts the AMO tools from the
 // team server. One instance; the window is made when shown and destroyed when closed — the program stays in the tray
@@ -47,7 +51,7 @@ app.setPath("userData", join(amoLocalHome(), "platform-profile"));
 if (process.platform === "win32") app.setAppUserModelId("AMO.Platform");
 protocol.registerSchemesAsPrivileged([{ scheme: SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 
-type TestGlobals = { __platformForward?: LaunchSpec; __platformPicks?: string[]; __platformOpened?: string[]; __platformExternal?: string[]; __platformCopied?: string; __platformOpenAtLogin?: boolean; __platformOpenAtLoginExe?: string | null; __platformRestart?: LaunchSpec; __platformTray?: () => string[]; __platformTrayClick?: (label: string) => void; __platformShow?: () => void };
+type TestGlobals = { __platformTrayLook?: () => TrayLook & { blinking: boolean }; __platformForward?: LaunchSpec; __platformPicks?: string[]; __platformOpened?: string[]; __platformExternal?: string[]; __platformCopied?: string; __platformOpenAtLogin?: boolean; __platformOpenAtLoginExe?: string | null; __platformRestart?: LaunchSpec; __platformTray?: () => string[]; __platformTrayClick?: (label: string) => void; __platformTrayIconClick?: () => void; __platformShow?: () => void; __platformClaudeInstall?: { exe: string; args: string[] }[]; __platformNpm?: { exe: string; args: string[] }[] };
 const g = globalThis as TestGlobals;
 
 let win: BrowserWindow | null = null;
@@ -111,6 +115,7 @@ async function restart(spec: LaunchSpec): Promise<void> {
     return;
   }
   app.releaseSingleInstanceLock();
+  logTiming(process.env, `重启平台：旧平台（进程 ${process.pid}）启动新平台`);
   try {
     await startDetached(spec);
   } catch (err) {
@@ -121,7 +126,57 @@ async function restart(spec: LaunchSpec): Promise<void> {
   quit();
 }
 
-const platform = new Platform({ env: process.env, argv: process.argv, version: VERSION, testMode, shell: platformShell, selfExe, restart });
+/**
+ * Test mode with AMO_PLATFORM_TEST_CLAUDE_INSTALL=1: `claude install` is recorded instead of run (the test's "Claude
+ * Code" is some other small program), and its one visible step is done as Claude Code does it — the version's file
+ * copied to %USERPROFILE%\.local\bin\claude.exe — so checking again finds what was downloaded.
+ */
+const claudeRun =
+  testMode && process.env.AMO_PLATFORM_TEST_CLAUDE_INSTALL === "1"
+    ? async (exe: string, args: string[]) => {
+        g.__platformClaudeInstall = [...(g.__platformClaudeInstall ?? []), { exe, args }];
+        const bin = join(process.env.USERPROFILE ?? "", ".local", "bin");
+        mkdirSync(bin, { recursive: true });
+        copyFileSync(exe, join(bin, "claude.exe"));
+        return { ok: true, out: "Claude Code successfully installed!" };
+      }
+    : undefined;
+
+/**
+ * Test mode with AMO_PLATFORM_TEST_NPM_INSTALL=1: npm is recorded instead of run, and `install -g` does the one thing
+ * checking again looks at — the .tgz last given to `cache add` (the test's "Codex" is some other small program) copied to
+ * %APPDATA%\npm\codex.exe, where npm keeps its global commands.
+ */
+const npmRun = (() => {
+  if (!testMode || process.env.AMO_PLATFORM_TEST_NPM_INSTALL !== "1") return undefined;
+  let cached: string | null = null;
+  return async (exe: string, args: string[]) => {
+    g.__platformNpm = [...(g.__platformNpm ?? []), { exe, args }];
+    if (args[0] === "cache") cached = args[2] ?? null;
+    if (args[0] === "install" && cached) {
+      const bin = join(process.env.APPDATA ?? "", "npm");
+      mkdirSync(bin, { recursive: true });
+      copyFileSync(cached, join(bin, "codex.exe"));
+    }
+    return { ok: true, out: "added 2 packages in 4s" };
+  };
+})();
+
+/**
+ * 用完整包's download (2026-11-03): Chromium's network stack, not Node's fetch the update file by file runs on (that is
+ * what broke). Its own session, without a proxy: the team server is on the LAN, and Node's fetch does not go through
+ * the system proxy either (a proxy app set as Windows' proxy would otherwise get it).
+ */
+let packageSession: Electron.Session | null = null;
+const packageFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+  if (!packageSession) {
+    packageSession = session.fromPartition("amo-platform-package", { cache: false });
+    await packageSession.setProxy({ mode: "direct" });
+  }
+  return packageSession.fetch(input instanceof URL ? input.href : input, init);
+}) as typeof fetch;
+
+const platform = new Platform({ env: process.env, argv: process.argv, version: VERSION, testMode, shell: platformShell, selfExe, restart, packageFetch, ...(claudeRun ? { claudeRun } : {}), ...(npmRun ? { npmRun } : {}) });
 
 // ---- the window
 
@@ -148,7 +203,7 @@ function createWindow(): BrowserWindow {
     ...(ICON ? { icon: ICON } : {}),
     // The page's top bar is the title bar and draws the window buttons (as WorkStudio and 中转).
     frame: false,
-    backgroundColor: "#fbfaf7",
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#111316" : "#fbfaf7",
     show: false,
     ...(testMode ? { focusable: false, skipTaskbar: true } : {}),
     webPreferences: { preload: join(here, "preload.cjs"), sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: !testMode },
@@ -172,8 +227,8 @@ function createWindow(): BrowserWindow {
       w.webContents.toggleDevTools();
     }
   });
-  // Coming forward: what runs may have changed (a tool closed, Studio's sessions).
-  w.on("focus", () => void platform.refresh());
+  // Coming forward: what runs may have changed (a tool closed, Studio's sessions); the server only now and then.
+  w.on("focus", () => void platform.refresh({ focus: true }));
   // Studio's card (2026-10-29: its Host's state, and whether 重启 Studio can be clicked): asked again every 10 s while the
   // window is shown — only the Host's /api/health, not the server or Windows' process list.
   const studioTimer = setInterval(() => {
@@ -199,29 +254,65 @@ function showWindow(): void {
 
 // ---- the tray
 
-function trayItems(): Array<{ label: string; click: () => void } | { type: "separator" }> {
-  const tools = platform.installedTools();
-  return [
-    { label: "打开 AMO 平台", click: showWindow },
-    ...(tools.length ? [{ type: "separator" as const }] : []),
-    ...tools.map((t) => ({
-      label: `打开 ${t.name}`,
-      click: () =>
-        void platform.open(t.id).then((r) => {
-          // Studio without its data dir: the window, on the page where it is set.
-          if (!r.ok) {
-            showWindow();
-            win?.webContents.send("platform:notice", { tool: t.id, ...r });
-          }
-        }),
-    })),
-    { type: "separator" },
-    { label: "退出", click: quit },
-  ];
+/** What waits in AMO 中转 started by the platform (relay-attention.ts: the file it writes), looked at every second. */
+const relayReader = RelayAttentionReader.forEnv(process.env);
+let relayNow: RelayAttention | null = null;
+
+/** The tray's state: the platform's, and what waits in 中转. */
+function trayState(): TrayState {
+  return { ...platform.trayState(), relayCount: relayNow?.count ?? 0 };
 }
 
-function updateTray(): void {
-  if (tray) tray.setContextMenu(Menu.buildFromTemplate(trayItems()));
+/** The tray menu (tray.ts, 2026-10-29): every tool's items, one part each, not folded. */
+function trayItems(): TrayItem[] {
+  return trayMenu(trayState());
+}
+
+/** Runs what a tray item (or a click on the icon) stands for. */
+function runTray(action: TrayAction): void {
+  const said = (tool: string) => (r: OpenResult) => {
+    // Studio without its data dir, a tool gone: the window, saying why.
+    if (!r.ok) {
+      showWindow();
+      win?.webContents.send("platform:notice", { tool, ...r });
+    }
+  };
+  switch (action.kind) {
+    case "open":
+      void platform.open(action.tool).then(said(action.tool));
+      return;
+    case "toggle-notes":
+      void platform.toggleNotes().then(said("notes"));
+      return;
+    case "notes":
+      void platform.openNotes(action.what).then(said("notes"));
+      return;
+    case "quit":
+      void platform.close(action.tool).then(said(action.tool));
+      return;
+    case "restart-studio":
+      void platform.restartStudio();
+      return;
+    case "show-platform":
+      showWindow();
+      return;
+    case "set-click":
+      void platform.setTrayClick(action.to);
+      return;
+    case "quit-platform":
+      quit();
+      return;
+  }
+}
+
+/** The menu on a right-click (2026-10-29, the user: like 便签's, not Windows' own), made from the state as it is then;
+ *  what a click on the icon does is in bold. */
+const trayWindow = new TrayMenu({ label: "AMO 平台菜单", width: 236 });
+function openTrayMenu(): void {
+  const click = JSON.stringify(trayClickAction(trayState()));
+  trayWindow.open(
+    trayItems().map((i): MenuEntry => (i.kind === "separator" ? { kind: "rule" } : i.kind === "heading" ? { kind: "title", label: i.label } : { kind: "item", label: i.label, strong: JSON.stringify(i.action) === click, ...(i.kind === "radio" ? { checked: i.checked } : {}), run: () => runTray(i.action) })),
+  );
 }
 
 /** The tray icon at each scale Windows may ask for: assets/icon-16…32.png (scripts/make-icons.mjs; 16–24 px are the
@@ -241,11 +332,62 @@ function trayImage(): Electron.NativeImage {
   return ICON ? nativeImage.createFromPath(ICON).resize({ width: 16, height: 16 }) : nativeImage.createEmpty();
 }
 
+// 中转's icon while something waits there (2026-10-29, the user: 「收起来的托盘则切成 relay 图标来闪，也显示信息数量」):
+// with the count, blinking with the plain one while 中转's window is not looked at; the platform's own once nothing
+// waits. assets/relay-16…32.png are 中转's tray PNGs (scripts/make-icons.mjs copies them here).
+const relayPngs = (() => {
+  const out = new Map<number, Buffer>();
+  for (const size of [16, 20, 24, 32]) {
+    const file = join(here, "..", "assets", `relay-${size}.png`);
+    if (existsSync(file)) out.set(size, readFileSync(file));
+  }
+  return out;
+})();
+const images: { platform?: Electron.NativeImage; relay?: Electron.NativeImage; badged?: { count: number; image: Electron.NativeImage } } = {};
+function relayImage(badge: boolean, count: number): Electron.NativeImage {
+  if (!badge) {
+    if (!images.relay) {
+      const image = nativeImage.createEmpty();
+      for (const [size, buffer] of relayPngs) image.addRepresentation({ scaleFactor: size / 16, buffer });
+      images.relay = image.isEmpty() ? trayImage() : image;
+    }
+    return images.relay;
+  }
+  if (images.badged?.count !== count) images.badged = { count, image: badgedImage(relayPngs, count) };
+  return images.badged.image;
+}
+
+let look: TrayLook = trayLook(null);
+let blink: ReturnType<typeof setInterval> | null = null;
+function showLook(next: TrayLook): void {
+  if (JSON.stringify(next) === JSON.stringify(look)) return;
+  look = next;
+  if (blink) clearInterval(blink);
+  blink = null;
+  tray?.setToolTip(look.tooltip);
+  if (look.icon === "platform") {
+    tray?.setImage((images.platform ??= trayImage()));
+    return;
+  }
+  let on = true;
+  tray?.setImage(relayImage(true, look.count));
+  if (look.blink) blink = setInterval(() => tray?.setImage(relayImage((on = !on), look.count)), 500);
+}
+
+function watchRelay(): void {
+  setInterval(() => {
+    relayNow = relayReader.read();
+    showLook(trayLook(relayNow));
+  }, 1000);
+}
+
 function createTray(): void {
-  tray = new Tray(trayImage());
+  tray = new Tray((images.platform ??= trayImage()));
   tray.setToolTip("AMO 平台");
-  tray.on("click", showWindow);
-  updateTray();
+  // A click opens 便签 or Studio, as chosen in the menu (2026-10-29, the user), or 中转 while its icon shows; the
+  // platform's window is in the menu.
+  tray.on("click", () => runTray(trayClickAction(trayState())));
+  tray.on("right-click", openTrayMenu);
 }
 
 function quit(): void {
@@ -255,7 +397,7 @@ function quit(): void {
 
 // ---- the page's calls
 
-const CALLS = new Set<keyof PlatformCalls>(["login", "register", "serverInfo", "logout", "loadProfile", "saveProfile", "refresh", "install", "rollback", "uninstall", "open", "setChannel", "setOpenAtLogin", "pickStudioDataDir", "openPath", "dismiss", "environment", "openDownload", "copyInstallCommand", "updateSelf", "restartSelf", "dismissSelf", "restartStudio", "refreshStudio"]);
+const CALLS = new Set<keyof PlatformCalls>(["login", "register", "serverInfo", "logout", "loadProfile", "saveProfile", "refresh", "install", "rollback", "uninstall", "open", "close", "setChannel", "setOpenAtLogin", "setTheme", "pickStudioDataDir", "openPath", "dismiss", "environment", "updateEnvironment", "openDownload", "copyInstallCommand", "updateSelf", "updateSelfFull", "restartSelf", "dismissSelf", "restartStudio", "refreshStudio"]);
 
 function wire(): void {
   ipcMain.handle("platform:view", () => platform.view());
@@ -270,15 +412,10 @@ function wire(): void {
     if (action === "minimize") w.minimize();
     else if (action === "close") w.close();
   });
-  let lastTools = "";
   platform.onChange((view: PlatformView) => {
     if (win && !win.isDestroyed()) win.webContents.send("platform:view", view);
-    // The tray's 打开 items follow what is installed.
-    const tools = view.tools.filter((t) => t.installed).map((t) => t.id).join(",");
-    if (tools !== lastTools) {
-      lastTools = tools;
-      updateTray();
-    }
+    // 主题 (2026-10-29): the page leaves it to the system's colours (base.css), which this sets for every window here.
+    if (nativeTheme.themeSource !== view.theme) nativeTheme.themeSource = view.theme;
   });
 }
 
@@ -286,14 +423,18 @@ async function start(): Promise<void> {
   Menu.setApplicationMenu(null);
   serveUi();
   wire();
+  nativeTheme.themeSource = platform.view().theme;
   if (!testMode) createTray();
+  watchRelay();
   if (testMode)
     Object.assign(g, {
-      __platformTray: () => trayItems().map((i) => ("label" in i ? i.label : "—")),
+      __platformTrayLook: () => ({ ...look, blinking: blink !== null }),
+      __platformTray: () => trayItems().map((i) => (i.kind === "separator" ? "—" : i.kind === "heading" ? `# ${i.label}` : i.kind === "radio" ? `${i.checked ? "●" : "○"} ${i.label}` : i.label)),
       __platformTrayClick: (label: string) => {
-        const item = trayItems().find((i) => "label" in i && i.label === label);
-        if (item && "click" in item) item.click();
+        const item = trayItems().find((i) => (i.kind === "item" || i.kind === "radio") && i.label === label);
+        if (item && (item.kind === "item" || item.kind === "radio")) runTray(item.action);
       },
+      __platformTrayIconClick: () => runTray(trayClickAction(trayState())),
       __platformShow: showWindow,
     });
   if (!startHidden) showWindow();
@@ -312,7 +453,10 @@ async function waitForPrevious(): Promise<void> {
       return false;
     }
   };
+  const started = Date.now();
   for (const until = Date.now() + 15_000; alive() && Date.now() < until; ) await new Promise((r) => setTimeout(r, 100));
+  // 2026-11-04 (the user: 重启平台 felt slow): how long the old one took to go, in platform.log.
+  logTiming(process.env, `重启平台：等旧平台（进程 ${pid}）退出 ${Date.now() - started} ms${alive() ? "，15 秒后还在" : ""}`);
 }
 
 /** This run's own arguments: after the exe when packaged; after this script when run by electron (the tests add theirs before it). */
@@ -364,5 +508,7 @@ void forwardToNewer().then(async (forwarded) => {
   app.on("before-quit", () => {
     quitting = true;
   });
-  void app.whenReady().then(start);
+  void app.whenReady()
+    .then(start)
+    .then(() => afterPid(process.argv) && logTiming(process.env, `重启平台：新平台就绪，从启动起 ${Math.round(process.uptime() * 1000)} ms`));
 });

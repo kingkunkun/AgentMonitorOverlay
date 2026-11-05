@@ -3,7 +3,7 @@ import type { OpenResult, PlatformCalls, PlatformView } from "../../../platform/
 // The AMO 平台 window's way to its main process (packages/platform/src/preload.cts → window.amoPlatform).
 
 export type { OpenResult, PlatformView, ToolView, TaskView, Channel, RegisterResult, ServerCheck, ProfileView, ProfilePatch, ProfileSaveResult } from "../../../platform/src/view.js";
-export type { EnvironmentView, EnvItemView } from "../../../platform/src/environment-view.js";
+export type { EnvFrom, EnvironmentView, EnvItemView, EnvTaskView, EnvUpdateResult } from "../../../platform/src/environment-view.js";
 
 export interface PlatformNotice {
   tool: string;
@@ -37,11 +37,5 @@ export function call<K extends keyof PlatformCalls>(method: K, ...args: Paramete
 
 export const openTool = (tool: string) => call("open", tool) as Promise<OpenResult>;
 
-export function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10 * 1024 ? 1 : 0)} KB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
-  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
-}
 
 export const serverLabel = (server: string) => server.replace(/^http:\/\//i, "");

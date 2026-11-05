@@ -1,36 +1,24 @@
 import { useEffect, useState } from "react";
 import { projectWorkspaces, type ModelProfile, type TodoItem, type Workspace, type WorkspaceActivity } from "@amo-studio/protocol";
-import { defaultProfile, pickable, profileLabel, rememberProfile } from "../lib/profiles.js";
+import { defaultProfile, pickable, profileLabel, rememberProfile, repick } from "../lib/profiles.js";
 import { call, HostApiError, type HostLink } from "../host/client.js";
-import { mergeFirstLoad, onHostEvent, onHostReconnect } from "../host/events.js";
+import { removeById, upsertById, useLiveResource } from "../host/live.js";
 
 /** Whole-picture todos, kept live (also used for scheduler proposals on the board). */
 export function useTodos(link: HostLink) {
-  const [todos, setTodos] = useState<readonly TodoItem[]>([]);
-  const [reload, setReload] = useState(0);
-  useEffect(() => {
-    let cancelled = false;
-    const load = (first = false) => call(link, "GET /api/todos").then((t) => !cancelled && setTodos((cur) => (first ? mergeFirstLoad(t, cur) : t)));
-    const off = onHostEvent((e) => {
-      if (e.type === "todo.upserted") {
-        setTodos((cur) => (cur.some((t) => t.id === e.todo.id) ? cur.map((t) => (t.id === e.todo.id ? e.todo : t)) : [...cur, e.todo]));
-      } else if (e.type === "todo.removed") {
-        setTodos((cur) => cur.filter((t) => t.id !== e.todoId));
-      }
-    });
-    const offReconnect = onHostReconnect(() => void load());
-    void load(true);
-    return () => {
-      cancelled = true;
-      off();
-      offReconnect();
-    };
-  }, [link, reload]);
+  const [todos, setTodos, reload] = useLiveResource<readonly TodoItem[]>(
+    {
+      load: () => call(link, "GET /api/todos"),
+      initial: [],
+      onEvent: (cur, e) => (e.type === "todo.upserted" ? upsertById(cur, e.todo) : e.type === "todo.removed" ? removeById(cur, e.todoId) : cur),
+    },
+    [link],
+  );
 
   /** Optimistic change: shown at once, reloaded from the Host if saving fails. */
   const setDone = (id: string, done: boolean) => {
     setTodos((cur) => cur.map((t) => (t.id === id ? { ...t, done } : t)));
-    void call(link, "PATCH /api/todos/:id", { id }, { done }).catch(() => setReload((n) => n + 1));
+    void call(link, "PATCH /api/todos/:id", { id }, { done }).catch(reload);
   };
   return { todos, setDone };
 }
@@ -167,6 +155,11 @@ function ConvertForm({
 }) {
   const [workspaceId, setWorkspaceId] = useState(todo.workspaceId ?? workspaces[0]?.id ?? "");
   const [profileId, setProfileId] = useState(defaultProfile(profiles)?.id ?? "");
+  // A model hidden in 设置 → 模型 meanwhile gives way to the default (问题 #14).
+  useEffect(() => {
+    const next = repick(profiles, profileId);
+    if (next !== null) setProfileId(next);
+  }, [profiles, profileId]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   async function convert() {
@@ -222,6 +215,10 @@ function ConvertForm({
  */
 function SchedulerRun({ link, profiles, onStarted, disabled }: { link: HostLink; profiles: readonly ModelProfile[]; onStarted(taskId: string, sessionId: string): void; disabled: boolean }) {
   const [profileId, setProfileId] = useState(() => (profiles.find((p) => /glm/i.test(p.id)) ?? defaultProfile(profiles))?.id ?? "");
+  useEffect(() => {
+    const next = repick(profiles, profileId);
+    if (next !== null) setProfileId(next);
+  }, [profiles, profileId]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   async function run() {

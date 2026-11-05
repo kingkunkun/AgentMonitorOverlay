@@ -6,8 +6,9 @@ import { connect as tcpConnect, createServer } from "node:net";
 import { join } from "node:path";
 import type { ModelProfile } from "@amo-studio/protocol";
 import type { CredentialReader } from "../credentials.js";
+import { withoutHostEnv } from "../agent-env.js";
 import { lowerAgentPriority } from "../priority.js";
-import { codexServerSpec, type CodexProviderDef } from "../profiles.js";
+import { codexServerSpec, profileGone, type CodexProviderDef } from "../profiles.js";
 import { resolveCodexCommand, type CodexCommand } from "./command.js";
 import { CodexRpcClient } from "./rpc-client.js";
 
@@ -54,6 +55,8 @@ export interface CodexServerManagerOptions {
   backoffMs?: { first: number; max: number };
   /** Where app-servers reach the AMO MCP; read when a server starts (the Host's address is known only later). */
   mcp?: () => { url: string; token: string } | null;
+  /** MCP 设置 (2026-11-04): Studio's own servers that are on, read when a server starts (not passed to running ones). */
+  extraMcp?: () => Record<string, import("@amo-studio/protocol").McpServerSpec>;
 }
 
 interface Entry {
@@ -119,6 +122,15 @@ export class CodexServerManager extends EventEmitter<CodexServerManagerEvents> {
     this.persist();
   }
 
+  /** Studio's MCP servers for a new server; a broken list must not keep Codex from starting. */
+  private extraMcp(): Record<string, import("@amo-studio/protocol").McpServerSpec> {
+    try {
+      return this.options.extraMcp?.() ?? {};
+    } catch {
+      return {};
+    }
+  }
+
   async stopAll(): Promise<void> {
     this.stopping = true;
     await Promise.all([...this.entries.keys()].map((id) => this.stop(id)));
@@ -150,7 +162,8 @@ export class CodexServerManager extends EventEmitter<CodexServerManagerEvents> {
     let entry = this.entries.get(profileId);
     if (entry) return entry;
     const profile = this.options.profiles.find((p) => p.id === profileId);
-    if (!profile || profile.runtime !== "codex") throw new Error(`unknown Codex profile ${profileId}`);
+    if (!profile) throw profileGone(profileId);
+    if (profile.runtime !== "codex") throw new Error(`unknown Codex profile ${profileId}`);
     const saved = this.readState()[profileId];
     entry = {
       profileId,
@@ -200,13 +213,14 @@ export class CodexServerManager extends EventEmitter<CodexServerManagerEvents> {
 
   private spawnServer(entry: Entry): void {
     const profile = this.options.profiles.find((p) => p.id === entry.profileId)!;
-    const spec = codexServerSpec(profile, this.options.profiles, this.options.credentials, { providers: this.options.providers, mcp: this.options.mcp?.() ?? null });
+    const spec = codexServerSpec(profile, this.options.profiles, this.options.credentials, { providers: this.options.providers, mcp: this.options.mcp?.() ?? null, extraMcp: this.extraMcp() });
     const cmd = this.options.codexCommand ?? resolveCodexCommand();
     const tokenFile = this.tokenFile(entry.profileId);
     const args = [...cmd.prefixArgs, "app-server", ...spec.configArgs, "--listen", `ws://127.0.0.1:${entry.port}`, "--ws-auth", "capability-token", "--ws-token-file", tokenFile];
     const child = spawn(cmd.command, args, {
       cwd: this.options.cwd,
-      env: withoutWindowsApps({ ...process.env, ...cmd.env, ...this.options.env, ...spec.env }),
+      // Not the Host's own variables (agent-env.ts); cmd.env puts ELECTRON_RUN_AS_NODE back when codex.js needs it.
+      env: withoutWindowsApps({ ...withoutHostEnv(process.env), ...cmd.env, ...this.options.env, ...spec.env }),
       stdio: ["ignore", "ignore", "pipe"],
       windowsHide: true,
     });

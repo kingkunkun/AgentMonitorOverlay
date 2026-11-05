@@ -1,6 +1,6 @@
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { BalanceConfig, ModelProfile } from "@amo-studio/protocol";
+import type { BalanceConfig, McpServerSpec, ModelProfile } from "@amo-studio/protocol";
 import type { CredentialReader } from "./credentials.js";
 import { AUTO_APPROVED_WRITE_TOOLS, PROMPTED_WRITE_TOOLS } from "../mcp/names.js";
 
@@ -20,15 +20,11 @@ export interface CodexProviderDef {
   catalog?: string;
 }
 
-export const CODEX_PROVIDERS: Record<string, CodexProviderDef> = {
-  "amo-deepseek": {
-    name: "DeepSeek Flash",
-    baseUrl: "https://api.deepseek.com/",
-    wireApi: "responses",
-    envKey: "DEEPSEEK_API_KEY",
-    catalog: "deepseek-flash.models.json",
-  },
-};
+/**
+ * Built-in Codex providers: none since 2026-11-03 (the user retired DeepSeek on Codex; DeepSeek runs on DSH). The
+ * person's third-party Codex channels add theirs (channels.ts).
+ */
+export const CODEX_PROVIDERS: Record<string, CodexProviderDef> = {};
 
 /** Env var that carries the MCP-only token to Codex app-servers. */
 export const AMO_MCP_TOKEN_ENV = "AMO_STUDIO_MCP_TOKEN";
@@ -39,26 +35,18 @@ export const CLAUDE_SUBSCRIPTION_CREDENTIAL = "claude-subscription";
 export const BUILTIN_PROFILES: readonly ModelProfile[] = [
   // The person's own Codex login and default model (a ChatGPT subscription: GPT).
   { id: "codex-default", label: "GPT", runtime: "codex", provider: null, model: null },
-  {
-    id: "codex-deepseek-flash",
-    label: "DeepSeek",
-    runtime: "codex",
-    provider: "amo-deepseek",
-    model: "deepseek-flash",
-    reasoningEffort: "low",
-    credentialId: "deepseek-v4",
-  },
   // Claude Code routed to GLM (old AMO's glm-5.3 preset; the key is the Coding Plan key stored as glm-5.2).
   { id: "claude-glm", label: "GLM", runtime: "claude", provider: "glm", model: "glm-5.3[1m]", credentialId: "glm-5.2" },
   // The person's Claude subscription, on their own Claude Code login (no token since 2026-10-27).
   { id: "claude-subscription", label: "Claude", runtime: "claude", provider: "anthropic", model: null },
-  // DeepSeek on DSH's own harness (stage 17): a DSH source clone set in 设置 → 模型, the same DeepSeek key.
+  // DeepSeek on DSH's own harness (stage 17): the DSH desktop app or a source clone (设置 → 模型). It signs in with the
+  // DeepSeek account of the desktop app or with this key (2026-11-03, dsh/install.ts DSH_AUTH_KEY). Sessions of the
+  // retired `codex-deepseek-flash` (DeepSeek on Codex, removed 2026-11-03) stay readable but cannot go on.
   { id: "dsh-deepseek", label: "DeepSeek", runtime: "dsh", provider: "deepseek-official", model: null, credentialId: "deepseek-v4" },
 ];
 
 /** Built-in profiles whose site tells the balance (设置 → 模型, 左下角额度). */
 export const BUILTIN_BALANCES: Record<string, { baseUrl: string; config: BalanceConfig }> = {
-  "codex-deepseek-flash": { baseUrl: "https://api.deepseek.com", config: { template: "deepseek" } },
   "dsh-deepseek": { baseUrl: "https://api.deepseek.com", config: { template: "deepseek" } },
 };
 
@@ -73,6 +61,14 @@ export interface CodexServerSpec {
   env: Record<string, string>;
   /** Providers whose key was missing; their threads will fail to authenticate. */
   missingCredentials: string[];
+}
+
+/**
+ * A session's profile is not there any more (a removed channel, or the retired `codex-deepseek-flash`, 2026-11-03): its
+ * conversation stays readable, a new message says why it cannot go on.
+ */
+export function profileGone(profileId: string): Error {
+  return Object.assign(new Error(`这个会话用的模型渠道已经没有了（${profileId}），不能接着发消息：新开一个会话接着做`), { code: "bad_request" });
 }
 
 export class CredentialMissingError extends Error {
@@ -93,7 +89,15 @@ export function codexServerSpec(
   profile: ModelProfile,
   profiles: readonly ModelProfile[],
   credentials: CredentialReader,
-  options: { providers?: Record<string, CodexProviderDef>; assetsDir?: string; mcp?: { url: string; token: string } | null } = {},
+  options: {
+    providers?: Record<string, CodexProviderDef>;
+    assetsDir?: string;
+    mcp?: { url: string; token: string } | null;
+    /** MCP 设置 (2026-11-04): Studio's own servers that are on, for every thread of this server. */
+    extraMcp?: Record<string, McpServerSpec>;
+    /** The environment the server starts from (default: process.env): an env value of an MCP that one already has goes inline. */
+    baseEnv?: NodeJS.ProcessEnv;
+  } = {},
 ): CodexServerSpec {
   if (profile.runtime !== "codex") throw new Error(`profile ${profile.id} is not a Codex profile`);
   const providers = options.providers ?? CODEX_PROVIDERS;
@@ -139,9 +143,47 @@ export function codexServerSpec(
     env[AMO_MCP_TOKEN_ENV] = options.mcp.token;
   }
 
+  // Studio's MCP servers (设置 → MCP). Their secrets travel in the server's env like the AMO token: a stdio server's env
+  // through env_vars (a name the server already has, PATH say, goes inline instead: it is not one of Studio's secrets
+  // and must not change for the server), a remote one's headers through env_http_headers. Codex has no SSE transport.
+  const mcpSecrets: string[] = [];
+  const base = options.baseEnv ?? process.env;
+  let h = 0;
+  for (const [name, spec] of Object.entries(options.extraMcp ?? {})) {
+    if (!/^[A-Za-z0-9_-]+$/.test(name) || name === "amo") continue;
+    const key = `mcp_servers.${name}`;
+    if (spec.type === "stdio" && spec.command) {
+      configArgs.push(...configArg(`${key}.command`, spec.command));
+      if (spec.args?.length) configArgs.push("-c", `${key}.args=[${spec.args.map(tomlString).join(",")}]`);
+      const forward: string[] = [];
+      for (const [k, v] of Object.entries(spec.env ?? {})) {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) continue;
+        if (base[k] !== undefined) configArgs.push(...configArg(`${key}.env.${k}`, v));
+        else {
+          env[k] = v;
+          forward.push(k);
+          mcpSecrets.push(k);
+        }
+      }
+      if (forward.length) configArgs.push("-c", `${key}.env_vars=[${forward.map(tomlString).join(",")}]`);
+    } else if (spec.type === "http" && spec.url) {
+      configArgs.push(...configArg(`${key}.url`, spec.url));
+      const headers = Object.entries(spec.headers ?? {});
+      if (headers.length) {
+        const pairs = headers.map(([header, value]) => {
+          const envName = `AMO_STUDIO_MCP_H${h++}`;
+          env[envName] = value;
+          mcpSecrets.push(envName);
+          return `${tomlString(header)}=${tomlString(envName)}`;
+        });
+        configArgs.push("-c", `${key}.env_http_headers={${pairs.join(",")}}`);
+      }
+    }
+  }
+
   // Commands the agent runs inherit the server's environment; Codex 0.161 passed the provider keys and the MCP token
   // straight through (S4-09 review). Keep its default KEY/SECRET/TOKEN filter on and name ours explicitly.
-  const secrets = [...new Set([...[...used].map((id) => providers[id]!.envKey), AMO_MCP_TOKEN_ENV])].sort();
+  const secrets = [...new Set([...[...used].map((id) => providers[id]!.envKey), AMO_MCP_TOKEN_ENV, ...mcpSecrets])].sort();
   configArgs.push("-c", "shell_environment_policy.ignore_default_excludes=false", "-c", `shell_environment_policy.exclude=[${secrets.map(tomlString).join(",")}]`);
 
   return { profileId: profile.id, configArgs, env, missingCredentials };

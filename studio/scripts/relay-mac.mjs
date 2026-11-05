@@ -7,6 +7,8 @@
 //   node scripts/relay-mac.mjs deploy            send release/relay (npm run relay:release first); a changed service restarts
 //                              status | start | stop | restart | logs [lines]
 //                              passwd <名字> [新密码]       reset someone's password (a random one when left out) and print it
+//                              admin-password [密码]        the admin page's (/admin) password (a random one when left out)
+//                              rename <旧名字> <新名字>      an account's login name, everywhere; restarts the service (the page does it live)
 //                              backup                        a copy of the database in data/backup-<time>.db
 //                              migrate --from <data dir> [--force]   one-off: a running service's data copied over
 //   The AMO platform (2026-10-28, plans/amo-lan-platform.md):
@@ -25,16 +27,21 @@
 //                                                           and the ones a channel points at; the rest go, with their
 //                                                           files no version left uses (2026-10-28, the user);
 //                                                           --dry-run only lists what would go
+//   The Android app (2026-10-31, scripts/android-publish.mjs; not a platform tool):
+//                              android-publish [--apk <file>] [--notes "…"]   the APK (mobile/app/build/outputs/apk/debug/
+//                                  app-debug.apk by default) as the newest build the app updates itself to; checked
+//                                  against build.gradle.kts, notes from mobile/CHANGELOG.md; the newest 3 builds kept
 //                              --target-dir <dir>          any of these on a folder here instead of the Mac (tests,
 //                                                           or a relay service started here with --platform-dir <dir>)
 // SSH_HOST=<alias> to use another machine. Content updates need no restart: the service reads app/client per request.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomInt } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TOOLS, changelogSection, tool, toolVersion } from "./amo-tools.mjs";
+import { KEEP_APKS, androidRelease, placeScript } from "./android-publish.mjs";
 import { KEEP_VERSIONS, LocalTarget, ShellTarget, mb, platformCompress, promote, prune, pruneText, publish, status } from "./platform-publish.mjs";
 
 const studio = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -174,6 +181,19 @@ echo "app: $APP"; echo "data: $DATA"; health`);
     console.log(`新密码：${password}`);
     break;
   }
+  case "admin-password": {
+    const password = rest[0] ?? Array.from({ length: 12 }, () => "abcdefghjkmnpqrstuvwxyz23456789"[randomInt(31)]).join("");
+    remote(`"$NODE" "$APP/amo-relay.mjs" admin-password --data "$DATA" "$(echo ${b64(password)} | base64 -D)"`);
+    console.log(`管理页：http://<服务器>:${PORT}/admin（团队服务器是 http://172.16.8.85:${PORT}/admin）\n管理密码：${password}`);
+    break;
+  }
+  case "rename": {
+    const [from, to] = rest;
+    if (!from || !to) throw new Error("usage: relay-mac.mjs rename <旧名字> <新名字>");
+    remote(`"$NODE" "$APP/amo-relay.mjs" rename --data "$DATA" "$(echo ${b64(from)} | base64 -D)" "$(echo ${b64(to)} | base64 -D)"`);
+    remote(START);
+    break;
+  }
   case "migrate": {
     const from = flag("--from");
     if (!from || !existsSync(join(from, "relay.db"))) throw new Error("usage: relay-mac.mjs migrate --from <folder with relay.db> [--force]");
@@ -249,6 +269,31 @@ ${START}`);
     console.log(pruneText(r));
     break;
   }
+  case "android-publish": {
+    const { apk, latest } = androidRelease({ apk: flag("--apk") ? resolve(flag("--apk")) : undefined, notes: flag("--notes") });
+    const stage = mkdtempSync(join(tmpdir(), "android-publish-"));
+    try {
+      copyFileSync(apk, join(stage, latest.file));
+      writeFileSync(join(stage, "latest.json"), JSON.stringify(latest, null, 2));
+      const local = flag("--target-dir");
+      if (local) {
+        const out = join(resolve(local), "android");
+        mkdirSync(out, { recursive: true });
+        renameSync(join(stage, latest.file), join(out, latest.file));
+        renameSync(join(stage, "latest.json"), join(out, "latest.json"));
+        const old = readdirSync(out).filter((f) => f.endsWith(".apk") && f !== latest.file).sort((x, y) => statSync(join(out, y)).mtimeMs - statSync(join(out, x)).mtimeMs);
+        for (const f of old.slice(KEEP_APKS - 1)) rmSync(join(out, f));
+      } else {
+        console.log(`uploading ${latest.file}（${mb(latest.size)}）to ${host}…`);
+        await upload(stage, [latest.file, "latest.json"], "$HOME/Services/amo-relay/incoming-android");
+        remote(placeScript("$ROOT/incoming-android", "$PLATFORM/android", latest.file));
+      }
+      console.log(`已发布安卓版 ${latest.version}（versionCode ${latest.versionCode}，${mb(latest.size)}）：手机上「设置 → 更新」能看到`);
+    } finally {
+      rmSync(stage, { recursive: true, force: true });
+    }
+    break;
+  }
   default:
-    throw new Error(`unknown command ${cmd}: deploy | status | start | stop | restart | logs | passwd | backup | migrate | publish | promote | platform-status | platform-compress | platform-prune`);
+    throw new Error(`unknown command ${cmd}: deploy | status | start | stop | restart | logs | passwd | admin-password | rename | backup | migrate | publish | promote | platform-status | platform-compress | platform-prune | android-publish`);
 }

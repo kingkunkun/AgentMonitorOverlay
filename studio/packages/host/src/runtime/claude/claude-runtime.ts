@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { createSdkMcpServer, forkSession, query, renameSession, tool, type HookCallbackMatcher, type HookEvent, type SDKMessage, type SDKUserMessage, type SlashCommand as SdkSlashCommand } from "@anthropic-ai/claude-agent-sdk";
-import { parseSlashCommand, type ApprovalDecision, type Attachment, type ChatSettings, type Id, type ModelOption, type ModelProfile, type ProfileChoices, type QuestionReply, type Session, type SessionItem, type SessionOptions, type SlashCommandList, type SlashCommandResult, type Workspace, type AccountUsage } from "@amo-studio/protocol";
+import { resolve as resolvePath } from "node:path";
+import { createSdkMcpServer, forkSession, getSessionInfo, getSessionMessages, query, renameSession, tool, type HookCallbackMatcher, type HookEvent, type SDKMessage, type SDKUserMessage, type SlashCommand as SdkSlashCommand } from "@anthropic-ai/claude-agent-sdk";
+import { inTurn, parseSlashCommand, type ApprovalDecision, type Attachment, type ChatSettings, type Id, type ModelOption, type ModelProfile, type ProfileChoices, type QuestionReply, type Session, type SessionItem, type SessionOptions, type UserDelivery, type SlashCommandList, type SlashCommandResult, type Workspace, type AccountUsage, type McpApply, type OutsideSessionList, type OutsideSessionPreview } from "@amo-studio/protocol";
 import { readChatSettings } from "../chat-settings.js";
 import { CLAUDE_BUILTIN_MODELS, CLAUDE_DEFAULT_PERMISSION, CLAUDE_PERMISSIONS, claudePermissionMode } from "../choices.js";
 import type { Store } from "../../store/store.js";
 import type { CredentialReader } from "../credentials.js";
-import { RuntimeBase, type NewItemBody, type SendMode, type SessionRuntimeApi } from "../runtime.js";
+import { RuntimeBase, STOP_GRACE_MS, type NewItemBody, type SendMode, type SendOptions, type SessionRuntimeApi } from "../runtime.js";
+import { withDelivery } from "../items.js";
 import { claudeEnv, type ClaudeHome, type ClaudeProviderDef } from "./claude-env.js";
 import { claudeAutoCompactEnv } from "../compact.js";
 import { spawnClaudeProcess } from "../priority.js";
@@ -14,10 +16,11 @@ import { localClaudeHome, readClaudeLogin, rememberSessionLogin, sessionClaudeLo
 import { keepsProcess } from "./wake.js";
 import { agentsMdInstructions } from "./project-instructions.js";
 import { AMO_MCP_INSTRUCTIONS, AMO_MCP_NAME, type AmoTool } from "../../mcp/tools.js";
+import { sameProcessPart, sdkServer, type McpLaunch, type McpSource } from "../mcp-launch.js";
 import { ClaudeAsks } from "./asks.js";
 import { BLOCKED_COMMANDS, claudeCommands } from "./commands.js";
 import type { ClaudeCore } from "./core.js";
-import { newLive, type Live } from "./live.js";
+import { newLive, type Live, type LiveInput } from "./live.js";
 import { ClaudeMessages } from "./messages.js";
 import { askCommands, askModels, CLI_SETTING_SOURCES, withTimeout } from "./probe.js";
 import { ClaudeSubagents } from "./subagents.js";
@@ -26,7 +29,9 @@ import { requireClaudeCode } from "./executable.js";
 import { handoffKey, hasTranscript, importTranscript, readTranscript, withConfigDir } from "./transcripts.js";
 import { ClaudeTurns } from "./turns.js";
 import { ClaudeUsageTracker } from "./usage-tracker.js";
+import { ClaudeAccounts } from "./accounts.js";
 import { ClaudeWake } from "./wake-control.js";
+import { adoptedKey, isCompactSummary, listOutsideSessions, previewOutsideSession, sameFolder } from "./outside.js";
 
 export { claudeCommands, localCommandText } from "./commands.js";
 export { askedQuestions, describeToolUse, retryReason } from "./tool-use.js";
@@ -35,8 +40,11 @@ export { askedQuestions, describeToolUse, retryReason } from "./tool-use.js";
 // - permissionMode is passed as "default" (the CLI otherwise picks "auto", where a classifier approves instead of a
 //   person) and switched to the session's mode once running; "auto" only when the person picks 帮我审批 (10-19);
 //   canUseTool waits for the person and becomes an approval card (asks.ts);
-// - a message sent while a turn runs is queued for the next turn (the SDK does not fold it into the running one);
-// - after interrupt() the SDK ends the query with an error, which is treated as "interrupted";
+// - a message sent while a turn runs waits at the CLI: it is folded into the turn after its next tool call, or runs as
+//   the next turn (CLI 2.1.304; checked 2026-11-02 against the mock). command_lifecycle says when the model got it
+//   (`delivery` on the user item); 立即发送 makes the turn give way to it (sendNow; not `priority: "now"`, see deliver);
+// - interrupt() ends the turn with error_during_execution, treated as "interrupted"; the query goes on, and messages
+//   still waiting run right after (as the CLI's "esc to interrupt and send");
 // - one query can produce several results (a background subagent's notification starts another turn);
 // - a subagent has no session of its own in Claude: its messages carry parent_tool_use_id (subagents.ts);
 // - forks copy the transcript with forkSession() (no model call).
@@ -54,16 +62,25 @@ export interface ClaudeRuntimeOptions {
   claudeHome: string;
   /** The person's Claude Code config dir, used by sessions started with the local login (default: theirs, ~/.claude). */
   localClaudeHome?: string;
+  /** Claude 多账号 (2026-11-03): the subscription's accounts; default: the person's own dir only. */
+  accounts?: ClaudeAccounts;
   now?: () => Date;
   /** An idle query (no turn, no background task) is closed after this long; the next message resumes it. */
   idleCloseMs?: number;
+  /** 停止 not answered by the CLI this long: Studio closes its process (and, as long again later, gives up on it). */
+  stopGraceMs?: number;
   /** Variables the child environment starts from (default: process.env). */
   baseEnv?: NodeJS.ProcessEnv;
   /** The AMO MCP tools, given to every Claude session in-process (no token reaches the CLI). */
   mcpTools?: (sessionId: Id) => AmoTool[];
   /** The MCP server's instructions for this session (its role card after the general ones); the general ones when absent. */
   mcpInstructions?: (sessionId: Id) => string;
+  /** MCP 设置 (2026-11-04): the session's other MCP servers. Without it, only amo (strict with the local login, as before). */
+  mcp?: McpSource;
 }
+
+/** How long after a process is up its MCP servers' statuses are read (they connect in the background). */
+const MCP_STATUS_DELAY_MS = 8_000;
 
 /**
  * Defence in depth: an Agent call may ask for a permission `mode` (bypassPermissions, auto, dontAsk…) for its
@@ -101,6 +118,8 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
 
   /** The person's own config dir; `explicit` when they set CLAUDE_CONFIG_DIR (read once: helpers set it for a while). */
   private readonly local: { dir: string; explicit: boolean };
+  /** Claude 多账号: the subscription runs on the current one (its dir shares the default dir's records). */
+  readonly accounts: ClaudeAccounts;
 
   private readonly core: ClaudeCore;
   private readonly usageTracker: ClaudeUsageTracker;
@@ -111,7 +130,7 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
   private readonly messages: ClaudeMessages;
 
   constructor(private readonly options: ClaudeRuntimeOptions) {
-    super(options.store, "claude", options.now);
+    super(options.store, "claude", options.now, options.profiles);
     const env = options.baseEnv ?? process.env;
     this.local = { dir: options.localClaudeHome ?? localClaudeHome(env), explicit: !!options.localClaudeHome || !!env.CLAUDE_CONFIG_DIR?.trim() };
     this.core = {
@@ -125,10 +144,12 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
       close: (id) => this.close(id),
       clearIdle: (live) => this.clearIdle(live),
     };
-    this.usageTracker = new ClaudeUsageTracker(this.store, { localDir: this.local.dir, baseUrl: (p) => (p.provider ? this.options.providers[p.provider]?.baseUrl : undefined) });
+    this.accounts = options.accounts ?? new ClaudeAccounts(this.store, { defaultDir: this.local.dir, defaultExplicit: this.local.explicit, ...(options.baseEnv ? { baseEnv: options.baseEnv } : {}) });
+    this.accounts.setGuard({ blocked: () => this.switchBlocked(), beforeSwitch: () => this.beforeAccountSwitch() });
+    this.usageTracker = new ClaudeUsageTracker(this.store, { accounts: this.accounts, baseUrl: (p) => (p.provider ? this.options.providers[p.provider]?.baseUrl : undefined) });
     this.wake = new ClaudeWake(this.core, (sessionId) => {
       const profileId = this.store.getSession(sessionId)?.profileId;
-      return profileId ? this.usageTracker.usedUpUntil(profileId, this.now().getTime()) : null;
+      return profileId ? this.usageTracker.usedUpUntil(this.limitKey(profileId), this.now().getTime()) : null;
     });
     this.turns = new ClaudeTurns(this.core, (sessionId, live, by) => this.wake.onTurnStart(sessionId, live, by));
     this.asks = new ClaudeAsks(this.core);
@@ -139,7 +160,7 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
       wake: this.wake,
       recordRateLimit: (sessionId, info) => {
         const profileId = this.store.getSession(sessionId)?.profileId;
-        if (profileId) this.usageTracker.record(profileId, info);
+        if (profileId) this.usageTracker.record(this.limitKey(profileId), info);
       },
       noteSkills: (sessionId, skills) => {
         const profileId = this.store.getSession(sessionId)?.profileId;
@@ -147,14 +168,24 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
       },
       lastCommand: (sessionId) => this.lastCommand.get(sessionId),
       scheduleIdle: (sessionId, live) => this.scheduleIdle(sessionId, live),
+      noteMcp: (sessionId, live) => {
+        if (!this.options.mcp?.noteStatus) return;
+        setTimeout(() => {
+          if (this.live.get(sessionId) !== live) return;
+          void this.mcpStatus(sessionId)
+            .then((list) => list && this.options.mcp?.noteStatus?.(sessionId, list))
+            .catch(() => undefined);
+        }, MCP_STATUS_DELAY_MS).unref?.();
+      },
     });
     this.recoverAfterRestart();
   }
 
   // ---- operations -------------------------------------------------------------------------------------------------
 
-  async startSession(input: { taskId: Id | null; topicId: Id | null; profileId: Id; workspace: Workspace; title?: string; text?: string; options?: SessionOptions }): Promise<Session> {
+  async startSession(input: { taskId: Id | null; topicId: Id | null; profileId: Id; workspace: Workspace; title?: string; text?: string; options?: SessionOptions; resumeFrom?: string }): Promise<Session> {
     const profile = this.profile(input.profileId);
+    if (input.resumeFrom) return this.resumeOutside(input, profile, input.resumeFrom);
     // Fail early (missing provider, key or login) rather than on the first message.
     const home = this.newHome(profile);
     claudeEnv(profile, this.options.providers, this.options.credentials, home, this.options.baseEnv);
@@ -175,36 +206,202 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
     return this.store.getSession(session.id)!;
   }
 
+  /**
+   * 接续已有会话 (2026-11-05, plans/resume-cli-sessions.md): Claude sessions started outside Studio (a terminal, the
+   * Claude desktop app), read where the local login's sessions are. Only the subscription on the local login sees them.
+   */
+  async outsideSessions(): Promise<OutsideSessionList> {
+    const home = this.outsideHome();
+    if (!home) return { sessions: [], unavailable: "Claude 订阅没有用本机 Claude Code 的登录，看不到终端和 Claude desktop app 里的会话" };
+    return { sessions: await listOutsideSessions(home, this.store, this.store.listWorkspaces()) };
+  }
+
+  async outsidePreview(ref: string): Promise<OutsideSessionPreview | null> {
+    const home = this.outsideHome();
+    return home ? previewOutsideSession(home, ref) : null;
+  }
+
+  /** The config dir outside sessions are in: the current account's (every account links the default dir's `projects`). */
+  private outsideHome(): ClaudeHome | null {
+    const profile = this.options.profiles.find((p) => p.runtime === "claude" && this.isSubscription(p));
+    return profile && this.newHome(profile).login === "local" ? this.accountHome() : null;
+  }
+
+  /** Whether a new session of this profile can go on from that outside session; throws why not (before a task is made). */
+  async checkResume(profileId: Id, ref: string): Promise<void> {
+    await this.outsideSource(profileId, ref);
+  }
+
+  private async outsideSource(profileId: Id, ref: string) {
+    const home = this.isSubscription(this.profile(profileId)) ? this.outsideHome() : null;
+    if (!home) throw Object.assign(new Error("接续已有会话只能用 Claude 订阅（本机 Claude Code 的登录）"), { code: "bad_request" });
+    if (this.store.getKv(adoptedKey(ref)) || this.store.findSessionByRuntimeRef("claude", ref)) throw Object.assign(new Error("这个会话已经在 Studio 里了"), { code: "conflict" });
+    const info = await withConfigDir(home, () => getSessionInfo(ref));
+    if (!info) throw Object.assign(new Error("找不到这个会话的对话记录（可能已被删除）"), { code: "not_found" });
+    return { home, info };
+  }
+
+  /**
+   * A new session that goes on from an outside one: always from a copy (forkSession, no model call), so the original is
+   * left as it is — it may still be open in the desktop app, and two writers on one transcript would break it. The copy
+   * sits beside the original (its folder is the original's); the CLI finds it by id from the project folder Studio runs
+   * it in (checked 2026-11-05). The conversation since its last compaction is imported, as the model will see it.
+   */
+  private async resumeOutside(input: { taskId: Id | null; topicId: Id | null; workspace: Workspace; title?: string; text?: string; options?: SessionOptions }, profile: ModelProfile, ref: string): Promise<Session> {
+    const { home, info } = await this.outsideSource(profile.id, ref);
+    const original = (info.customTitle || info.summary || info.firstPrompt || "").trim().slice(0, 100);
+    const title = (input.title?.trim() || original || "接续的会话").slice(0, 100);
+    const forked = await withConfigDir(home, () => forkSession(ref, { title }));
+    const session = this.createSession({
+      taskId: input.taskId,
+      topicId: input.topicId,
+      parentId: null,
+      kind: "main",
+      profileId: profile.id,
+      workspaceId: input.workspace.id,
+      title,
+      runtimeRef: forked.sessionId,
+      options: input.options ?? {},
+    });
+    rememberSessionLogin(this.store, session.id, home.login);
+    this.store.setKv(adoptedKey(ref), session.id);
+    const messages = await withConfigDir(home, () => getSessionMessages(forked.sessionId));
+    const compacted = messages.some(isCompactSummary);
+    const where = info.cwd && !sameFolder(info.cwd, input.workspace.path) ? `原来在 ${info.cwd} 里工作，接过来后在项目目录 ${input.workspace.path} 里继续。` : "";
+    const parts = [
+      `接续自 Studio 之外的会话「${original || ref}」（${ref.slice(0, 8)}）。原会话没有改动，这里是它的一份副本。`,
+      where,
+      compacted ? "原会话压缩过上下文：下面只有最后一次压缩之后的对话，模型那边也只记得压缩摘要和之后的内容。" : "",
+    ];
+    this.appendItem(session.id, { type: "notice", level: "info", message: parts.filter(Boolean).join("") });
+    importTranscript(this.core, session.id, input.workspace.path, messages.filter((m) => !isCompactSummary(m)));
+    if (input.text) await this.sendMessage(session.id, input.text);
+    return this.store.getSession(session.id)!;
+  }
+
   /** Images go as base64 image blocks before the text (the CLI keeps them in the transcript). */
-  async sendMessage(sessionId: Id, text: string, images: readonly Attachment[] = []): Promise<{ mode: SendMode }> {
+  async sendMessage(sessionId: Id, text: string, images: readonly Attachment[] = [], options: SendOptions = {}): Promise<{ mode: SendMode }> {
     const session = this.writable(sessionId);
     const slash = parseSlashCommand(text);
     const blocked = slash ? BLOCKED_COMMANDS[slash.name.toLowerCase()] : undefined;
     if (blocked) throw Object.assign(new Error(blocked), { code: "bad_request" });
     if (slash) this.lastCommand.set(sessionId, slash.name);
     // Read the images first: a missing file fails the send before anything is shown or queued.
-    const blocks = images.map((a) => ({ type: "image" as const, source: { type: "base64" as const, media_type: a.mime as "image/png", data: readFileSync(a.path).toString("base64") } }));
+    const content = messageContent(text, images);
     if (!session.title) this.updateSession(sessionId, { title: (text || "图片").slice(0, 60) });
+    return this.deliver(session, content, options, (mode, delivery) => {
+      const shown = images.map((a) => ({ id: a.id, path: a.path }));
+      return this.appendItem(sessionId, { type: "user", text, ...(shown.length ? { images: shown } : {}), ...(delivery ? { delivery } : {}) }, { method: mode === "queue" ? "user/queued" : "user" }).id;
+    });
+  }
+
+  /**
+   * One message into the session's process: a turn starts, or it waits at the CLI while one runs (its item `waiting`
+   * until command_lifecycle says the model got it — only when the CLI reports msg_lifecycle_v1, else it would never
+   * clear). `item` makes the message's row (or brings one back, for 重新发送) and returns its id.
+   */
+  private async deliver(session: Session, content: SDKUserMessage["message"]["content"], options: SendOptions, item: (mode: SendMode, delivery: UserDelivery | undefined) => Id): Promise<{ mode: SendMode }> {
+    const sessionId = session.id;
     await this.closing.get(sessionId);
     const live = this.ensureLive(session);
     const mode: SendMode = live.running ? "queue" : "start";
     if (!live.running) this.turns.started(sessionId, live, "person");
-    const shown = images.map((a) => ({ id: a.id, path: a.path }));
-    this.appendItem(sessionId, { type: "user", text, ...(shown.length ? { images: shown } : {}) }, { method: mode === "queue" ? "user/queued" : "user" });
+    const itemId = item(mode, mode === "queue" && live.capabilities.has("msg_lifecycle_v1") ? "waiting" : undefined);
+    const uuid = randomUUID();
+    live.undelivered.set(uuid, itemId);
     this.clearIdle(live);
     // Goes in once the permission mode is in force, without waiting for it here: a new session's process takes a few
     // seconds to come up, and the caller (开始, 新会话) is not held for it (2026-10-23). Sends queue up in order on it.
-    const content = blocks.length ? [...blocks, ...(text ? [{ type: "text" as const, text }] : [])] : text;
-    void live.ready.then(() => live.push(content));
+    void live.ready.then(() => live.push({ content, uuid }));
+    // 立即发送 from the composer (Ctrl+Enter, 2026-11-02): the running turn gives way to it, as the button under a
+    // waiting message does. 2026-11-03 (问题 #16, "it seems to hang a long time"): it went as a `priority: "now"` message,
+    // which CLI 2.1.304 only lets through at once while a shell command is in its first second or two — after that the
+    // turn waited for the command to finish (33–40 s for a 41 s sleep against the mock; the Send now request and 停止
+    // took 0.03–0.1 s at any point, the command ended). So the message goes as any other and is sent now once at the CLI.
+    if (options.now === true && mode === "queue") {
+      void this.sendNow(sessionId, itemId).catch((err: unknown) => this.emit("log", `send now after Ctrl+Enter failed for ${sessionId}: ${String(err)}`));
+    }
     return { mode };
   }
 
+  /**
+   * 立即发送 on a waiting message (2026-11-02): the CLI's own Send now (the interrupt request with `send_now`, internal
+   * to the SDK; CLI 2.1.304 advertises interrupt_send_now_v1) — the turn gives way and the message runs at once, nothing
+   * queued is cancelled. A CLI without it (or an SDK without `request`) gets a plain interrupt, which does the same here:
+   * the waiting messages run right after. Not 停止: approvals are left to the turn's end, and there is no 15 s close.
+   */
+  async sendNow(sessionId: Id, itemId: Id): Promise<void> {
+    this.writable(sessionId);
+    const live = this.live.get(sessionId);
+    const uuid = live ? [...live.undelivered].find(([, id]) => id === itemId)?.[0] : undefined;
+    if (!live || !uuid || !live.running) return;
+    // Pressed right after sending: the CLI may still be taking the message in (it would find nothing waiting).
+    if (!live.atCli.has(uuid)) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 3000);
+        live.onAtCli.set(uuid, () => (clearTimeout(timer), resolve()));
+      });
+      live.onAtCli.delete(uuid);
+      if (!live.undelivered.has(uuid) || !live.running || live.finished) return;
+    }
+    live.givingWay = true;
+    const request = (live.q as unknown as { request?: (r: Record<string, unknown>) => Promise<{ response?: { send_now?: unknown } } | undefined> }).request;
+    try {
+      if (live.capabilities.has("interrupt_send_now_v1") && typeof request === "function") {
+        const answer = await request.call(live.q, { subtype: "interrupt", send_now: true, message_uuid: uuid });
+        // "stopped": the turn ends (its result comes after this answer). Anything else (nothing waiting, or the CLI
+        // moved what the turn waited on to the background and the turn takes the message in) ends no turn.
+        if (answer?.response?.send_now !== "stopped") live.givingWay = false;
+        this.emit("log", `${sessionId}: send now -> ${String(answer?.response?.send_now)}`);
+      } else {
+        await live.q.interrupt();
+      }
+    } catch (err) {
+      live.givingWay = false;
+      this.emit("log", `send now failed for ${sessionId}: ${String(err)}`);
+      throw Object.assign(new Error(`没能立即发送：${firstLine(err)}`), { code: "conflict" });
+    }
+  }
+
+  /**
+   * 重新发送 (2026-11-02): a message its process never read goes again, as the same row (no second copy of it). Also
+   * how Studio's inbox sends a held one (2026-11-04).
+   */
+  async resend(sessionId: Id, itemId: Id, images: readonly Attachment[] = [], options: SendOptions = {}): Promise<{ mode: SendMode }> {
+    const session = this.writable(sessionId);
+    const item = this.store.getItem(itemId);
+    if (item?.type !== "user" || item.sessionId !== sessionId) throw Object.assign(new Error(`message ${itemId} not found`), { code: "not_found" });
+    if (item.delivery !== "unsent" && item.delivery !== "held") return { mode: this.live.get(sessionId)?.running ? "queue" : "start" };
+    const content = messageContent(item.text, images);
+    return this.deliver(session, content, options, (_mode, delivery) => {
+      this.updateItem(itemId, (it) => (it.type === "user" ? withDelivery(it, delivery) : it));
+      return itemId;
+    });
+  }
+
+  /**
+   * 停止. 2026-11-01 (the user: a session hung after moving its project's Claude memory folder; 停止 left it 正在工作
+   * until the computer was restarted): the CLI is asked to stop, and Studio does not wait on it for long — a process
+   * that has not ended the turn after stopGraceMs is closed, and one that does not even go then is let go.
+   */
   async interrupt(sessionId: Id): Promise<void> {
     const live = this.live.get(sessionId);
     if (!live?.running) return;
     live.interrupted = true;
     this.asks.declineAll(live);
-    await live.q.interrupt().catch((err: unknown) => this.emit("log", `interrupt failed for ${sessionId}: ${String(err)}`));
+    const grace = this.options.stopGraceMs ?? STOP_GRACE_MS;
+    const stillRunning = () => this.live.get(sessionId) === live && live.running && !live.finished;
+    this.armStopGrace(sessionId, grace, stillRunning, () => {
+      this.appendItem(sessionId, { type: "notice", level: "warning", message: `点了停止 ${Math.round(grace / 1000)} 秒后 Claude 还没停下（它可能卡在某个命令或文件操作上），Studio 关掉了它的进程。发一条消息即可接着对话。` });
+      void this.close(sessionId);
+      // The process did not go either: its end is handled here, so the session is not left 正在工作.
+      this.armStopGrace(sessionId, grace, () => !live.finished, () => {
+        this.finish(sessionId, live, null);
+        // The next message starts a new process rather than waiting on this one (nor does the Host's shutdown).
+        this.closing.delete(sessionId);
+      }, "the CLI process did not exit after close; leaving it");
+    }, "closing its process");
+    await Promise.race([live.q.interrupt().catch((err: unknown) => this.emit("log", `interrupt failed for ${sessionId}: ${String(err)}`)), new Promise((r) => setTimeout(r, grace).unref?.())]);
   }
 
   /** Copies the transcript into a new Claude session (no model call); the branch continues from there. */
@@ -256,7 +453,8 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
     return filled;
   }
 
-  async usage(profileId: Id, refresh = false): Promise<AccountUsage | null> {
+  /** One entry per account (current first) once there are several (Claude 多账号, 2026-11-03). */
+  async usage(profileId: Id, refresh = false): Promise<AccountUsage | AccountUsage[] | null> {
     const profile = this.profile(profileId);
     if (!this.isSubscription(profile)) return null;
     return this.usageTracker.usage(profile, refresh);
@@ -302,7 +500,7 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
     const permissions = provider?.baseUrl ? CLAUDE_PERMISSIONS.map((p) => (p.id === "auto" ? { ...p, unavailable: "只有 Anthropic 的 Claude 能用（第三方模型没有这个分类器）" } : p)) : CLAUDE_PERMISSIONS;
     const base = { profileId, permissions, defaultPermission: CLAUDE_DEFAULT_PERMISSION };
     if (provider?.models) return { ...base, models: provider.models.map((m) => ({ ...m, ...(m.id === profile.model ? { isDefault: true } : {}) })), source: "builtin" };
-    const cacheKey = `${profileId}|${this.newHome(profile).login}`;
+    const cacheKey = `${profileId}|${this.newHome(profile).login}|${this.isSubscription(profile) ? this.accounts.currentId() : ""}`;
     const cached = this.modelCache.get(cacheKey);
     // An older list is answered at once and asked again behind it: asking starts a CLI, seconds that 开始 and 新会话
     // waited for (2026-10-23).
@@ -332,16 +530,13 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
   }
 
   async archive(sessionId: Id): Promise<Session[]> {
-    const changed = this.store.archiveSubtree(sessionId);
-    for (const s of changed) this.publish({ type: "session.upserted", session: s });
+    const changed = this.archiveTree(sessionId);
     await Promise.all(changed.map((s) => this.close(s.id)));
     return changed;
   }
 
   async unarchive(sessionId: Id): Promise<Session[]> {
-    const changed = this.store.unarchiveSubtree(sessionId);
-    for (const s of changed) this.publish({ type: "session.upserted", session: s });
-    return changed;
+    return this.unarchiveTree(sessionId);
   }
 
   async respondApproval(sessionId: Id, approvalId: string, decision: ApprovalDecision): Promise<void> {
@@ -402,6 +597,7 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
   /** Closes every running query and waits for the processes to end (Host shutdown). Sessions resume on the next message. */
   async closeAll(): Promise<void> {
     this.wake.shutdown();
+    this.accounts.shutdown();
     await Promise.all([...this.live.keys()].map((id) => this.close(id)));
     await Promise.all([...this.closing.values()]);
   }
@@ -455,7 +651,14 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
     if (item.state !== "running") return;
     // Without its process the command is gone already.
     if (!live?.bgItems.has(taskId)) return this.turns.settleBackground(item.id, "stopped");
-    await live.q.stopTask(taskId);
+    // Not answered in time (2026-11-01, a CLI stuck on a command): shown as stopped, with what that means.
+    const grace = this.options.stopGraceMs ?? STOP_GRACE_MS;
+    const answered = await Promise.race([live.q.stopTask(taskId).then(() => true), new Promise<false>((r) => setTimeout(() => r(false), grace).unref?.())]);
+    if (answered) return;
+    const [still] = this.store.findItems(sessionId, "background", { taskId }, { limit: 1 });
+    if (still?.type !== "background" || still.state !== "running") return;
+    this.turns.settleBackground(still.id, "stopped");
+    this.appendItem(sessionId, { type: "notice", level: "warning", message: `点了停止 ${Math.round(grace / 1000)} 秒后 Claude 还没回应，Studio 先把这条后台命令标成已停止，它可能还在跑。要彻底停掉，就停止这个会话。` });
   }
 
   /** Prompt suggestions follow the setting in running sessions too (the CLI's own setting of that name). */
@@ -479,21 +682,25 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
     // Before anything is set up: without a Claude Code the person is told so, not a spawn error.
     const exe = requireClaudeCode();
 
-    const queue: Array<SDKUserMessage["message"]["content"]> = [];
+    const queue: LiveInput[] = [];
     let wake: (() => void) | null = null;
     let ended = false;
     async function* input(): AsyncGenerator<SDKUserMessage> {
       for (;;) {
-        while (queue.length) yield { type: "user", message: { role: "user", content: queue.shift()! }, parent_tool_use_id: null, session_id: ref };
+        while (queue.length) {
+          const next = queue.shift()!;
+          yield { type: "user", message: { role: "user", content: next.content }, parent_tool_use_id: null, session_id: ref, uuid: next.uuid as `${string}-${string}-${string}-${string}-${string}` };
+        }
         if (ended) return;
         await new Promise<void>((r) => (wake = r));
         wake = null;
       }
     }
 
+    const plan = this.mcpPlan(session.id, home);
     const live = newLive(
-      (content) => {
-        queue.push(content);
+      (next) => {
+        queue.push(next);
         wake?.();
       },
       () => {
@@ -525,10 +732,15 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
         promptSuggestions: readChatSettings(this.store).promptSuggestions,
         canUseTool: (toolName, toolInput, ctx) => this.asks.askPerson(session.id, live, toolName, toolInput, ctx),
         hooks: STRIP_SUBAGENT_MODE,
-        ...this.mcpOptions(session.id),
+        ...this.mcpOptions(session.id, plan, live),
+        // MCP 设置 (2026-11-04): in the person's own config dir the CLI loads their servers itself (OAuth, plugins and
+        // its approvals as in a terminal); those turned off are denied to this process only (managedSettings is the
+        // SDK's policy tier: nothing is written, unlike toggleMcpServer, which writes ~/.claude.json), .mcp.json ones
+        // turned on are approved for it. Elsewhere, or with 加载本机 off, only what Studio passes (strict).
+        ...(plan.strict ? { strictMcpConfig: true } : {}),
+        ...(plan.deny.length ? { managedSettings: { deniedMcpServers: plan.deny.map((serverName) => ({ serverName })) } } : {}),
+        ...(plan.enableJson.length ? { settings: { enabledMcpjsonServers: plan.enableJson } } : {}),
         // A session that already has a transcript continues it; a new one starts under the id Studio chose.
-        // The local login brings the person's config dir: only Studio's MCP server, not the ones they set up there.
-        ...(home.login === "local" ? { strictMcpConfig: true } : {}),
         ...(hasTranscript(ref, home) ? { resume: ref } : { sessionId: ref }),
         pathToClaudeCodeExecutable: exe,
         spawnClaudeCodeProcess: spawnClaudeProcess((line) => this.emit("log", `${session.id}: ${line}`)),
@@ -573,6 +785,8 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
 
   /** The query ended: normally (closed), after an interrupt, or with an error. */
   private finish(sessionId: Id, live: Live, err: unknown): void {
+    if (live.finished) return;
+    live.finished = true;
     if (this.live.get(sessionId) === live) this.live.delete(sessionId);
     this.clearIdle(live);
     for (const id of live.streaming) this.updateItem(id, (it) => (it.type === "agent" ? { ...it, markdown: live.text.get(id) ?? it.markdown, streaming: false } : it));
@@ -583,6 +797,12 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
     // Background commands end with their Claude Code process.
     for (const id of live.bgItems.values()) this.turns.settleBackground(id, "stopped");
     if (live.compaction) this.updateItem(live.compaction, (it) => (it.type === "compaction" && it.state === "running" ? { ...it, state: "failed" } : it));
+    // Messages still waiting went with the process (2026-11-02: the 15 s close after 停止 lost them unseen): the person
+    // sends them again (重新发送) — not by itself, a process that had to be closed may be stuck.
+    for (const itemId of live.undelivered.values()) this.updateItem(itemId, (it) => (it.type === "user" && it.delivery === "waiting" ? withDelivery(it, "unsent") : it));
+    live.undelivered.clear();
+    live.atCli.clear();
+    for (const settle of live.onAtCli.values()) settle();
     this.subagents.endAll(live, !!err && !live.interrupted);
     if (!this.store.getSession(sessionId)) return;
     // Its CLI's timers went with the process: Studio's own takes over (see studioWakeDue).
@@ -615,6 +835,11 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
 
   private scheduleIdle(sessionId: Id, live: Live): void {
     this.clearIdle(live);
+    // A change of the person's MCP servers waited for this turn: the next message starts a process that has it.
+    if (live.mcpStale && this.canRestart(live) && !keepsProcess(this.store.getSession(sessionId)?.wake, this.now())) {
+      void this.close(sessionId);
+      return;
+    }
     if (live.background.size || live.approvals.size || live.questions.size) return;
     live.idleTimer = setTimeout(() => {
       if (live.running || live.background.size) return;
@@ -645,15 +870,9 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
     for (const s of this.store.listSessions()) {
       if (s.runtime !== "claude") continue;
       // Only what was under way, picked out by SQLite (2026-10-20: every item of every session was read and parsed).
-      for (const item of this.store.listUnfinishedItems(s.id)) {
-        if (item.type === "approval" && item.state === "pending") this.updateItem(item.id, (it) => (it.type === "approval" ? { ...it, state: "resolved-elsewhere" } : it));
-        if (item.type === "question" && item.state === "pending") this.asks.cancelQuestion(item.id);
-        if (item.type === "agent" && item.streaming) this.updateItem(item.id, (it) => (it.type === "agent" ? { ...it, streaming: false } : it));
-        if (item.type === "tool" && item.status === "running") this.updateItem(item.id, (it) => (it.type === "tool" ? { ...it, status: "failed" } : it));
-        if (item.type === "background" && item.state === "running") this.updateItem(item.id, (it) => (it.type === "background" ? { ...it, state: "stopped" } : it));
-        if (item.type === "compaction" && item.state === "running") this.updateItem(item.id, (it) => (it.type === "compaction" ? { ...it, state: "failed" } : it));
-      }
-      if (s.status === "running" || s.status === "awaiting-approval" || s.status === "awaiting-answer") {
+      for (const item of this.store.listUnfinishedItems(s.id)) if (item.type === "question" && item.state === "pending") this.asks.cancelQuestion(item.id);
+      this.settleLeftovers(s.id, { approvals: true });
+      if (inTurn(s.status)) {
         if (s.kind !== "sub") this.appendItem(s.id, { type: "notice", level: "warning", message: "Host 重启时这条会话的回复被中断了。发一条消息即可接着对话。" });
         this.setStatus(s.id, "interrupted");
       } else if (s.kind === "sub" && s.status === "idle") {
@@ -672,9 +891,13 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
    * The AMO MCP as an in-process SDK server bound to this session. Reads and writes to the session's own task are
    * allowed up front; everything else still goes through canUseTool.
    */
-  private mcpOptions(sessionId: Id) {
+  private mcpOptions(sessionId: Id, plan: McpLaunch, live: Live) {
     const tools = this.options.mcpTools?.(sessionId) ?? [];
-    if (!tools.length) return {};
+    const others = Object.fromEntries(Object.entries(plan.explicit).map(([name, spec]) => [name, sdkServer(spec)]));
+    if (!tools.length) {
+      live.mcp = { plan, amo: null, dynamic: {} };
+      return Object.keys(others).length ? { mcpServers: others as never } : {};
+    }
     const server = createSdkMcpServer({
       name: AMO_MCP_NAME,
       version: "0.5.0",
@@ -684,7 +907,63 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
       // AMO's few, always-used tools up before every first use. They stay in the prompt (2026-10-20).
       alwaysLoad: true,
     });
-    return { mcpServers: { [AMO_MCP_NAME]: server }, allowedTools: tools.filter((t) => t.autoApprove).map((t) => `mcp__${AMO_MCP_NAME}__${t.name}`) };
+    live.mcp = { plan, amo: server, dynamic: {} };
+    return { mcpServers: { ...(others as Record<string, never>), [AMO_MCP_NAME]: server }, allowedTools: tools.filter((t) => t.autoApprove).map((t) => `mcp__${AMO_MCP_NAME}__${t.name}`) };
+  }
+
+  /** The session's MCP servers now. `native`: it runs in the person's own config dir (the default account's). */
+  private mcpPlan(sessionId: Id, home: ClaudeHome): McpLaunch {
+    const native = home.login === "local" && sameDir(home.dir, this.local.dir);
+    return this.options.mcp?.launch(sessionId, native) ?? { explicit: {}, deny: [], enableJson: [], strict: home.login === "local" };
+  }
+
+  /**
+   * MCP 设置: a change of Studio's servers reaches the running process at once (setMcpServers, amo passed along: it
+   * replaces the whole dynamic set); one of the person's own (denied or approved names, strict) needs a new process —
+   * closed now when idle, else when it gets idle (scheduleIdle); the next message resumes it.
+   */
+  async refreshMcp(sessionId: Id): Promise<McpApply> {
+    const live = this.live.get(sessionId);
+    if (!live?.mcp || !this.options.mcp) return "next-message";
+    const next = this.mcpPlan(sessionId, this.homeOf(sessionId));
+    const started = live.mcp.plan.explicit;
+    // What only a new process takes: the person's own servers, or one given at the start going or changing.
+    const startChanged = Object.entries(started).some(([name, spec]) => JSON.stringify(next.explicit[name]) !== JSON.stringify(spec));
+    if (!sameProcessPart(live.mcp.plan, next) || startChanged) {
+      live.mcpStale = true;
+      if (this.canRestart(live)) {
+        await this.close(sessionId);
+        return "next-message";
+      }
+      return "after-turn";
+    }
+    const dynamic = Object.fromEntries(Object.entries(next.explicit).filter(([name]) => !(name in started)));
+    if (JSON.stringify(sortedEntries(dynamic)) === JSON.stringify(sortedEntries(live.mcp.dynamic))) return "now";
+    const all = Object.fromEntries(Object.entries(dynamic).map(([name, spec]) => [name, sdkServer(spec)])) as Record<string, never>;
+    if (live.mcp.amo) all[AMO_MCP_NAME] = live.mcp.amo as never;
+    const result = await live.q.setMcpServers(all);
+    live.mcp = { ...live.mcp, dynamic };
+    const failed = Object.entries(result.errors ?? {});
+    if (failed.length) this.appendItem(sessionId, { type: "notice", level: "warning", message: `MCP 没连上：${failed.map(([n, e]) => `${n}（${firstLine(e)}）`).join("；")}` });
+    return "now";
+  }
+
+  async mcpStatus(sessionId: Id): Promise<Array<{ name: string; status: string; error?: string; source?: string }> | null> {
+    const live = this.live.get(sessionId);
+    if (!live || live.finished) return null;
+    const list = await withTimeout(live.q.mcpServerStatus(), 5_000);
+    return list
+      .filter((x) => x.name !== AMO_MCP_NAME)
+      .map((x) => {
+        const source = x.source ?? x.scope;
+        return { name: x.name, status: x.status, ...(x.error ? { error: x.error } : {}), ...(source ? { source } : {}) };
+      });
+  }
+
+  /** Nothing of the process's own is under way: no turn, approval, question, background command or running agent. */
+  private canRestart(live: Live): boolean {
+    if (live.running || live.background.size || live.approvals.size || live.questions.size) return false;
+    return ![...live.subs.values()].some((id) => this.store.getSession(id)?.status === "running");
   }
 
   /** Whether the profile is the Claude subscription (the only one the local login applies to). */
@@ -692,14 +971,53 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
     return !!profile.provider && this.options.providers[profile.provider]?.auth === "oauth";
   }
 
-  /** Where a session started now runs: the subscription follows 设置 → 模型, every other profile Studio's own dir. */
+  /** Where a session started now runs: the subscription on the current account, every other profile Studio's own dir. */
   private newHome(profile: ModelProfile): ClaudeHome {
-    return this.isSubscription(profile) && readClaudeLogin(this.store) === "local" ? { ...this.local, login: "local" } : { dir: this.options.claudeHome, login: "token" };
+    return this.isSubscription(profile) && readClaudeLogin(this.store) === "local" ? this.accountHome() : { dir: this.options.claudeHome, login: "token" };
   }
 
-  /** Where an existing session runs: the way it was started (its transcript is in that dir). */
+  /**
+   * Where an existing session runs: the way it was started. With the local login that is the current account, whichever
+   * it was started on: every account's dir shares the default dir's `projects`, so the transcript is found (2026-11-03).
+   */
   private homeOf(sessionId: Id): ClaudeHome {
-    return sessionClaudeLogin(this.store, sessionId) === "local" ? { ...this.local, login: "local" } : { dir: this.options.claudeHome, login: "token" };
+    return sessionClaudeLogin(this.store, sessionId) === "local" ? this.accountHome() : { dir: this.options.claudeHome, login: "token" };
+  }
+
+  private accountHome(): ClaudeHome {
+    const { dir, explicit } = this.accounts.currentHome();
+    return { dir, explicit, login: "local" };
+  }
+
+  /** The key of a profile's rate-limit windows: the subscription's are the current account's. */
+  private limitKey(profileId: Id): string {
+    const profile = this.options.profiles.find((p) => p.id === profileId);
+    return profile && this.isSubscription(profile) ? `${profileId}|${this.accounts.currentId()}` : profileId;
+  }
+
+  /**
+   * Claude 多账号: switching waits until no session on the local login is at work — a turn, an approval or question
+   * waiting, a background command or a subagent in its process (the user, 2026-11-03: 会话进行中禁止切换).
+   */
+  private switchBlocked(): string | null {
+    const busy = new Set<Id>();
+    for (const s of this.store.listSessions()) {
+      if (s.runtime !== "claude" || s.archivedAt || s.kind === "sub") continue;
+      if (!inTurn(s.status)) continue;
+      if (sessionClaudeLogin(this.store, s.id) === "local") busy.add(s.id);
+    }
+    for (const [id, live] of this.live) {
+      if (sessionClaudeLogin(this.store, id) !== "local") continue;
+      if (live.running || live.background.size || live.approvals.size || live.questions.size) busy.add(id);
+    }
+    return busy.size ? `有 ${busy.size} 个 Claude 会话正在进行，等它${busy.size > 1 ? "们" : ""}结束（或停止）后再切换账号` : null;
+  }
+
+  /** Before switching: the idle processes on the old account close; their next message resumes on the new one. */
+  private async beforeAccountSwitch(): Promise<void> {
+    const ids = [...this.live.keys()].filter((id) => sessionClaudeLogin(this.store, id) === "local");
+    await Promise.all(ids.map((id) => this.close(id)));
+    await Promise.all(ids.map((id) => this.closing.get(id)));
   }
 
   private cwdOf(sessionId: Id): string | undefined {
@@ -713,11 +1031,24 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
     return p;
   }
 
-  private writable(id: Id): Session {
-    const s = this.requireSession(id);
-    if (s.kind === "sub") throw Object.assign(new Error("Claude 的子 agent 不能单独接收消息，请在父会话里继续"), { code: "read_only" });
-    if (s.writer === "archived" || s.writer === "terminal-handoff") throw Object.assign(new Error(`session ${id} is read-only (${s.writer})`), { code: "read_only" });
-    if (!s.runtimeRef) throw new Error(`session ${id} has no Claude session id`);
-    return s;
+  protected override writable(id: Id): Session {
+    if (this.requireSession(id).kind === "sub") throw Object.assign(new Error("Claude 的子 agent 不能单独接收消息，请在父会话里继续"), { code: "read_only" });
+    return super.writable(id);
   }
+}
+
+/** A message for the CLI: image blocks (read now, so a missing file fails the send) before the text. */
+function messageContent(text: string, images: readonly Attachment[]): SDKUserMessage["message"]["content"] {
+  const blocks = images.map((a) => ({ type: "image" as const, source: { type: "base64" as const, media_type: a.mime as "image/png", data: readFileSync(a.path).toString("base64") } }));
+  return blocks.length ? [...blocks, ...(text ? [{ type: "text" as const, text }] : [])] : text;
+}
+
+/** Two config dirs are the same folder (case and slashes aside, as on Windows). */
+function sameDir(a: string, b: string): boolean {
+  const norm = (p: string) => resolvePath(p).replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase();
+  return norm(a) === norm(b);
+}
+
+function sortedEntries<T>(v: Record<string, T>): Array<[string, T]> {
+  return Object.entries(v).sort(([a], [b]) => a.localeCompare(b));
 }

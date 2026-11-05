@@ -1,17 +1,15 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import { removeTempDir } from "@amo-studio/testkit";
+import { programLaunch } from "../support/packed.js";
 import { screenshot, studioRoot } from "../support/studio.js";
 
 // AMO 便签 as a program of its own (2026-10-23): its window in the final look, its keys, its files in its home, its
 // settings window, and only one running at a time.
 
-const require = createRequire(import.meta.url);
-const electronPath = require("electron") as unknown as string;
 const MAIN = join(studioRoot, "packages", "notes", "dist", "main.js");
 const PNG = Buffer.from("89504e470d0a1a0a0000000d4948445200000001000000010806000000", "hex");
 
@@ -19,7 +17,8 @@ const PNG = Buffer.from("89504e470d0a1a0a0000000d4948445200000001000000010806000
 function cleanEnv(home: string): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !/^(CLAUDE|ANTHROPIC_|AMO_)/.test(k)) env[k] = v;
-  return { ...env, AMO_NOTES_TEST: "1", AMO_NOTES_HOME: home };
+  // AMO_HOME too (2026-11-01, 待办): never the person's real login, device or programs.
+  return { ...env, AMO_NOTES_TEST: "1", AMO_NOTES_HOME: home, AMO_HOME: join(home, "amo-home") };
 }
 
 let app: ElectronApplication | undefined;
@@ -33,7 +32,7 @@ test.afterEach(async () => {
 
 async function launch(): Promise<{ app: ElectronApplication; pad: Page }> {
   home = mkdtempSync(join(tmpdir(), "amo-notes-e2e-"));
-  app = await _electron.launch({ executablePath: electronPath, args: [MAIN], env: cleanEnv(home) });
+  app = await _electron.launch({ ...programLaunch("notes", MAIN), env: cleanEnv(home) });
   // The 便签启动中 bar comes first; the 便签 window is the one at #scratchpad.
   const pad = await windowAt(app, "#scratchpad");
   await expect(pad.locator(".pad-root")).toBeVisible();
@@ -52,6 +51,8 @@ async function windowAt(a: ElectronApplication, hash: string): Promise<Page> {
 }
 const running = () => JSON.parse(readFileSync(join(home, "running.json"), "utf8")) as { url: string; token: string; pid: number };
 const copied = (a: ElectronApplication) => a.evaluate(() => (globalThis as { __notesCopied?: string[] }).__notesCopied?.at(-1) ?? null);
+/** How many pictures the last 复制 put on the clipboard with the text (2026-10-30). */
+const copiedImages = (a: ElectronApplication) => a.evaluate(() => (globalThis as { __notesCopiedImages?: number[] }).__notesCopiedImages?.at(-1) ?? null);
 const padVisible = (a: ElectronApplication) => a.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith("#scratchpad"))!.isVisible());
 
 /** Pastes a small drawn PNG into the page, the way a screenshot from the clipboard arrives. */
@@ -83,9 +84,9 @@ test("the window: an empty page lists its keys, typing saves to the work folder,
   // An empty page: the keys, with the show / hide shortcut as bound.
   const keys = pad.getByTestId("pad-keys");
   await expect(keys).toContainText("复制这一页并隐藏");
-  await expect(keys).toContainText("Ctrl Alt Space 随时叫回来");
+  await expect(keys).toContainText("Ctrl Shift F12 随时叫回来");
   await expect(pad.getByTestId("pad-status")).toContainText("空白页");
-  await expect(pad.getByRole("button", { name: "复制" })).toBeDisabled();
+  await expect(pad.getByRole("button", { name: "复制", exact: true })).toBeDisabled();
   await screenshot(app, "notes", "N1-empty", pad, "scratchpad");
 
   await pad.getByLabel("便签内容").fill("回复要点：\n- 掉落表按权重\n- 周五发版");
@@ -93,7 +94,7 @@ test("the window: an empty page lists its keys, typing saves to the work folder,
   await expect(pad.getByTestId("pad-status")).toContainText("已保存");
   expect(JSON.parse(readFileSync(join(home, "data", "pages.json"), "utf8")).pages[0].text).toContain("周五发版");
   await expect(pad.locator(".pad-hint")).toHaveText("Alt 1–3");
-  await expect(pad.getByRole("button", { name: "复制" }).locator("kbd")).toHaveText("Ctrl ↵");
+  await expect(pad.getByRole("button", { name: "复制", exact: true }).locator("kbd")).toHaveText("Ctrl ↵");
   await screenshot(app, "notes", "N2-page", pad, "scratchpad");
 
   // Ctrl+Enter: the page on the clipboard (recorded in tests), the window hidden.
@@ -136,7 +137,8 @@ test("starting shows 便签启动中 until the window is ready; the tray menu is
 test("one at a time: starting it again shows the running one and the second ends", async () => {
   const { app } = await launch();
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith("#scratchpad"))!.hide());
-  const second = spawn(electronPath, [MAIN], { env: cleanEnv(home), stdio: "ignore", windowsHide: true });
+  const { executablePath, args } = programLaunch("notes", MAIN);
+  const second = spawn(executablePath, args, { env: cleanEnv(home), stdio: "ignore", windowsHide: true });
   const code = await new Promise<number | null>((done) => second.on("exit", done));
   expect(code).toBe(0);
   await expect.poll(() => padVisible(app)).toBe(true);
@@ -178,7 +180,23 @@ test("the settings window: shortcut, start with Windows, the work folder, its si
   await settings.getByTestId("ns-scale-1").click();
   await expect(settings.getByTestId("ns-scale-1")).toHaveAttribute("aria-checked", "true");
 
-  await settings.getByTestId("ns-login").check();
+  // 主题 (2026-10-29): its own, 浅色 unless chosen; 深色 turns the system colours of its windows dark (Playwright's
+  // pretend-light system switched off, so the pages see the one 便签 sets).
+  await expect(settings.getByTestId("ns-theme-light")).toHaveAttribute("aria-checked", "true");
+  await settings.emulateMedia({ colorScheme: null });
+  const settingsBg = () => settings.evaluate(() => getComputedStyle(document.body).backgroundColor);
+  const lightBg = await settingsBg();
+  await settings.getByTestId("ns-theme-dark").click();
+  await expect.poll(() => app.evaluate(({ nativeTheme }) => nativeTheme.themeSource)).toBe("dark");
+  await expect.poll(settingsBg).not.toBe(lightBg);
+  expect(JSON.parse(readFileSync(join(home, "settings.json"), "utf8"))).toMatchObject({ theme: "dark" });
+  await screenshot(app, "notes", "N3-settings-dark", settings, "main");
+  await settings.getByTestId("ns-theme-light").click();
+  await expect.poll(settingsBg).toBe(lightBg);
+
+  // The box shows what the 便签 program saved, so it turns on once its answer is back (check() looks at once after the click).
+  await settings.getByTestId("ns-login").click();
+  await expect(settings.getByTestId("ns-login")).toBeChecked();
   await expect.poll(() => app.evaluate(() => (globalThis as { __notesOpenAtLogin?: boolean }).__notesOpenAtLogin)).toBe(true);
   expect(JSON.parse(readFileSync(join(home, "settings.json"), "utf8"))).toMatchObject({ openAtLogin: true, shortcut: "Ctrl+Alt+N" });
 
@@ -246,10 +264,29 @@ test("pages, pasted images, 复制's line breaks, and the page count in the sett
   await pad.getByTestId("pad-image").nth(1).hover();
   await pad.getByRole("button", { name: "移除图片 2" }).click();
   await expect(pad.getByTestId("pad-image")).toHaveCount(1);
+  // One picture alone (for WeChat, which takes the text when a paste has both); the window stays.
+  await pad.getByTestId("pad-image").first().hover();
+  await pad.getByRole("button", { name: "复制图片 1" }).click();
+  await expect.poll(() => copiedImages(app)).toBe(1);
+  expect(await copied(app)).toBe("");
+  await expect(pad.getByTestId("pad-status")).toContainText("已复制这张图片");
+  expect(await padVisible(app)).toBe(true);
+  await screenshot(app, "notes", "N-copy-image", pad, "scratchpad");
 
-  // 复制 keeps the lines by default (Windows line breaks, trailing spaces and blank lines dropped) and hides.
-  await pad.getByRole("button", { name: "复制" }).click();
+  // 关于便签 (2026-10-30): the title bar's right-click menu; its version; Esc puts it away, not the window.
+  await app.evaluate(() => (globalThis as { __notesAbout?: () => void }).__notesAbout?.());
+  const version = JSON.parse(readFileSync(join(studioRoot, "packages", "notes", "package.json"), "utf8")).version as string;
+  await expect(pad.getByTestId("pad-about")).toContainText(`AMO 便签 版本 ${version}`);
+  await screenshot(app, "notes", "N-about", pad, "scratchpad");
+  await pad.keyboard.press("Escape");
+  await expect(pad.getByTestId("pad-about")).toHaveCount(0);
+  expect(await padVisible(app)).toBe(true);
+
+  // 复制 keeps the lines by default (Windows line breaks, trailing spaces and blank lines dropped) and hides; the page's
+  // picture goes along (2026-10-30).
+  await pad.getByRole("button", { name: "复制", exact: true }).click();
   await expect.poll(() => copied(app)).toBe("回复要点：\r\n- 掉落表按权重\r\n- 周五发版");
+  await expect.poll(() => copiedImages(app)).toBe(1);
   await expect.poll(() => padVisible(app)).toBe(false);
 
   // The settings: fewer pages hide the content beyond the count, more bring it back; 安全换行 copies one line.
@@ -270,6 +307,6 @@ test("pages, pasted images, 复制's line breaks, and the page count in the sett
   await app.evaluate(() => (globalThis as { __notesToggle?: () => void }).__notesToggle?.());
   await expect.poll(() => padVisible(app)).toBe(true);
   await pad.keyboard.press("Alt+1");
-  await pad.getByRole("button", { name: "复制" }).click();
+  await pad.getByRole("button", { name: "复制", exact: true }).click();
   await expect.poll(() => copied(app)).toBe("回复要点： - 掉落表按权重 - 周五发版");
 });

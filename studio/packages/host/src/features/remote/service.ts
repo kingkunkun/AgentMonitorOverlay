@@ -1,13 +1,18 @@
 import { statSync } from "node:fs";
-import { REMOTE_KINDS, type HostEvent, type Id, type ModelProfile, type NewSessionInput, type RemoteConnection, type RemoteIncomingRequest, type RemoteOutgoingRequest, type RemotePeer, type RemoteAcceptInput, type RemoteFetchedFile, type RemoteListAnswer, type RemotePingResult, type RemotePush, type RemoteState, type Session, type Task } from "@amo-studio/protocol";
+import { extname, isAbsolute } from "node:path";
+import { PREVIEW_IMAGE_TYPES, REMOTE_KINDS, REMOTE_TASK_FOLDER, type HostEvent, type Id, type ModelProfile, type NewSessionInput, type PromptTemplate, type RemoteConnection, type RemoteIncomingRequest, type RemoteOutgoingRequest, type RemotePeer, type RemoteAcceptInput, type RemoteCatalog, type RemoteCreateAnswer, type RemoteCreateResult, type RemoteFetchedFile, type RemoteListAnswer, type RemoteOnlineDevices, type RemotePingResult, type RemotePush, type RemoteState, type Session, type Task } from "@amo-studio/protocol";
 import { accountFile, deviceFile, ensureDevice, readAccount, readDevice, serverLabel, setDeviceName, type Account, type Device, type Env, type Protector } from "@amo-studio/account";
-import type { DeviceEvent, DeviceRef, PairRequest, PeerView } from "@amo-studio/relay";
+import type { DeviceEvent, DeviceRef, OnlineDevice, PairRequest, PeerView } from "@amo-studio/relay";
 import { HostError } from "../../core/shared.js";
+import { FileReply } from "../../http/route.js";
+import { underTaskFolder } from "./files.js";
 import { Feature } from "../../core/feature.js";
 import { Backoff, CommandError, CommandLog, DeviceLink, type RelayFrameIn } from "./link.js";
 import { RemoteGrants, type Answer, type RemoteContext } from "./grants.js";
 import { RemoteCopies } from "./copies.js";
 import { TaskAsks, TaskRequests } from "./requests.js";
+import { RemoteCreates } from "./create.js";
+import { sendAlong, UploadInbox } from "./uploads.js";
 
 // 远程, step 1 (plans/remote-session.md, 2026-10-29): this computer as a device on the team server — the AMO platform's
 // login (account.json, Studio has none of its own) and device.json — and the devices paired with it. The Host connects
@@ -21,8 +26,11 @@ import { TaskAsks, TaskRequests } from "./requests.js";
 const PAIRS_KEY = "remote.pairs";
 /** Unpairings the server has not heard of yet (it was not reachable): sent first thing after the next connect. */
 const UNPAIRS_KEY = "remote.unpairs";
-/** 关闭远程 (2026-10-29): "1" while the person switched remote off — no connection to the server at all; kept across restarts. */
-const DISABLED_KEY = "remote.disabled";
+/**
+ * 2026-10-30 (the user: 远程默认关闭，手动开启后才开；未登录时关闭且无法开启): the account (server + name) the person
+ * turned remote on for. Absent, or another account logged in now: off — this computer does not connect as a device.
+ */
+const ENABLED_KEY = "remote.enabled";
 
 interface StoredPair {
   account: string;
@@ -64,22 +72,23 @@ export class RemoteFeature extends Feature {
   /** Commands being answered: the same id again waits for that answer instead of running twice. */
   private readonly inflight = new Map<string, Promise<Answer>>();
   private reading: Promise<void> | null = null;
-
-  private get disabled(): boolean {
-    return this.store.getKv(DISABLED_KEY)?.value === "1";
-  }
   private readonly context: RemoteContext = {
     host: this.host,
     link: () => this.link,
     deviceName: () => this.device?.name ?? "授权的电脑",
+    ownAccount: () => this.account?.name ?? null,
+    inbox: () => this.inbox,
     peer: (ref, role) => {
       const p = this.pairs().find((x) => same(x, ref) && (!role || x.role === role));
       if (!p) return null;
       const pr = this.presence.get(`${ref.account}\n${ref.device}`);
       return { name: p.name, online: this.link?.state === "online" && !!pr?.online };
     },
+    ownerPeers: () => this.pairs().filter((p) => p.role === "owner").map((p) => ({ account: p.account, device: p.device })),
     changed: () => this.changed(),
   };
+  /** As A (2026-10-29 evening): pictures and files paired devices send along. */
+  readonly inbox = new UploadInbox(this.context);
   /** Step 2 as A: the tasks this computer granted. */
   readonly grants = new RemoteGrants(this.context);
   /** Step 2 as B: the copies of tasks granted to this computer. */
@@ -87,10 +96,13 @@ export class RemoteFeature extends Feature {
   /** Step 4 as A: tasks paired devices ask this computer to run. */
   readonly taskRequests = new TaskRequests(this.context, this.grants);
   /** Step 4 as B: tasks this computer asked paired devices to run. */
+  /** 远程创建 as A (2026-10-29): what paired devices may pick creating a task here, and creating it. */
+  readonly creates = new RemoteCreates(this.context, this.grants, this.taskRequests);
   readonly asks = new TaskAsks(this.context, (peer, kind, body, timeoutMs, offline) => this.copies.ask(peer, kind, body, timeoutMs, offline));
   private readonly onHostEvent = (e: HostEvent) => {
     try {
       this.grants.onHostEvent(e);
+      this.creates.onHostEvent(e);
     } catch (err) {
       console.log(`remote: ${String(err)}`);
     }
@@ -101,6 +113,8 @@ export class RemoteFeature extends Feature {
     if (this.opts) return;
     this.opts = options;
     this.copies.onList = (peer, list) => this.asks.sync(peer, list.requests);
+    // The catch-up progress (读条, 2026-11-01): only the state, not what paired devices may pick (changed() announces that).
+    this.copies.onProgress = () => this.host.emit("event", { type: "remote.updated", remote: this.state(), seq: this.store.lastEventSeq() });
     try {
       this.device = ensureDevice({ env: options.env });
     } catch (err) {
@@ -109,6 +123,7 @@ export class RemoteFeature extends Feature {
     this.seenFiles = this.fileStamp();
     // Files fetched for copies that are gone (step 3).
     this.copies.files.sweep();
+    this.copies.views.sweep();
     void this.loadAccount();
     this.watch = setInterval(() => this.checkFiles(), options.watchMs ?? 5000);
     this.watch.unref();
@@ -117,6 +132,7 @@ export class RemoteFeature extends Feature {
 
   stop(): void {
     this.host.off("event", this.onHostEvent);
+    this.creates.stop();
     if (this.watch) clearInterval(this.watch);
     this.watch = null;
     this.link?.stop();
@@ -126,6 +142,15 @@ export class RemoteFeature extends Feature {
     this.incoming = [];
     this.outgoing = [];
     this.presence.clear();
+  }
+
+  /**
+   * The platform's login and this computer's device id, for 会话里用中转 (features/teamrelay, 2026-10-30): it speaks to
+   * 中转 as the person. Null while not signed in (or remote is off: tests).
+   */
+  teamLogin(): { account: Account; deviceId: string } | null {
+    // Not gated by 远程's switch: 中转 is not remote, it only uses the same login.
+    return this.account && this.device ? { account: this.account, deviceId: this.device.id } : null;
   }
 
   private get env(): Env | undefined {
@@ -176,7 +201,7 @@ export class RemoteFeature extends Feature {
         this.link = null;
         this.incoming = [];
         this.outgoing = [];
-      } else if (!before || before.server !== a.server || before.name !== a.name || before.key !== a.key) {
+      } else if (!before || before.server !== a.server || before.name !== a.name || before.key !== a.key || !this.link) {
         this.connect();
       }
       this.changed();
@@ -190,10 +215,14 @@ export class RemoteFeature extends Feature {
     this.link?.stop();
     this.link = null;
     this.presence.clear();
-    if (this.disabled) return;
     const a = this.account;
     const d = this.device;
     if (!a || !d || !this.opts) return;
+    if (!this.enabled()) {
+      this.incoming = [];
+      this.outgoing = [];
+      return;
+    }
     const link = new DeviceLink({
       server: a.server,
       key: a.key,
@@ -271,6 +300,8 @@ export class RemoteFeature extends Feature {
       if (!this.pairs().some((p) => same(p, f.from) && p.role === "guest")) return;
       const push = f.body as RemotePush | null;
       if (push && push.type === "request") this.asks.apply(f.from, push.request);
+      // 2026-10-30: the new-task page showing that device takes it as it is (ui/src/newtask/RemoteDraft.tsx).
+      else if (push && push.type === "catalog") this.host.emit("event", { type: "remote.catalog", account: f.from.account, device: f.from.device, catalog: push.catalog, seq: this.store.lastEventSeq() });
       else this.copies.apply(f.from, f.body);
       return;
     }
@@ -294,14 +325,20 @@ export class RemoteFeature extends Feature {
     if (!this.pairs().some((p) => same(p, f.from))) return { kind: "error", body: { code: "not_paired", message: "对方那边已经没有这个配对了" } };
     if (f.kind === "ping") return { kind: "pong", body: { at: Date.now() } };
     const body = f.body && typeof f.body === "object" ? (f.body as Record<string, unknown>) : {};
+    const failed = (err: unknown): Answer =>
+      err instanceof HostError ? { kind: "error", body: { code: err.code, message: err.message } } : { kind: "error", body: { code: "runtime_error", message: err instanceof Error ? err.message : String(err) } };
     const said = (run: () => unknown): Answer => {
       try {
         return { kind: REMOTE_KINDS.ok, body: run() };
       } catch (err) {
-        if (err instanceof HostError) return { kind: "error", body: { code: err.code, message: err.message } };
-        return { kind: "error", body: { code: "runtime_error", message: err instanceof Error ? err.message : String(err) } };
+        return failed(err);
       }
     };
+    // 远程创建 (2026-10-29): what the device may pick, and the task made here now.
+    if (f.kind === REMOTE_KINDS.catalog) return said(() => this.creates.serveCatalog(f.from));
+    if (f.kind === REMOTE_KINDS.createTemplates) return said(() => ({ templates: this.creates.templates(f.from, body.workspaceId) }));
+    if (f.kind === REMOTE_KINDS.upload) return said(() => this.inbox.receive(f.from, body));
+    if (f.kind === REMOTE_KINDS.create) return this.creates.create(f.from, body).then((made): Answer => ({ kind: REMOTE_KINDS.ok, body: made }), failed);
     // Step 4: a request for a task, or taking one back.
     if (f.kind === REMOTE_KINDS.request) return said(() => ({ request: this.taskRequests.receive(f.from, body) }));
     if (f.kind === REMOTE_KINDS.withdraw) return said(() => (this.taskRequests.withdraw(f.from, body.requestId), { ok: true }));
@@ -386,7 +423,7 @@ export class RemoteFeature extends Feature {
     return { device: d.id, deviceName: d.name };
   }
 
-  // ---- what 设置 → 远程 and Focus do
+  // ---- what the remote page (顶栏「远程」) and Focus do
 
   pairs(): StoredPair[] {
     const raw = this.store.getKv(PAIRS_KEY)?.value;
@@ -427,18 +464,54 @@ export class RemoteFeature extends Feature {
     this.store.setKv(UNPAIRS_KEY, JSON.stringify(list));
   }
 
+  // ---- 2026-10-30: the switch
+
+  /** Remote is on for the account logged in now. */
+  enabled(): boolean {
+    const a = this.account;
+    if (!a) return false;
+    try {
+      const v = JSON.parse(this.store.getKv(ENABLED_KEY)?.value ?? "null") as { server?: unknown; name?: unknown } | null;
+      return !!v && v.server === a.server && v.name === a.name;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Turns remote on (needs the platform's login; waits for a read of account.json under way) or off. */
+  async setEnabled(on: boolean): Promise<RemoteState> {
+    if (!this.opts) throw new HostError("bad_request", "这个 Host 没有开远程功能");
+    await this.reading;
+    if (on) {
+      const a = this.account;
+      if (!a) throw new HostError("bad_request", "在 AMO 平台里登录后才能打开远程功能");
+      this.store.setKv(ENABLED_KEY, JSON.stringify({ server: a.server, name: a.name }));
+      if (!this.link) this.connect();
+    } else {
+      this.store.setKv(ENABLED_KEY, "null");
+      this.link?.stop();
+      this.link = null;
+      this.incoming = [];
+      this.outgoing = [];
+      this.presence.clear();
+    }
+    this.changed();
+    return this.state();
+  }
+
   state(): RemoteState {
     // Not started (the Reviewer, tests): nothing of %APPDATA%\AMO is read.
     const started = !!this.opts;
     const info = this.account;
     const link = this.link;
+    const enabled = this.enabled();
     const connection: RemoteConnection = !started
       ? { state: "off", message: null, retryAt: null, since: null }
-      : this.disabled
-        ? { state: "disabled", message: null, retryAt: null, since: null }
-        : !this.account
+      : !this.account
         ? { state: "no-account", message: null, retryAt: null, since: null }
-        : link
+        : !enabled
+          ? { state: "disabled", message: null, retryAt: null, since: null }
+          : link
           ? { state: link.state, message: link.message, retryAt: link.retryAt ? iso(link.retryAt) : null, since: link.since ? iso(link.since) : null }
           : { state: "connecting", message: null, retryAt: null, since: null };
     const online = connection.state === "online";
@@ -447,8 +520,9 @@ export class RemoteFeature extends Feature {
       return { ...p, online: online ? (pr?.online ?? false) : null, lastSeen: pr?.lastSeen ? iso(pr.lastSeen) : null };
     });
     const incoming: RemoteIncomingRequest[] = this.incoming.map((r) => ({ id: r.id, account: r.from.account, device: r.from.device, name: r.from.name, createdAt: iso(r.createdAt), expiresAt: iso(r.expiresAt) }));
-    const outgoing: RemoteOutgoingRequest[] = this.outgoing.map((r) => ({ id: r.id, to: r.to, state: r.state === "refused" ? "refused" : "pending", answeredBy: r.answeredBy?.name ?? null, createdAt: iso(r.createdAt), expiresAt: iso(r.expiresAt) }));
+    const outgoing: RemoteOutgoingRequest[] = this.outgoing.map((r) => ({ id: r.id, to: r.to, ...(r.toDevice ? { toDevice: { device: r.toDevice.device, name: r.toDevice.name } } : {}), state: r.state === "refused" ? "refused" : "pending", answeredBy: r.answeredBy?.name ?? null, createdAt: iso(r.createdAt), expiresAt: iso(r.expiresAt) }));
     return {
+      enabled,
       device: this.device,
       account: info ? { server: info.server, name: info.name } : null,
       connection,
@@ -459,17 +533,23 @@ export class RemoteFeature extends Feature {
       allowed: this.grants.allowed(),
       taskRequests: this.taskRequests.pending(),
       asks: this.asks.list(),
+      allowedProjects: this.creates.allowedProjects(),
+      security: this.creates.security(),
+      syncing: this.copies.syncState(),
     };
   }
 
   private changed(): void {
     // Not kept in the event log: windows read GET /api/remote when they open (like item.delta, emitted as it is).
     this.host.emit("event", { type: "remote.updated", remote: this.state(), seq: this.store.lastEventSeq() });
+    // 远程设置, this computer's name, a device back online: what paired devices may pick here may have changed too.
+    this.creates.announce();
   }
 
   private requireStarted(): void {
     if (!this.opts) throw new HostError("bad_request", "这个 Host 没有开远程功能");
     if (!this.account) throw new HostError("bad_request", "在 AMO 平台里登录后才能用远程功能");
+    if (!this.enabled()) throw new HostError("bad_request", "远程功能没有打开：在顶栏的「远程」里打开");
   }
 
   rename(name: string): RemoteState {
@@ -485,14 +565,34 @@ export class RemoteFeature extends Feature {
     return this.state();
   }
 
-  async requestPair(accountValue: string): Promise<RemoteState> {
+  /** Asks an account to pair — or (`device`, the pair dialog) only that device of it, picked from its online devices. */
+  async requestPair(accountValue: string, device?: string): Promise<RemoteState> {
     this.requireStarted();
     const to = accountValue.trim();
     if (!to) throw new HostError("bad_request", "先填对方的账号名");
-    const { request } = await this.call<{ request: PairRequest }>("POST", "/api/devices/pair", { ...this.named(), to });
-    this.outgoing = [...this.outgoing.filter((r) => r.id !== request.id && r.to !== request.to), request];
+    const { request } = await this.call<{ request: PairRequest }>("POST", "/api/devices/pair", { ...this.named(), to, ...(device ? { toDevice: device } : {}) });
+    // One request per account and device asked (an older team server leaves toDevice out: per account).
+    const target = (r: PairRequest) => `${r.to}\n${r.toDevice?.device ?? ""}`;
+    this.outgoing = [...this.outgoing.filter((r) => r.id !== request.id && target(r) !== target(request)), request];
     this.changed();
     return this.state();
+  }
+
+  /**
+   * The pair dialog (2026-10-29): this account's other devices connected to the team server now. An older relay service
+   * has no such list: `supported: false`, and the dialog offers pairing by account name only.
+   */
+  async onlineDevices(): Promise<RemoteOnlineDevices> {
+    this.requireStarted();
+    if (this.link?.state !== "online") throw new HostError("runtime_error", "这台电脑没有连上团队服务器，列不出在线的设备");
+    const d = this.named();
+    try {
+      const { devices } = await this.call<{ devices: OnlineDevice[] }>("GET", `/api/devices/online?device=${encodeURIComponent(d.device)}`);
+      return { devices: devices.map((x) => ({ device: x.device, name: x.name, since: iso(x.since) })), supported: true };
+    } catch (err) {
+      if (err instanceof HostError && err.code === "not_found") return { devices: [], supported: false };
+      throw err;
+    }
   }
 
   async answer(id: string, allow: boolean): Promise<RemoteState> {
@@ -503,6 +603,8 @@ export class RemoteFeature extends Feature {
         const p = r.pair;
         this.savePairs([...this.pairs().filter((x) => !(same(x, p.peer) && x.role === "owner")), { account: p.peer.account, device: p.peer.device, name: p.peer.name, role: "owner", pairedAt: iso(p.pairedAt) }]);
         this.presence.set(`${p.peer.account}\n${p.peer.device}`, { online: p.online, lastSeen: p.online ? Date.now() : p.ago === null ? null : Date.now() - p.ago });
+        // One more of the own account's devices (2026-10-31): it sees the tasks the others were granted.
+        this.grants.shareWith(p.peer);
       }
     } finally {
       // Answered here, elsewhere, or gone: either way it is no longer waiting on this computer.
@@ -561,25 +663,10 @@ export class RemoteFeature extends Feature {
 
   reconnect(): RemoteState {
     if (this.opts && !this.account) void this.loadAccount();
+    else if (!this.enabled()) return this.state();
     else if (this.link && this.link.state !== "online" && this.link.state !== "connecting") {
       this.link.retryNow();
     }
-    return this.state();
-  }
-
-  /** 关闭远程 / 开启远程: off means no connection to the server at all, so no other computer reaches this one. Kept across restarts. */
-  setDisabled(val: boolean): RemoteState {
-    this.requireStarted();
-    if (val === this.disabled) return this.state();
-    this.store.setKv(DISABLED_KEY, val ? "1" : "0");
-    if (val) {
-      this.link?.stop();
-      this.link = null;
-      this.presence.clear();
-    } else {
-      this.connect();
-    }
-    this.changed();
     return this.state();
   }
 
@@ -599,6 +686,66 @@ export class RemoteFeature extends Feature {
   setAllowed(body: unknown): RemoteState {
     this.grants.setAllowed(body);
     return this.state();
+  }
+
+  setAllowedProjects(body: unknown): RemoteState {
+    this.creates.setAllowedProjects(body);
+    return this.state();
+  }
+
+  setSecurity(body: unknown): RemoteState {
+    this.creates.setSecurity(body);
+    return this.state();
+  }
+
+  // ---- 远程创建 as B (plans/remote-page-and-new-task.md 4.1, 2026-10-29): the new-task page's 「在别的设备上」
+
+  /** A device that allowed this computer, online now: who it is (for what is said). */
+  private creatable(peer: DeviceRef): { name: string } {
+    this.requireStarted();
+    if (this.link?.state !== "online") throw new HostError("runtime_error", "这台电脑没有连上团队服务器，回来后再试");
+    const p = this.context.peer(peer, "guest");
+    if (!p) throw new HostError("bad_request", "只能在允许了这台电脑配对的设备上建任务（在顶栏的「远程」里配对）");
+    if (!p.online) throw new HostError("runtime_error", `${p.name} 不在线：要它开着 Studio、连上团队服务器才能在它上面建任务`);
+    return p;
+  }
+
+  /** What the device lets this computer pick (its topics, allowed projects and models). */
+  async catalog(peer: DeviceRef): Promise<RemoteCatalog> {
+    const p = this.creatable(peer);
+    return this.copies.ask<RemoteCatalog>(peer, REMOTE_KINDS.catalog, {}, 30_000, `${p.name} 不在线`);
+  }
+
+  /** The device's templates for a task created there in that project (null: the common folder); 问题 #1. */
+  async catalogTemplates(peer: DeviceRef, workspaceId: Id | null): Promise<PromptTemplate[]> {
+    const p = this.creatable(peer);
+    const answer = await this.copies.ask<{ templates?: PromptTemplate[] }>(peer, REMOTE_KINDS.createTemplates, { workspaceId }, 30_000, `${p.name} 不在线`);
+    return Array.isArray(answer.templates) ? answer.templates : [];
+  }
+
+  /**
+   * Creates a task on the device (granted to this computer, its session started there) and answers once the copy is
+   * here — it comes with the grant; asked for directly when it has not come after a while — or says it follows.
+   */
+  async create(peer: DeviceRef, body: Record<string, unknown>): Promise<RemoteCreateResult> {
+    const p = this.creatable(peer);
+    // Pictures and files go first (2026-10-29 evening); A writes the 引用文件 block again with its own paths.
+    const images = Array.isArray(body.attachments) && body.attachments.length ? this.host.sessions.images(body.attachments as Id[]) : [];
+    const along = await sendAlong((pr, kind, b, ms, off) => this.copies.ask(pr, kind, b, ms, off), peer, p.name, typeof body.text === "string" ? body.text : "", images);
+    const ask = { title: typeof body.title === "string" ? body.title : "", text: along.text, topicId: body.topicId ?? null, workspaceId: body.workspaceId ?? null, profileId: body.profileId, ...(along.uploads.length ? { uploads: along.uploads } : {}) };
+    // Starting the session takes longest (as rt.start).
+    const made = await this.copies.ask<RemoteCreateAnswer>(peer, REMOTE_KINDS.create, ask, 90_000, `${p.name} 不在线，任务没建`);
+    // 安全 (2026-10-29): it waits for a yes there — kept with this computer's requests (撤回 there too).
+    if (made.waiting || !made.taskId) {
+      if (made.waiting) this.asks.apply(peer, made.waiting);
+      return { ...made, taskId: null, copied: false };
+    }
+    const taskId = made.taskId;
+    const here = () => !!this.store.getTask(taskId)?.remote;
+    const end = Date.now() + 5000;
+    while (!here() && Date.now() < end) await new Promise((r) => setTimeout(r, 100));
+    if (!here()) await this.copies.syncTask(peer, taskId).catch(() => undefined);
+    return { ...made, copied: here() };
   }
 
   // ---- step 4: requests for tasks
@@ -643,6 +790,10 @@ export class RemoteFeature extends Feature {
     return this.copies.start(task, input);
   }
 
+  renameCopy(task: Task, title: string): Promise<Task> {
+    return this.copies.renameTask(task, title);
+  }
+
   dropCopy(task: Task): void {
     this.copies.drop(task);
   }
@@ -653,6 +804,28 @@ export class RemoteFeature extends Feature {
     return this.copies.files.fetch(taskId, path, cwd, fetchId);
   }
 
+  /**
+   * 远程 Reviewer (plans/remote-reviewer.md, 2026-11-02): what a remote task's Reviewer window asks its Host for, under
+   * /api/remote/view/<task>/<the route it would ask>. Reads go to the computer the task runs on (rt.view; kept here);
+   * a picture by rt.file as any remote file; tools of this computer (VS Code, Explorer) are not offered.
+   */
+  async view(taskId: Id, method: string, path: string, query: URLSearchParams, body: unknown): Promise<unknown> {
+    const task = this.store.getTask(taskId);
+    if (!task?.remote) throw new HostError("not_found", "这不是远程任务");
+    if (method === "GET" && path === "/api/fs/raw") {
+      const p = query.get("path") ?? "";
+      const f = await this.copies.files.fetch(taskId, underTaskFolder(p) !== null || isAbsolute(p) ? p : `${REMOTE_TASK_FOLDER}/${p.replace(/\\/g, "/")}`);
+      const mime = PREVIEW_IMAGE_TYPES[extname(f.path).toLowerCase()];
+      if (!mime) throw new HostError("bad_request", "only images are served");
+      return new FileReply(f.path, mime, { fresh: true, whole: true });
+    }
+    if (method === "GET" && path === "/api/open-in/apps") return { vscode: false };
+    // Comments stay on this computer (step 3): written, copied and sent from the copy's own list.
+    if (this.copies.comments.handles(method, path)) return this.copies.comments.answer(task, method, path, body);
+    if (method !== "GET" && method !== "POST") throw new HostError("read_only", `这是 ${task.remote.name} 上的远程任务：这一项不能在这台电脑上做`);
+    return this.copies.views.read(taskId, method, path, Object.fromEntries(query), body);
+  }
+
   /** Step 3: an image a remote page loads (GET /api/remote/files/<key>/<rel>). */
   serveFile(key: string, rel: string): Promise<{ path: string; mime: string }> {
     return this.copies.files.serve(key, rel);
@@ -660,8 +833,8 @@ export class RemoteFeature extends Feature {
 
   /**
    * What a copy takes from this computer's own API (B's Host refuses the rest, 「B 能看到什么」): reading it, a message,
-   * an answer to an approval or question, 打断, a new session, and archiving it (which deletes the copy). Changing the
-   * task (its name, column, topic, 说明), a session's model or name, a branch, a terminal, comments sent into it… are
+   * an answer to an approval or question, 打断, a new session, renaming the task or a session and archiving or restoring
+   * a session (on A), and archiving the task (which deletes the copy). Changing the task's column, topic or 说明, a session's model, a branch, a terminal… are
    * A's to do.
    */
   guardRoute(method: string, path: string, params: Record<string, string>): void {
@@ -683,7 +856,21 @@ export class RemoteFeature extends Feature {
 const COPY_ROUTES = new Set([
   "POST /api/sessions/:id/messages",
   "POST /api/sessions/:id/interrupt",
+  // 立即发送 / 重新发送 (2026-11-02): done on A, like a message.
+  "POST /api/sessions/:id/items/:itemId/send-now",
+  "POST /api/sessions/:id/items/:itemId/resend",
   "POST /api/sessions/:id/questions/:itemId/answer",
   "POST /api/tasks/:id/sessions",
   "POST /api/tasks/:id/archive",
+  // 改名 (2026-10-30): renamed on A (RemoteCopies.renameTask / renameSession); other changes to the task are refused by
+  // TasksFeature.updateTask, a session's options by RemoteAwareRuntime.
+  "PATCH /api/tasks/:id",
+  "PATCH /api/sessions/:id",
+  // 归档 / 恢复 one session (2026-10-30): done on A (RemoteCopies.archive); archiving the task still deletes the copy.
+  "POST /api/sessions/:id/archive",
+  "POST /api/sessions/:id/unarchive",
+  // 批注 (2026-10-30, the user could not comment on a remote reply): kept on this computer, they go to A as the text of
+  // a message (composeAnnotationRefs), like any message. PATCH / DELETE /api/annotations/:id are not by task.
+  "POST /api/sessions/:id/annotations",
+  "POST /api/sessions/:id/annotations/send",
 ]);

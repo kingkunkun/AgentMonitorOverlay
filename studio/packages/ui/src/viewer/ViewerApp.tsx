@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { REMOTE_ATTACHMENTS_FOLDER, REMOTE_TASK_FOLDER, type StateSnapshot } from "@amo-studio/protocol";
+import { REMOTE_ATTACHMENTS_FOLDER, REMOTE_TASK_FOLDER, type StateSnapshot, type Workspace } from "@amo-studio/protocol";
 import { copyText, HostApiError, type HostLink } from "../host/client.js";
 import { useHostState } from "../host/useHostState.js";
 import { openInEditor, revealInExplorer, type FileRef } from "../lib/openin.js";
@@ -18,6 +18,8 @@ import { linesLabel, parseViewerHash, projectOf, type ViewerMode, type ViewerTar
 import { pinViewer, viewerPinned } from "./open.js";
 import { PackViewer } from "../viewpacks/PackViewer.js";
 import { RemoteViewer, type RemoteShown } from "./RemoteViewer.js";
+import { RemoteReviewProvider, RemoteReviewScope, remoteViewLink, remoteWorkspace, type RemoteReview } from "../remote/reviewer.js";
+import { TitleMark, WindowControls, WindowPlaceholder } from "../shell/WindowControls.js";
 
 // The viewer window (查看器, stage 13; #viewer?path=…): a file opened from a conversation, a mark or a Review, in one
 // of two modes. 文件: the file as it is now (code coloured, the asked line or range marked and scrolled to; Markdown
@@ -35,10 +37,16 @@ export function ViewerApp() {
     return () => window.removeEventListener("hashchange", on);
   }, []);
 
-  if (host.kind !== "ready") return <div className="placeholder">{host.kind === "connecting" ? "正在连接 Host…" : `未连接：${host.reason}`}</div>;
-  if (!target) return <div className="placeholder">没有要查看的文件。</div>;
+  if (host.kind !== "ready") return <WindowPlaceholder title="查看器">{host.kind === "connecting" ? "正在连接 Host…" : `未连接：${host.reason}`}</WindowPlaceholder>;
+  if (!target) return <WindowPlaceholder title="查看器">没有要查看的文件。</WindowPlaceholder>;
   // 查看包 (2026-10-23): the same window, showing a pack.
-  if (target.pack) return <PackViewer link={host.link} state={host.state} packId={target.pack} focus={target.item ?? null} nonce={target.nonce ?? ""} />;
+  // 远程 Reviewer (2026-11-02): a remote task's pack (`remote`), read through this Host from the computer it runs on.
+  if (target.pack)
+    return (
+      <RemoteReviewScope link={host.link} state={host.state} taskId={target.remote} gone={<WindowPlaceholder title="查看包">这个远程任务已经不在这台电脑上了。</WindowPlaceholder>}>
+        {(link, remote) => <PackViewer link={link} state={host.state} packId={target.pack!} focus={target.item ?? null} nonce={target.nonce ?? ""} remote={remote} />}
+      </RemoteReviewScope>
+    );
   // 远程 step 3 (2026-10-29): a remote task's file is fetched from its computer first, then shown as any other.
   if (target.remote) return <RemoteViewer link={host.link} state={host.state} target={target} render={(t, remote) => <ViewerPage link={host.link} state={host.state} target={t} remote={remote} />} />;
   return <ViewerPage link={host.link} state={host.state} target={target} />;
@@ -50,7 +58,7 @@ const MODES: { id: ViewerMode; label: string; hint: string }[] = [
 ];
 
 function ViewerPage({ link, state, target, remote }: { link: HostLink; state: StateSnapshot; target: ViewerTarget; remote?: RemoteShown }) {
-  // A remote task's file is a copy in this computer's data folder: no project of this computer's, so no comments.
+  // A remote task's file is a copy in this computer's data folder: no project of this computer's (its comments: `notes`).
   const workspace = remote ? null : projectOf(target.path, state.workspaces, target.workspaceId);
   const file: FileRef = { path: target.path, ...(target.workspaceId && workspace?.id === target.workspaceId ? { workspaceId: target.workspaceId } : {}) };
   const repo = useIsGitRepo(link, workspace?.id);
@@ -84,6 +92,13 @@ function ViewerPage({ link, state, target, remote }: { link: HostLink; state: St
   const absolute = loaded.state === "ok" ? loaded.file.path : file.path;
   /** A remote file as its computer has it, without that computer's own folder (任务文件夹/…). */
   const remotePath = remote ? (remote.rel.startsWith(`${REMOTE_ATTACHMENTS_FOLDER}/`) ? remote.rel : `${REMOTE_TASK_FOLDER}/${remote.rel}`) : "";
+  // 远程 Reviewer 的批注 (2026-11-02): a file of the task's folder takes comments, kept on this computer (as in its 查看包):
+  // they go through the remote Reviewer's link to this Host, on a stand-in of the task's project; the file is named by
+  // its place in 任务文件夹. Attachments of the conversation are not in the folder: no comments.
+  const notes = useMemo<{ link: HostLink; workspace: Workspace; review: RemoteReview } | null>(
+    () => (remote && !remote.rel.startsWith(`${REMOTE_ATTACHMENTS_FOLDER}/`) ? { link: remoteViewLink(link, remote.taskId), workspace: remoteWorkspace(remote.taskId, remote.device), review: { taskId: remote.taskId, device: remote.device, host: link, key: remote.key } } : null),
+    [link, remote?.taskId, remote?.device, remote?.key, remote?.rel], // eslint-disable-line react-hooks/exhaustive-deps
+  );
   const markdown = isMarkdownText(file.path, loaded);
   // Markdown and HTML show rendered, their passages taking comments (2026-10-28), or as source.
   const html = isHtmlText(file.path, loaded);
@@ -122,7 +137,9 @@ function ViewerPage({ link, state, target, remote }: { link: HostLink; state: St
 
   return (
     <div className="vw-app" data-testid="viewer" data-mode={mode}>
-      <header className="vw-head" ref={head}>
+      {/* The window's title bar (2026-10-29): it drags the window and ends with the window buttons. */}
+      <header className="vw-head titlebar" ref={head}>
+        <TitleMark />
         <div className="gr-seg" role="group" aria-label="查看方式">
           {MODES.map((m) => {
             const off = m.id === "changes" && (!workspace || !repo);
@@ -213,7 +230,7 @@ function ViewerPage({ link, state, target, remote }: { link: HostLink; state: St
           className="btn-ghost small vw-pin"
           aria-pressed={pinned}
           disabled={pinned}
-          title={pinned ? "已固定：这个窗口会保留，之后点开的文件在新窗口里" : "固定这个窗口：之后点开的文件会在新窗口里打开，这个窗口保留"}
+          title={pinned ? "已锁定：这个窗口会保留，之后点开的文件在新窗口里" : "锁定这个窗口：之后点开的文件会在新窗口里打开，这个窗口保留"}
           onClick={() =>
             void pinViewer()
               .then(setPinned)
@@ -221,9 +238,11 @@ function ViewerPage({ link, state, target, remote }: { link: HostLink; state: St
           }
           data-testid="viewer-pin"
         >
-          {pinned ? "已固定" : "固定"}
+          {pinned ? "已锁定" : "锁定"}
           </button>
         </div>
+        {/* 2026-10-31, 问题 #3: 固定 is called 锁定 now, and 置顶 sits left of 最小化. */}
+        <WindowControls pin />
       </header>
       {remote?.stale && (
         <div className="vw-stale" role="status" data-testid="viewer-remote-stale">
@@ -232,13 +251,14 @@ function ViewerPage({ link, state, target, remote }: { link: HostLink; state: St
       )}
       <main className="vw-body">
         <div className="vw-file" hidden={mode !== "file"} data-testid="viewer-file">
+          <RemoteReviewProvider value={notes?.review ?? null}>
           {code && loaded.state === "ok" ? (
             <FileReview
               key={`${loaded.file.path}#${reload}`}
-              link={link}
+              link={notes?.link ?? link}
               state={state}
-              workspace={workspace}
-              file={loaded.file}
+              workspace={notes?.workspace ?? workspace}
+              file={notes ? { ...loaded.file, path: remotePath } : loaded.file}
               line={target.line}
               endLine={target.endLine}
               openKey={openKey}
@@ -246,12 +266,22 @@ function ViewerPage({ link, state, target, remote }: { link: HostLink; state: St
               active={mode === "file"}
             />
           ) : renderable && rendered && loaded.state === "ok" ? (
-            <RenderedReview key={`${loaded.file.path}#${readVersion}`} link={link} workspace={workspace} file={loaded.file} kind={html ? "html" : "markdown"} active={mode === "file"} {...(remote ? { remote: { taskId: remote.taskId, rel: remote.rel, key: remote.key } } : {})} />
+            <RenderedReview
+              key={`${loaded.file.path}#${readVersion}`}
+              link={notes?.link ?? link}
+              workspace={notes?.workspace ?? workspace}
+              file={notes ? { ...loaded.file, path: remotePath } : loaded.file}
+              kind={html ? "html" : "markdown"}
+              active={mode === "file"}
+              sessionId={defaultSession}
+              {...(remote ? { remote: { taskId: remote.taskId, rel: remote.rel, key: remote.key, host: link } } : {})}
+            />
           ) : (
             <div className="vw-content">
               <FileContent link={link} file={file} loaded={loaded} line={target.line} endLine={target.endLine} rendered={rendered} reload={readVersion} />
             </div>
           )}
+          </RemoteReviewProvider>
         </div>
         {changesShown && workspace && (
           <div className="vw-changes" hidden={mode !== "changes"}>

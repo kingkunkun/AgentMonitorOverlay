@@ -1,7 +1,8 @@
-import { useEffect, useState, type DragEvent, type MouseEvent, type ReactNode } from "react";
+import { useState, type DragEvent, type MouseEvent, type ReactNode } from "react";
 import { projectWorkspaces, type Session, type Task, type Topic, type Workspace } from "@amo-studio/protocol";
 import { call, HostApiError, type HostLink } from "../host/client.js";
 import { togglePin, usePins, type PinKind } from "../lib/pins.js";
+import { ContextMenu } from "../lib/ContextMenu.js";
 import { moveNav, navOrder, useNavOrder } from "./navOrder.js";
 import type { Scope } from "./Board.js";
 import { UsageFooter } from "./UsageFooter.js";
@@ -12,25 +13,19 @@ import { EditProjectDialog } from "./EditProjectDialog.js";
 import { EditTopicDialog } from "./EditTopicDialog.js";
 import { useDragWidth, useNavWidthVar } from "../lib/dragWidth.js";
 import { FoldIcon } from "../task/SessionTree.js";
-import { useSettings } from "../settings/SettingsDialog.js";
+import { useSettings } from "../settings/useSettings.js";
 import { useStoredIds } from "../lib/storedIds.js";
 import { needsPerson } from "../lib/status.js";
 import { fromProjectGroups, fromTopicGroups, groupEntries, groupOwners, joinGroup, moveGroup, toProjectGroups, toTopicGroups, type NavGroup } from "./navGroups.js";
 import { EditGroupDialog } from "./EditGroupDialog.js";
+import { readStored, writeStored, readStoredJson, writeStoredJson } from "../lib/stored.js";
 
 /** The left column folded to a strip (2026-10-14), remembered per window. */
 const NAV_FOLD_KEY = "amo.navCollapsed";
-function readNavFolded(): boolean {
-  try {
-    return localStorage.getItem(NAV_FOLD_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
+const readNavFolded = (): boolean => readStored(NAV_FOLD_KEY) === "1";
 import { showToast } from "../lib/toast.js";
 import { useWaitingQuestions } from "../canvas/useCallouts.js";
 import { pickFolder } from "../lib/profiles.js";
-import { remoteWaiting, useRemote } from "../settings/remote.js";
 
 /** A project or topic about to be archived from its right-click menu. */
 type Archiving = { kind: "workspace" | "topic"; id: string; name: string };
@@ -56,18 +51,19 @@ interface ScopeNavProps {
   /** Opens the settings (the button under the Host status). */
   onSettings?: () => void;
   onScope(scope: Scope): void;
+  /**
+   * 全景 (测试功能, 11-04, the user's call): its own entry under 全部任务 — later the list of panoramas, one for now. Left
+   * out while it is turned off. While it is in front no scope row is current.
+   */
+  panorama?: { current: boolean; open(): void };
 }
 
 const isCurrent = (a: Scope, b: Scope) => a.kind === b.kind && (a.kind === "all" || (b.kind !== "all" && a.id === b.id));
 
 const FOLD_KEY = "amo.navFolded";
 function readFolded(): Record<PinKind, boolean> {
-  try {
-    const v = JSON.parse(localStorage.getItem(FOLD_KEY) ?? "{}") as Partial<Record<PinKind, boolean>>;
-    return { topic: v.topic === true, project: v.project === true };
-  } catch {
-    return { topic: false, project: false };
-  }
+  const v = readStoredJson(FOLD_KEY) as Partial<Record<PinKind, boolean>> | null | undefined;
+  return { topic: v?.topic === true, project: v?.project === true };
 }
 
 /**
@@ -75,7 +71,7 @@ function readFolded(): Record<PinKind, boolean> {
  * pinned (they come first, here and wherever they are picked) and each section folds down to its pinned entries. The
  * lists scroll between the fixed top and the Host / usage footer.
  */
-export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope, live, onScope, onSettings }: ScopeNavProps) {
+export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope, live, onScope, onSettings, panorama }: ScopeNavProps) {
   const [adding, setAdding] = useState(false);
   const [newTopic, setNewTopic] = useState<string | null>(null);
   const [path, setPath] = useState("");
@@ -89,19 +85,13 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
   const [editing, setEditing] = useState<string | null>(null);
   const [editingTopicId, setEditingTopic] = useState<string | null>(null);
   const [collapsed, setCollapsedState] = useState(readNavFolded);
-  // 远程 (2026-10-29): a pairing request waits → a dot beside 设置 (not a place of its own on the main window).
-  const remoteWaits = remoteWaiting(useRemote(link)) > 0;
-  const settingsTitle = remoteWaits ? "设置：远程有请求或回复等你看（设置 → 远程）" : "设置：界面主题、公共目录、模型、便签、功能、数据管理";
+  const settingsTitle = "设置：界面主题、公共目录、模型、便签、功能、数据管理";
   // The column's width, dragged at its right edge (2026-10-15); it also lines up the brand in the title bar.
   const navW = useDragWidth("amo.navWidth", 224, 180, 420);
   useNavWidthVar(navW.width, !collapsed);
   const setCollapsed = (on: boolean) => {
     setCollapsedState(on);
-    try {
-      localStorage.setItem(NAV_FOLD_KEY, on ? "1" : "0");
-    } catch {
-      // per-window convenience only
-    }
+    writeStored(NAV_FOLD_KEY, on ? "1" : "0");
   };
   const editingWs = editing ? workspaces.find((w) => w.id === editing) : undefined;
   const editingTopic = editingTopicId ? topics.find((t) => t.id === editingTopicId) : undefined;
@@ -156,11 +146,7 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
   const fold = (kind: PinKind) =>
     setFolded((f) => {
       const next = { ...f, [kind]: !f[kind] };
-      try {
-        localStorage.setItem(FOLD_KEY, JSON.stringify(next));
-      } catch {
-        // per-viewer convenience only
-      }
+      writeStoredJson(FOLD_KEY, next);
       return next;
     });
 
@@ -190,7 +176,7 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
           endDrag();
         }}
       >
-        <button type="button" className="nav-row" aria-current={isCurrent(scope, target)} onClick={() => onScope(target)} onContextMenu={onMenu} data-testid={testId}
+        <button type="button" className="nav-row" aria-current={!panorama?.current && isCurrent(scope, target)} onClick={() => onScope(target)} onContextMenu={onMenu} data-testid={testId}
           draggable={!!kind && !!id}
           title={kind ? [title, "拖动排序；Alt ↑ / ↓ 调整顺序（置顶项在前）"].filter(Boolean).join("\n") : title}
           onDragStart={(e) => { if (kind && id) startDrag(e, { type: "item", kind, id }); }}
@@ -413,12 +399,11 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
       <nav className="scope-nav collapsed" aria-label="范围">
         <span className="spacer" />
         {onSettings && (
-          <button type="button" className="fold-btn nav-settings-folded" onClick={onSettings} aria-label="设置" title={remoteWaits ? settingsTitle : "设置"}>
+          <button type="button" className="fold-btn nav-settings-folded" onClick={onSettings} aria-label="设置" title="设置">
             <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
               <path d="M6.9 1.5h2.2l.4 1.8 1.2.5 1.6-1 1.5 1.5-1 1.6.5 1.2 1.8.4v2.2l-1.8.4-.5 1.2 1 1.6-1.5 1.5-1.6-1-1.2.5-.4 1.8H6.9l-.4-1.8-1.2-.5-1.6 1-1.5-1.5 1-1.6-.5-1.2-1.8-.4V6.9l1.8-.4.5-1.2-1-1.6 1.5-1.5 1.6 1 1.2-.5Z" />
               <circle cx="8" cy="8" r="2.2" />
             </svg>
-            {remoteWaits && <span className="settings-dot corner" aria-hidden="true" data-testid="settings-dot" />}
           </button>
         )}
         <button type="button" className="fold-btn" aria-label="展开左栏" title="展开左栏" onClick={() => setCollapsed(false)} data-testid="nav-expand">
@@ -430,7 +415,16 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
   return (
     <>
     <nav className="scope-nav" aria-label="范围">
-      <div className="nav-top">{row(null, null, { kind: "all" }, "全部任务", liveTasks.length, "scope-all")}</div>
+      <div className="nav-top">
+        {row(null, null, { kind: "all" }, "全部任务", liveTasks.length, "scope-all")}
+        {panorama && (
+          <div className="nav-item">
+            <button type="button" className="nav-row" aria-current={panorama.current} onClick={panorama.open} data-testid="nav-panorama" title="全景：所有专题和任务画在一张图上（测试功能）">
+              <span className="name">全景</span>
+            </button>
+          </div>
+        )}
+      </div>
 
       <div className="nav-scroll">
         {sectionRows.map((kind) => kind === "topic" ? (
@@ -567,7 +561,7 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
         ))}
       </div>
 
-      <UsageFooter link={link} live={live} />
+      <UsageFooter link={link} live={live} sessions={sessions} />
       {/* Settings and, at its right, folding the column (2026-10-15: beside 全部任务 it pushed that row short of the
           lists' right edge); folded, the same corner unfolds it. */}
       <div className="nav-bottom">
@@ -578,7 +572,6 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
             <circle cx="8" cy="8" r="2.2" />
           </svg>
           设置
-          {remoteWaits && <span className="settings-dot" aria-hidden="true" data-testid="settings-dot" />}
         </button>
       )}
         <button type="button" className="fold-btn" aria-label="收起左栏" title="收起左栏" onClick={() => setCollapsed(true)} data-testid="nav-collapse">
@@ -611,7 +604,7 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
           }}
         />
       )}
-      {editingTopic && <EditTopicDialog link={link} topic={editingTopic} onClose={() => setEditingTopic(null)} />}
+      {editingTopic && <EditTopicDialog link={link} topic={editingTopic} workspaces={workspaces} tasks={tasks} onClose={() => setEditingTopic(null)} />}
       {groupMenu && (
         <GroupMenu
           at={groupMenu}
@@ -667,18 +660,8 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
 
 /** Right-click menu of a topic in the left column. */
 function TopicMenu({ at, onClose, onEdit, onArchive, groups }: { at: { x: number; y: number }; onClose(): void; onEdit(): void; onArchive(): void; groups: MenuGroups }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    const onDown = (e: globalThis.MouseEvent) => !(e.target as Element | null)?.closest?.(".ctx-menu") && onClose();
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("mousedown", onDown);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("mousedown", onDown);
-    };
-  }, [onClose]);
   return (
-    <div className="ctx-menu" role="menu" aria-label="专题" style={{ left: at.x, top: at.y }}>
+    <ContextMenu at={at} label="专题" onClose={onClose}>
       <button
         type="button"
         role="menuitem"
@@ -705,35 +688,25 @@ function TopicMenu({ at, onClose, onEdit, onArchive, groups }: { at: { x: number
       >
         归档专题…
       </button>
-    </div>
+    </ContextMenu>
   );
 }
 
 /** Right-click menu of a group's heading: 编辑分组 and 解散分组 (its projects or topics stay, out of any group). */
 function GroupMenu({ at, onClose, onEdit, onDissolve }: { at: { x: number; y: number }; onClose(): void; onEdit(): void; onDissolve(): void }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    const onDown = (e: globalThis.MouseEvent) => !(e.target as Element | null)?.closest?.(".ctx-menu") && onClose();
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("mousedown", onDown);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("mousedown", onDown);
-    };
-  }, [onClose]);
   const pick = (run: () => void) => () => {
     run();
     onClose();
   };
   return (
-    <div className="ctx-menu" role="menu" aria-label="分组" style={{ left: at.x, top: at.y }}>
+    <ContextMenu at={at} label="分组" onClose={onClose}>
       <button type="button" role="menuitem" title="改分组的名字，写一段说明" onClick={pick(onEdit)} data-testid="edit-group-item">
         编辑分组…
       </button>
       <button type="button" role="menuitem" title="去掉这个分组；里面的项目或专题都留着，回到没分组的那一段" onClick={pick(onDissolve)} data-testid="dissolve-group">
         解散分组
       </button>
-    </div>
+    </ContextMenu>
   );
 }
 

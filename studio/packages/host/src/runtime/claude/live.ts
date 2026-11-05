@@ -1,4 +1,6 @@
 import type { PermissionResult, Query, SDKUserMessage, SlashCommand as SdkSlashCommand } from "@anthropic-ai/claude-agent-sdk";
+import type { McpLaunch } from "../mcp-launch.js";
+import type { McpServerSpec } from "@amo-studio/protocol";
 import type { Id, QuestionPrompt, SessionStatus } from "@amo-studio/protocol";
 
 // What Studio keeps about one running Claude Code process of a session (stage 16 split out of claude-runtime.ts).
@@ -22,19 +24,55 @@ export interface PendingQuestion {
 /** Tools whose call is the person's to answer: shown as a question item rather than a tool row. */
 export const QUESTION_TOOLS = new Set(["AskUserQuestion", "ExitPlanMode"]);
 
+/**
+ * One message for the CLI's input: `uuid` names it in command_lifecycle. No `priority: "now"` for 立即发送 any more
+ * (2026-11-03, 问题 #16): it waited out a running shell command; the Send now request is used instead.
+ */
+export interface LiveInput {
+  content: SDKUserMessage["message"]["content"];
+  uuid: string;
+}
+
 /** One running Claude Code process for a session, fed through a streaming input. */
 export interface Live {
   q: Query;
   /** Settles when the query has ended and its process is gone. */
   done: Promise<void>;
-  push(content: SDKUserMessage["message"]["content"]): void;
+  push(input: LiveInput): void;
   end(): void;
   running: boolean;
   /** Settles once the session's permission mode is in force (see ensureLive). */
   ready: Promise<void>;
   interrupted: boolean;
+  /**
+   * 立即发送 (2026-11-02): the turn ends to give way to a waiting message, not because the person stopped it — its end
+   * is "interrupted" (the CLI says error_during_execution), and nothing of 停止 (declined approvals, the 15 s close) runs.
+   */
+  givingWay: boolean;
+  /** What the CLI said it can do (system/init `capabilities`): msg_lifecycle_v1, interrupt_send_now_v1… */
+  capabilities: Set<string>;
+  /**
+   * MCP 设置 (2026-11-04): what the process was started with, the AMO server it was given (setMcpServers replaces the
+   * whole dynamic set, amo included), the servers added since (`dynamic`; those of the start stay until the process
+   * ends, whatever setMcpServers says — seen with CLI 2.1.304), and whether a change needs a new process.
+   */
+  mcp: { plan: McpLaunch; amo: unknown; dynamic: Record<string, McpServerSpec> } | null;
+  mcpStale: boolean;
+  /**
+   * Messages Studio sent that the model has not read yet (command_lifecycle `started` not seen): uuid -> its user item.
+   * Still here when the process goes: those items become `unsent`.
+   */
+  undelivered: Map<string, Id>;
+  /**
+   * Of those, the ones in the CLI's queue (command_lifecycle `queued`), and who waits for one to get there: Send now
+   * finds nothing waiting for a message the CLI is still taking in (2026-11-02, seen right after sending it).
+   */
+  atCli: Set<string>;
+  onAtCli: Map<string, () => void>;
   /** Closed by Studio (idle, archive, Host shutdown) rather than ended by the CLI. */
   closedByHost: boolean;
+  /** Its end handled (finish): once, also when Studio gave up waiting for a stuck process. */
+  finished?: boolean;
   /** Message types Studio failed to handle in this query (each told once in the conversation). */
   handlerErrors: Set<string>;
   background: Set<string>;
@@ -118,6 +156,13 @@ export function newLive(push: Live["push"], end: Live["end"]): Live {
     running: false,
     ready: Promise.resolve(),
     interrupted: false,
+    givingWay: false,
+    capabilities: new Set(),
+    mcp: null,
+    mcpStale: false,
+    undelivered: new Map(),
+    atCli: new Set(),
+    onAtCli: new Map(),
     closedByHost: false,
     handlerErrors: new Set(),
     background: new Set(),
