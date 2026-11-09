@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { parseRemoteProfileId, AUTO_COMPACT_MAX, AUTO_COMPACT_MIN, MAX_PROJECT_GROUPS, MAX_QUICK_MODELS, MAX_SUBSESSION_NOTES, SUBSESSION_NOTE_MAX, type SubsessionNote, OPTIONAL_FEATURES, EXPERIMENTAL_FEATURES, type ExperimentalFeature, type ProjectGroup, type TopicGroup, type QuickModel, type AccountUsage, type CredentialStatus, type OptionalFeature, type ProfileChoices, type SessionPreset, type Id, type QuotaDisplay, type StudioSettings } from "@amo-studio/protocol";
+import { parseRemoteProfileId, AUTO_COMPACT_MAX, AUTO_COMPACT_MIN, MAX_PROJECT_GROUPS, MAX_QUICK_MODELS, MAX_SUBSESSION_NOTES, SUBSESSION_NOTE_MAX, SUBSESSION_PERMISSIONS, type SubsessionNote, type SubsessionPermission, OPTIONAL_FEATURES, EXPERIMENTAL_FEATURES, type ExperimentalFeature, type ProjectGroup, type TopicGroup, type QuickModel, type AccountUsage, type CredentialStatus, type OptionalFeature, type ProfileChoices, type SessionPreset, type Id, type QuotaDisplay, type StudioSettings } from "@amo-studio/protocol";
 import { localClaudeHome, localClaudeSignedIn } from "../../runtime/claude/claude-login.js";
 import { readAutoCompact, readAutoCompactProfiles, writeAutoCompact, writeAutoCompactProfiles } from "../../runtime/compact.js";
+import { readShellHelp, SHELL_HELP_KEY } from "../../runtime/agent-env.js";
 import { applyModelPrefs, readModelPrefs, writeModelPrefs } from "../../core/model-prefs.js";
 import { newId } from "../../store/store.js";
 import type { CredentialStore } from "../../runtime/credentials.js";
@@ -10,7 +11,16 @@ import { HostError, sessionOptions, boundedText, PRESETS_KEY, MAX_PRESETS, WRITA
 import { Feature } from "../../core/feature.js";
 
 /** Studio settings, 常用预设, model credentials, model choices and subscription usage. */
-export class ConfigFeature extends Feature {
+export class ConfigFeature extends Feature<"claudeAccounts" | "scratchpad"> {
+  /**
+   * Every change of the Claude accounts (a sign-in's progress included) reaches the windows with the settings. Here
+   * rather than in ClaudeAccountsFeature since 2026-11-06 (plans/host-structure.md 8c): the settings are this
+   * feature's, and claudeAccounts no longer needs config back. Still once the Host is built (a microtask, as there).
+   */
+  watchClaudeAccounts(): void {
+    queueMicrotask(() => this.f.claudeAccounts.accounts.onChange(() => this.publish({ type: "settings.updated", settings: this.settings() })));
+  }
+
   settings(): StudioSettings {
     const dir = this.options.localClaudeHome ?? localClaudeHome();
     return {
@@ -20,6 +30,7 @@ export class ConfigFeature extends Feature {
       experimentalFeatures: this.experimentalFeatures(),
       devUiDir: this.devUiDir(),
       teamAutoSend: this.teamAutoSend(),
+      shellHelp: this.shellHelp(),
       scratchpadShortcut: this.f.scratchpad.shortcut(),
       scratchpadSafeNewlines: this.f.scratchpad.safeNewlines(),
       autoCompactTokens: readAutoCompact(this.store),
@@ -55,7 +66,7 @@ export class ConfigFeature extends Feature {
     }
   }
 
-  /** A new list of 子会话 notes: known accounts, one note per model, empty notes left out. */
+  /** A new list of 子会话 notes: known accounts, one per model, those with neither a note nor a default left out. */
   private checkSubsessionNotes(list: unknown): SubsessionNote[] {
     if (!Array.isArray(list) || list.length > MAX_SUBSESSION_NOTES) throw new HostError("bad_request", `subsessionNotes must be a list of at most ${MAX_SUBSESSION_NOTES}`);
     const out: SubsessionNote[] = [];
@@ -67,7 +78,16 @@ export class ConfigFeature extends Feature {
       if (model === undefined) throw new HostError("bad_request", "subsessionNotes entries are { profileId, model: string | null, note }");
       const note = typeof o.note === "string" ? o.note.trim() : "";
       if (note.length > SUBSESSION_NOTE_MAX) throw new HostError("bad_request", `a note is limited to ${SUBSESSION_NOTE_MAX} characters`);
-      if (note && !out.some((x) => x.profileId === profileId && x.model === model)) out.push({ profileId, model, note });
+      // 2026-11-05: the model's defaults as a sub-session.
+      if (o.effort !== undefined && o.effort !== null && (typeof o.effort !== "string" || o.effort.length > 40)) throw new HostError("bad_request", "effort must be text, e.g. high");
+      if (o.fast !== undefined && o.fast !== null && typeof o.fast !== "boolean") throw new HostError("bad_request", "fast must be true or false");
+      if (o.permission !== undefined && o.permission !== null && !SUBSESSION_PERMISSIONS.includes(o.permission as never)) throw new HostError("bad_request", `permission must be one of: ${SUBSESSION_PERMISSIONS.join(", ")}`);
+      const defaults = {
+        ...(typeof o.effort === "string" && o.effort ? { effort: o.effort } : {}),
+        ...(typeof o.fast === "boolean" ? { fast: o.fast } : {}),
+        ...(o.permission ? { permission: o.permission as SubsessionPermission } : {}),
+      };
+      if ((note || Object.keys(defaults).length) && !out.some((x) => x.profileId === profileId && x.model === model)) out.push({ profileId, model, note, ...defaults });
     }
     return out;
   }
@@ -183,6 +203,11 @@ export class ConfigFeature extends Feature {
     return this.store.getKv(TEAM_AUTO_SEND_KEY)?.value === "1";
   }
 
+  /** 命令行适配 (设置 → 功能, agent-env.ts): on unless turned off. */
+  shellHelp(): boolean {
+    return readShellHelp(this.store);
+  }
+
   featureOn(id: OptionalFeature): boolean {
     return !this.disabledFeatures().includes(id);
   }
@@ -203,7 +228,7 @@ export class ConfigFeature extends Feature {
    * Moves the common space to another folder, replaces the 常用预设 list, turns optional features on or off, sets the
    * scratchpad shortcut (便签) and/or how the Claude subscription signs in (sessions started from then on).
    */
-  updateSettings(input: { commonDir?: unknown; devUiDir?: unknown; presets?: unknown; disabledFeatures?: unknown; experimentalFeatures?: unknown; teamAutoSend?: unknown; scratchpadShortcut?: unknown; modelPrefs?: unknown; scratchpadSafeNewlines?: unknown; quotaDisplay?: unknown; quickModels?: unknown; autoCompactTokens?: unknown; autoCompactProfiles?: unknown; projectGroups?: unknown; topicGroups?: unknown; subsessionNotes?: unknown }): StudioSettings {
+  updateSettings(input: { commonDir?: unknown; devUiDir?: unknown; presets?: unknown; disabledFeatures?: unknown; experimentalFeatures?: unknown; teamAutoSend?: unknown; shellHelp?: unknown; scratchpadShortcut?: unknown; modelPrefs?: unknown; scratchpadSafeNewlines?: unknown; quotaDisplay?: unknown; quickModels?: unknown; autoCompactTokens?: unknown; autoCompactProfiles?: unknown; projectGroups?: unknown; topicGroups?: unknown; subsessionNotes?: unknown }): StudioSettings {
     if (input.subsessionNotes !== undefined) this.store.setKv(SUBSESSION_NOTES_KEY, JSON.stringify(this.checkSubsessionNotes(input.subsessionNotes)));
     if (input.projectGroups !== undefined) this.store.setKv(PROJECT_GROUPS_KEY, JSON.stringify(this.checkProjectGroups(input.projectGroups)));
     if (input.topicGroups !== undefined) this.store.setKv(TOPIC_GROUPS_KEY, JSON.stringify(this.checkTopicGroups(input.topicGroups)));
@@ -256,6 +281,10 @@ export class ConfigFeature extends Feature {
     if (input.teamAutoSend !== undefined) {
       if (typeof input.teamAutoSend !== "boolean") throw new HostError("bad_request", "teamAutoSend must be true or false");
       this.store.setKv(TEAM_AUTO_SEND_KEY, input.teamAutoSend ? "1" : "0");
+    }
+    if (input.shellHelp !== undefined) {
+      if (typeof input.shellHelp !== "boolean") throw new HostError("bad_request", "shellHelp must be true or false");
+      this.store.setKv(SHELL_HELP_KEY, input.shellHelp ? "1" : "0");
     }
     if (input.disabledFeatures !== undefined) {
       const known = OPTIONAL_FEATURES.map((f) => f.id);

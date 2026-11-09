@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { projectWorkspaces, remoteHeldTasks, type Annotation, type ApprovalDecision, type ChecklistItem, type ModelProfile, type Session, type SessionOptions, type Task, type TaskColumn, type TodoView, type Topic, type Workspace } from "@amo-studio/protocol";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { isCommon, projectWorkspaces, remoteHeldTasks, type Annotation, type ApprovalDecision, type ChecklistItem, type ModelProfile, type Session, type SessionOptions, type SubsessionSetup, type Task, type TaskColumn, type TodoView, type Topic, type Workspace } from "@amo-studio/protocol";
 import { call, HostApiError, type HostLink, type Passage } from "../host/client.js";
 import { useSessionItems } from "../host/useSessionItems.js";
 import { useAnnotations } from "../review/useAnnotations.js";
@@ -108,7 +108,12 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
   }, [task.id, session?.id]);
   const settings = useSettings(link);
   const { items } = useSessionItems(link, session?.id ?? null);
-  const annotations = useAnnotations(link, session?.id ?? null);
+  const allAnnotations = useAnnotations(link, session?.id ?? null);
+  // A plan's annotations are the plan window's: they go with its 要修改, not from here (2026-11-09).
+  const annotations = useMemo(() => {
+    const plans = new Set(items.filter((i) => i.type === "question" && i.source === "plan-review").map((i) => i.id));
+    return plans.size ? allAnnotations.filter((a) => !plans.has(a.itemId)) : allAnnotations;
+  }, [allAnnotations, items]);
   const annotationRefs = useAnnotationRefs(session?.id ?? null, annotations);
   // The model by name ("GPT-6.1 Sol", "Opus 5.5"), also when it is the profile's default.
   const { choices: sessionChoices } = useProfileChoices(link, session?.profileId);
@@ -329,11 +334,11 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
   const approve = (approvalId: string, decision: ApprovalDecision) =>
     session ? run(() => call(link, "POST /api/approvals/:approvalId", { approvalId }, { sessionId: session.id, decision })) : Promise.resolve();
   const interrupt = (id: string) => run(() => call(link, "POST /api/sessions/:id/interrupt", { id }));
-  async function send(text: string, attachments: string[], now = false): Promise<boolean> {
+  async function send(text: string, attachments: string[], now = false, subsessions: SubsessionSetup[] = []): Promise<boolean> {
     if (!session) return false;
     try {
       const referred = annotationRefs.list.map((a) => a.id);
-      await call(link, "POST /api/sessions/:id/messages", { id: session.id }, { text, ...(attachments.length ? { attachments } : {}), ...(referred.length ? { annotations: referred } : {}), ...(now ? { now: true } : {}) });
+      await call(link, "POST /api/sessions/:id/messages", { id: session.id }, { text, ...(attachments.length ? { attachments } : {}), ...(referred.length ? { annotations: referred } : {}), ...(now ? { now: true } : {}), ...(subsessions.length ? { subsessions } : {}) });
       annotationRefs.sent();
       return true;
     } catch (err) {
@@ -350,7 +355,10 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
       else await call(link, "POST /api/sessions/:id/items/:itemId/resend", { id, itemId });
     });
   };
-  const workdir = session ? workspaces.find((w) => w.id === session.workspaceId)?.path : undefined;
+  const sessionWorkspace = session ? workspaces.find((w) => w.id === session.workspaceId) : undefined;
+  const workdir = sessionWorkspace?.path;
+  // The session's project (2026-11-09): a copy's as its own computer names it (its workspace here is the common folder).
+  const sessionProject: string | null | undefined = !session ? undefined : task.remote ? (task.remote.sessionProjects?.[session.id] !== undefined ? task.remote.sessionProjects[session.id] : task.remote.project) : sessionWorkspace && !isCommon(sessionWorkspace) ? sessionWorkspace.name : null;
   const showError = (text: string) => setToast({ text, error: true });
 
   return (
@@ -576,7 +584,7 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
         setToast({ text });
       }} />}
 
-      {copy && <RemoteBanner task={task} copy={copy} sessions={own} profiles={profiles} />}
+      {copy && <RemoteBanner task={task} copy={copy} sessions={own} profiles={profiles} usage={remote?.usage?.find((u) => u.account === task.remote?.account && u.device === task.remote?.device)} />}
       {granted.length > 0 && (
         <div className="remote-banner granted" role="status" data-testid="granted-banner">
           <span className="remote-badge">已授权</span>
@@ -654,6 +662,7 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
               session={session}
               topicId={task.topicId}
               model={[shortModel(profile(session.profileId)), modelText].filter(Boolean).join(" · ")}
+              {...(sessionProject !== undefined ? { project: sessionProject } : {})}
               workdir={workdir}
               busy={busy}
               {...(!task.archivedAt ? { tracked: focusPins.has(task.id), onTrack: () => focusPins.toggle(task.id) } : {})}

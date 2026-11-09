@@ -340,7 +340,7 @@ export interface MessageImage {
 /**
  * Where a message stands before the model read it (see the `user` item). `waiting`: sent mid-turn, at the runtime, not
  * read yet (立即发送, 2026-11-02). `unsent`: its process went (or it could not go in) before the model read it; 重新发送
- * sends it again. `held` (2026-11-04, plans/message-delivery.md): from an agent or from Studio (中转回复, 值守, 传话,
+ * sends it again. `held` (2026-11-04, plans/done/message-delivery.md): from an agent or from Studio (中转回复, 值守, 传话,
  * session_send…), in the session's inbox until the session is free — then it goes in by itself.
  */
 export type UserDelivery = "waiting" | "unsent" | "held";
@@ -387,8 +387,11 @@ export type SessionItem =
    * `images`: pictures sent with the message (stage 11). `delivery` (立即发送, 2026-11-02): `waiting` — sent while a turn
    * ran and not read by the model yet (Claude reads it after the next tool call or at the turn's end, Codex at its next
    * step); `unsent` — its process went before it was read (it can be sent again). Absent: it reached the model.
+   * `withPerson` (2026-11-08): a held one that went in right behind the person's message that ended a pause (inbox.ts,
+   * resume) — the model reads it next by itself, so the row says so and offers no 立即发送 (which would cut off the
+   * person's own turn; the user: 「留言的立即发送 触发了 打断重发」).
    */
-  | (ItemBase & { type: "user"; text: string; images?: MessageImage[]; delivery?: UserDelivery })
+  | (ItemBase & { type: "user"; text: string; images?: MessageImage[]; delivery?: UserDelivery; withPerson?: true })
   | (ItemBase & { type: "agent"; markdown: string; streaming: boolean })
   /** The model's thinking before or between steps. */
   | (ItemBase & { type: "reasoning"; text: string; streaming: boolean; durationMs?: number })
@@ -550,7 +553,7 @@ export interface Relay {
 export const RELAY_TEXT_MAX = 20_000;
 
 /**
- * 会话里用中转 (2026-10-30, plans/relay-in-sessions.md): what a session asked to send through AMO 中转 — a new session
+ * 会话里用中转 (2026-10-30, plans/done/relay-in-sessions.md): what a session asked to send through AMO 中转 — a new session
  * for someone to confirm (ask) or a follow-up in one (followup). Every one waits for the person first, in auto mode too
  * (it goes to a real person); sent as the person, marked as their AI's (AI 代发).
  */
@@ -585,6 +588,8 @@ export interface TeamThread {
   since: number;
   /** When the last reply went back into the session, ms. */
   deliveredAt: number | null;
+  /** 已接手，不用回复 (2026-11-05): when `to` took it on without replying (it is done then); null/absent otherwise. */
+  takenAt?: number | null;
 }
 export const TOPIC_DOC_BODY_MAX = 50_000;
 
@@ -758,7 +763,7 @@ export interface ScheduleProposal {
 }
 
 /** One step of a task's checklist. They came from extension packs' task templates (stage 6); the packs went on 10-31, so
- * nothing makes new ones — old tasks keep theirs, readable and tickable (the 11-03 audit: kept as is, plans/cleanup-2026-11.md). */
+ * nothing makes new ones — old tasks keep theirs, readable and tickable (the 11-03 audit: kept as is, plans/done/cleanup-2026-11.md). */
 export interface ChecklistItem {
   id: Id;
   taskId: Id;
@@ -806,6 +811,8 @@ export interface DecisionRequest {
   answer: string | null;
   createdAt: Timestamp;
   answeredAt: Timestamp | null;
+  /** The mail the answer went back as (2026-11-05): still unread once the turn is over, it goes in as a message. */
+  mailId?: Id;
 }
 
 /** One quota window of a subscription (e.g. GPT's 5-hour and weekly limits). */

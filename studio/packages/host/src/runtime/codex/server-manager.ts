@@ -11,6 +11,8 @@ import { lowerAgentPriority } from "../priority.js";
 import { codexServerSpec, profileGone, type CodexProviderDef } from "../profiles.js";
 import { resolveCodexCommand, type CodexCommand } from "./command.js";
 import { CodexRpcClient } from "./rpc-client.js";
+import { codexHomeOf, desktopHostedToolArgs } from "./desktop-tools.js";
+import { mcpFits } from "../mcp-launch.js";
 
 // One `codex app-server` per Codex profile (studio/spikes/RESULTS.md, sections c and d). Port and token persist in
 // the data dir so a restarted server, or a restarted Host, comes back at the same address and attached TUIs reconnect.
@@ -57,6 +59,8 @@ export interface CodexServerManagerOptions {
   mcp?: () => { url: string; token: string } | null;
   /** MCP 设置 (2026-11-04): Studio's own servers that are on, read when a server starts (not passed to running ones). */
   extraMcp?: () => Record<string, import("@amo-studio/protocol").McpServerSpec>;
+  /** Variables under everything else, read when a server starts: 命令行适配 (agent-env.ts). */
+  baseEnv?: () => Record<string, string>;
 }
 
 interface Entry {
@@ -120,6 +124,16 @@ export class CodexServerManager extends EventEmitter<CodexServerManagerEvents> {
     // The launcher may exit before codex.exe releases the socket; wait until nothing listens any more.
     await waitPortClosed(entry.port, 5000);
     this.persist();
+  }
+
+  /**
+   * Studio's servers that are on but Codex cannot take (it is given stdio and HTTP ones only, profiles.ts): an SSE one is
+   * left out, and the session is told (2026-11-09).
+   */
+  unsupportedMcp(): Array<{ name: string; type: string }> {
+    return Object.entries(this.extraMcp())
+      .filter(([, spec]) => !mcpFits(spec, { http: true, sse: false }))
+      .map(([name, spec]) => ({ name, type: spec.type }));
   }
 
   /** Studio's MCP servers for a new server; a broken list must not keep Codex from starting. */
@@ -216,11 +230,14 @@ export class CodexServerManager extends EventEmitter<CodexServerManagerEvents> {
     const spec = codexServerSpec(profile, this.options.profiles, this.options.credentials, { providers: this.options.providers, mcp: this.options.mcp?.() ?? null, extraMcp: this.extraMcp() });
     const cmd = this.options.codexCommand ?? resolveCodexCommand();
     const tokenFile = this.tokenFile(entry.profileId);
-    const args = [...cmd.prefixArgs, "app-server", ...spec.configArgs, "--listen", `ws://127.0.0.1:${entry.port}`, "--ws-auth", "capability-token", "--ws-token-file", tokenFile];
+    // Not the Host's own variables (agent-env.ts); cmd.env puts ELECTRON_RUN_AS_NODE back when codex.js needs it.
+    const env = withoutWindowsApps({ ...(this.options.baseEnv?.() ?? {}), ...withoutHostEnv(process.env), ...cmd.env, ...this.options.env, ...spec.env });
+    // The Codex desktop app's browser and computer-use tools cannot work without the app as their host (desktop-tools.ts).
+    const desktopOff = desktopHostedToolArgs(codexHomeOf(env));
+    const args = [...cmd.prefixArgs, "app-server", ...spec.configArgs, ...desktopOff, "--listen", `ws://127.0.0.1:${entry.port}`, "--ws-auth", "capability-token", "--ws-token-file", tokenFile];
     const child = spawn(cmd.command, args, {
       cwd: this.options.cwd,
-      // Not the Host's own variables (agent-env.ts); cmd.env puts ELECTRON_RUN_AS_NODE back when codex.js needs it.
-      env: withoutWindowsApps({ ...withoutHostEnv(process.env), ...cmd.env, ...this.options.env, ...spec.env }),
+      env,
       stdio: ["ignore", "ignore", "pipe"],
       windowsHide: true,
     });

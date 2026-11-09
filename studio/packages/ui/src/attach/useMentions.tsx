@@ -5,7 +5,7 @@ import { mentionAt, withoutMention } from "../newtask/draft.js";
 import { pinnedFirst, usePins } from "../lib/pins.js";
 import { useFileMarks } from "../marks/useFileMarks.js";
 import type { FileRefItem } from "./refs.js";
-import { mentionGroups, mentionSpans, nextSubSessionName, QUICK_COMMIT, withMentionRefs, type MentionGroup, type MentionOption, type MentionPick, type SubSessionSpec } from "./mentions.js";
+import { mentionGroups, mentionSpans, QUICK_COMMIT, subSessionName, subSessionSetups, withMentionRefs, type MentionGroup, type MentionOption, type MentionPick, type SubSessionSpec } from "./mentions.js";
 
 /**
  * @ in a session's composer: tasks, sessions of the same project or topic, recently changed files (or, once something
@@ -44,6 +44,11 @@ export function useComposerMentions(input: {
   picks?: { value: ReadonlyMap<string, MentionPick>; set(next: ReadonlyMap<string, MentionPick>): void };
   /** 提示词模板… (default: yes; not in a one-line field). */
   templates?: boolean;
+  /**
+   * 开子会话… with no session of its own (2026-11-05: the new-task page — the task's first session is a main session
+   * that may start sub-sessions). A session's composer decides from `current`.
+   */
+  subsession?: boolean;
 }) {
   const { link, text, setText, tasks, sessions, current } = input;
   const [caret, setCaret] = useState<number | null>(null);
@@ -70,7 +75,7 @@ export function useComposerMentions(input: {
   const [commitAt, setCommitAt] = useState<number | null>(null);
   // 提示词模板…: likewise for the template's text.
   const [templateAt, setTemplateAt] = useState<number | null>(null);
-  const subsession = !!current && current.kind !== "sub" && !!current.taskId && !current.archivedAt;
+  const subsession = current ? current.kind !== "sub" && !!current.taskId && !current.archivedAt : !!input.subsession;
   const commit = !!current && !current.archivedAt;
   const template = input.templates !== false && !current?.archivedAt;
 
@@ -185,12 +190,12 @@ export function useComposerMentions(input: {
     },
     /** 开子会话…'s dialog is up. */
     askingSubsession: subAt !== null,
-    /** The dialog's answer: 「@子会话N」 where @ was typed; the caret after it (null when cancelled). */
+    /** The dialog's answer: 「@子会话·模型·强度」 where @ was typed; the caret after it (null when cancelled). */
     finishSubsession(spec: SubSessionSpec | null): number | null {
       const at = Math.min(subAt ?? text.length, text.length);
       setSubAt(null);
       if (!spec) return null;
-      return insertPick(at, nextSubSessionName(text, picked.keys()), { kind: "subsession", spec });
+      return insertPick(at, subSessionName(spec, text, picked.keys()), { kind: "subsession", spec });
     },
     groups,
     /** The picked tasks' and sessions' names still in the text (coloured in the composer). */
@@ -219,6 +224,8 @@ export function useComposerMentions(input: {
       }
       return false;
     },
+    /** The 子会话设定 the message names, sent to the Host with it (2026-11-05). Read before expand(). */
+    setups: (message: string) => subSessionSetups(message, picked),
     /** The message as sent (see withMentionRefs). Forgets the picks. */
     expand(message: string): string {
       const out = withMentionRefs(message, picked);

@@ -301,6 +301,39 @@ test("@ in the first sentence refers to a task (and its sessions) without changi
   expect(made.workspaceId).toBe((await studio.api<StudioSettings>("GET", "/api/settings")).commonWorkspace.id);
 });
 
+test("@ 开子会话… on the new-task page: the setup goes with the first sentence and survives leaving the page (2026-11-05)", async () => {
+  studio = await launchStudio();
+  const { page } = studio;
+  await page.getByRole("button", { name: "+ 新任务" }).click();
+  const text = page.getByLabel("第一句话");
+  await text.pressSequentially("先查原因 @子");
+  const suggest = page.getByTestId("suggest");
+  await expect(suggest.getByRole("option", { name: /开子会话…/ })).toBeVisible();
+  await text.press("Enter");
+  const dialog = page.getByTestId("subsession-dialog");
+  await expect(dialog).toBeVisible();
+  await dialog.getByTestId("subsession-extra").fill("只看日志，不改代码");
+  await screenshot(studio.app, "studio", "newtask-subsession-dialog", page);
+  await dialog.getByTestId("subsession-ok").click();
+  await expect(text).toHaveValue(/^先查原因 @子会话·.+·默认强度 $/);
+  const tag = (await text.inputValue()).slice("先查原因 @".length).trim();
+  // Back to the board and in again: the pick is kept with the draft.
+  await page.getByRole("button", { name: "返回看板" }).click();
+  await page.getByRole("button", { name: "+ 新任务" }).click();
+  await expect(text).toHaveValue(`先查原因 @${tag} `);
+  // A filed task has no session to keep it for: refused, saying so.
+  await text.press("Control+Enter");
+  await expect(page.getByRole("alert")).toContainText("放进待办不带子会话设定");
+  await text.press("End");
+  const posted = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/api/tasks"));
+  await text.press("Enter");
+  expect((await posted).postDataJSON().firstSession.subsessions).toEqual([{ name: tag, profileId: "codex-mock", model: null, extra: "只看日志，不改代码" }]);
+  await expect(page.getByTestId("msg-agent")).toContainText(`MOCK: 先查原因 @${tag}`, { timeout: 30_000 });
+  const bubble = page.getByTestId("msg-user").first();
+  await expect(bubble.getByTestId("msg-mention")).toHaveText([`@${tag}`]);
+  await expect(bubble.getByTestId("msg-mention-brief")).toHaveAttribute("title", /session_start 带 setup/);
+});
+
 test("设置 → 默认路径: 选择文件夹 starts there when adding a project (2026-10-17, in place of 默认项目)", async () => {
   studio = await launchStudio();
   const { page } = studio;
@@ -341,6 +374,37 @@ test("设置 → 默认路径: 选择文件夹 starts there when adding a projec
   await picker.getByRole("textbox", { name: "路径" }).fill("\\\\nas.example\\share");
   await picker.getByRole("textbox", { name: "路径" }).press("Enter");
   await expect(picker.getByRole("alert")).toContainText("网络路径");
+
+  // 在这一层里找 (2026-11-06): typing narrows the folders of the folder shown by a part of their name, any case; the
+  // folders below them are not searched; going into one clears it; Esc clears it before it closes the picker.
+  for (const d of ["Beta-tools", "alpha", join("client", "tools-inner")]) mkdirSync(join(root, d));
+  await picker.getByRole("textbox", { name: "路径" }).fill(root);
+  await picker.getByRole("textbox", { name: "路径" }).press("Enter");
+  await expect(picker.getByRole("option")).toHaveCount(4);
+  const search = picker.getByRole("searchbox", { name: "在这一层里找" });
+  await picker.getByRole("listbox", { name: "文件夹" }).press("t");
+  await expect(search).toBeFocused();
+  await expect(search).toHaveValue("t");
+  await expect(picker.getByRole("option")).toHaveCount(2);
+  await expect(picker.getByTestId("folder-search-count")).toHaveText("2 / 4");
+  await search.pressSequentially("OOL");
+  await expect(picker.getByRole("option")).toHaveCount(1);
+  await expect(picker.getByRole("option", { name: "Beta-tools" })).toHaveAttribute("aria-selected", "true");
+  await expect(picker.locator(".folder-match")).toHaveText("tool");
+  await expect(picker.getByRole("button", { name: "选择「Beta-tools」" })).toBeVisible();
+  await screenshot(studio.app, "studio", "folder-picker-search", page);
+  await search.press("Enter");
+  await expect(picker.getByRole("textbox", { name: "路径" })).toHaveValue(join(root, "Beta-tools"));
+  await expect(search).toHaveValue("");
+  await picker.getByRole("button", { name: "上一级" }).click();
+  await expect(picker.getByRole("option")).toHaveCount(4);
+  await search.fill("没有这个");
+  await expect(picker.getByRole("listbox", { name: "文件夹" })).toContainText("这一层没有名字含「没有这个」的文件夹");
+  await search.press("Escape");
+  await expect(search).toHaveValue("");
+  await expect(picker.getByRole("option")).toHaveCount(4);
+  await expect(picker).toBeVisible();
+
   await picker.getByRole("option", { name: "游戏" }).click();
   await screenshot(studio.app, "stage-16", "S16-A-folder-picker", page);
   await picker.getByRole("button", { name: "选择「游戏」" }).click();

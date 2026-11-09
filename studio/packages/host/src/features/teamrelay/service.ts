@@ -1,12 +1,12 @@
 import { readFileSync, statSync } from "node:fs";
 import { basename, isAbsolute } from "node:path";
 import { RELAY_TEXT_MAX, TEAM_SEND_FILES_MAX, type Id, type TeamSend, type TeamThread } from "@amo-studio/protocol";
-import { RelayClient, RelayClientError, newRepliesText, takeSession, threadAsText, type Thread, type Via } from "@amo-studio/relay/light";
+import { RelayClient, RelayClientError, dueForAi, newRepliesText, takeSession, threadAsText, type Thread, type Via } from "@amo-studio/relay/light";
 import { newId } from "../../store/store.js";
-import { HostError } from "../../core/shared.js";
+import { HostError, isRemoteCopy } from "../../core/shared.js";
 import { Feature } from "../../core/feature.js";
 
-// 会话里用中转 (2026-10-30, plans/relay-in-sessions.md): a session asks someone on the team to confirm something through
+// 会话里用中转 (2026-10-30, plans/done/relay-in-sessions.md): a session asks someone on the team to confirm something through
 // AMO 中转, as the person (the platform's login), marked as their AI's. Every send waits for the person first — in auto
 // mode too, since it goes to a real person — like a 主控's 传话; unless the person turned that off (设置 → 功能 → 中转,
 // 2026-10-30), then it goes at once. Each message carries the session's mark (Via.conv,
@@ -23,7 +23,7 @@ export const TEAM_NOT_SIGNED_IN = "要先在 AMO 平台里登录团队服务器�
 
 type Questions = TeamSend["questions"];
 
-export class TeamRelayFeature extends Feature {
+export class TeamRelayFeature extends Feature<"config" | "sessions"> {
   private running = false;
   private abort: AbortController | null = null;
   private scanning: Promise<void> | null = null;
@@ -36,7 +36,7 @@ export class TeamRelayFeature extends Feature {
 
   /** The 中转 client as the person, and this computer's mark prefix. */
   private relay(): { client: RelayClient; me: string; prefix: string } {
-    const login = this.f.remote.teamLogin();
+    const login = this.teamLink.login();
     if (!login) throw new HostError("bad_request", TEAM_NOT_SIGNED_IN);
     return { client: new RelayClient(login.account.server, login.account.key), me: login.account.name, prefix: `studio:${login.deviceId}:` };
   }
@@ -215,7 +215,21 @@ export class TeamRelayFeature extends Feature {
     const r = thread.request!;
     const state = r.state === "done" ? "done" : r.state === "returned" ? "returned" : "open";
     const since = state === "returned" ? (r.returnedAt ?? thread.updatedAt) : was && was.state === state ? was.since : thread.updatedAt;
-    return { threadId: thread.id, sessionId, title: thread.title, to: r.to, state, since, deliveredAt: was?.deliveredAt ?? null };
+    return { threadId: thread.id, sessionId, title: thread.title, to: r.to, state, since, deliveredAt: was?.deliveredAt ?? null, takenAt: r.state === "done" ? (r.takenAt ?? null) : null };
+  }
+
+  /**
+   * 在 Studio 里打开 (2026-11-05, J1): AMO 中转 on this computer asks to show the session that sent one of its threads; the
+   * workbench acts on the event (it is the window that listens).
+   */
+  openInUi(sessionId: unknown): { taskId: Id; sessionId: Id } {
+    const id = text(sessionId, "sessionId");
+    const s = this.store.getSession(id);
+    if (!s) throw new HostError("not_found", `没有会话 ${id}（可能已经删掉了）`);
+    // A topic's own session has no task: "" shows the board, as Focus's 在工作台打开 does.
+    const taskId = s.taskId ?? "";
+    this.publish({ type: "ui.open", taskId, sessionId: s.id, at: new Date().toISOString() });
+    return { taskId, sessionId: s.id };
   }
 
   private track(thread: Thread, sessionId: Id): void {
@@ -230,7 +244,7 @@ export class TeamRelayFeature extends Feature {
     if (!mine.length) return "这个会话还没有发过中转会话。";
     const ago = (ms: number) => waited(Date.now() - ms);
     return mine
-      .map((t) => `- ${t.title} · 发给 ${t.to} · ${t.state === "open" ? `等 ${t.to} 回复（已等 ${ago(t.since)}）` : t.state === "returned" ? "回到你这边了" : "已完成"} · threadId ${t.threadId}`)
+      .map((t) => `- ${t.title} · 发给 ${t.to} · ${t.state === "open" ? `等 ${t.to} 回复（已等 ${ago(t.since)}）` : t.state === "returned" ? "回到你这边了" : t.takenAt ? `${t.to} 已接手，不用回复（已结束）` : "已完成"} · threadId ${t.threadId}`)
       .join("\n");
   }
 
@@ -251,7 +265,7 @@ export class TeamRelayFeature extends Feature {
   private async loop(): Promise<void> {
     while (this.running) {
       try {
-        if (!this.f.remote.teamLogin()) {
+        if (!this.teamLink.login()) {
           await this.pause(this.pauseMs.signedOut);
           continue;
         }
@@ -282,7 +296,7 @@ export class TeamRelayFeature extends Feature {
   }
 
   private async scanOnce(): Promise<void> {
-    if (!this.f.remote.teamLogin()) return;
+    if (!this.teamLink.login()) return;
     const { client, me, prefix } = this.relay();
     const all = await client.threads();
     for (const t of all) this.lastSeq = Math.max(this.lastSeq, t.lastSeq);
@@ -291,8 +305,9 @@ export class TeamRelayFeature extends Feature {
     const next = new Map(before.map((t) => [t.threadId, t]));
     for (const t of mine) next.set(t.id, this.view(t, t.request!.conv!.slice(prefix.length), before.find((b) => b.threadId === t.id)));
 
-    // Back with me for the AI, not taken yet: by session, into it, several as one message.
-    const due = mine.filter((t) => t.request!.state === "returned" && t.request!.waitingOn === me && t.request!.handler === "ai" && t.request!.pickedAt === null);
+    // Back with me for the AI, not taken yet: by session, into it, several as one message. 已接手 (2026-11-05) only when
+    // the person asked ticked that their note goes to the AI; taken on quietly, it only shows as taken.
+    const due = mine.filter((t) => dueForAi(t.request!, me));
     const bySession = new Map<Id, Thread[]>();
     for (const t of due) {
       const sessionId = t.request!.conv!.slice(prefix.length);
@@ -301,15 +316,18 @@ export class TeamRelayFeature extends Feature {
     }
     for (const [sessionId, threads] of bySession) {
       const parts: string[] = [];
+      let replies = 0;
       for (const t of threads) {
         const item = await takeSession(client, me, t.id);
         if (!item) continue;
         parts.push(newRepliesText(item.thread, item, `用 team_session（threadId ${item.thread.id}）`));
+        if (item.thread.request?.state !== "done") replies++;
         const seen = this.view(item.thread, sessionId, next.get(t.id));
         next.set(t.id, { ...seen, deliveredAt: Date.now() });
       }
       if (!parts.length) continue;
-      this.tell(sessionId, `【中转回复】\n\n${parts.join("\n\n---\n\n")}\n\n（WorkStudio 从中转转回来的，你用的是 ${me} 的身份。还没问清楚，用 team_followup 追问；已经敲定，用 team_done 标记完成，再按敲定的方案接着做。）`);
+      const how = replies ? "还没问清楚，用 team_followup 追问；已经敲定，用 team_done 标记完成，再按敲定的方案接着做。" : "对方已接手，会话已经结束，不用 team_done，也不用再追问。";
+      this.tell(sessionId, `【中转回复】\n\n${parts.join("\n\n---\n\n")}\n\n（WorkStudio 从中转转回来的，你用的是 ${me} 的身份。${how}）`);
     }
     this.saveThreads([...next.values()]);
   }
@@ -317,11 +335,11 @@ export class TeamRelayFeature extends Feature {
   /** A session a reply can go into: there, not archived, not handed to a terminal, not a copy of a remote one. */
   private canHear(sessionId: Id): boolean {
     const s = this.store.getSession(sessionId);
-    return !!s && !s.archivedAt && s.writer !== "archived" && s.writer !== "terminal-handoff" && s.runtime !== "remote";
+    return !!s && !s.archivedAt && s.writer !== "archived" && s.writer !== "terminal-handoff" && !isRemoteCopy(s);
   }
 
   /**
-   * Into the session's inbox (2026-11-04, plans/message-delivery.md): shown there at once, sent once its turn is over,
+   * Into the session's inbox (2026-11-04, plans/done/message-delivery.md): shown there at once, sent once its turn is over,
    * kept across a restart, 没送到 with 重新发送 when it cannot go in. Before, it went as the person's messages do — steered
    * into a Codex turn — and one that failed was only a line in host.log, the reply already taken off the relay.
    */

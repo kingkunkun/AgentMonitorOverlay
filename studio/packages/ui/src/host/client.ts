@@ -44,6 +44,10 @@ declare global {
         setIgnoreMouse(ignore: boolean): void;
         /** Focus window: 移动位置 starts or ends (10-22); while it lasts a drag moves the window. */
         setMoving?(on: boolean): void;
+        /** Focus window: 拖拽调整大小 on or off (2026-11-06); while on the window may activate. */
+        setSizing?(on: boolean): void;
+        /** Focus window: a drag of the resize grip starts, moves or ends (the main process follows the pointer). */
+        resize?(phase: "start" | "move" | "end"): void;
         /** Focus window: the parts of the window that take clicks (2026-10-15); the rest lets them through. */
         setShape?(rects: Array<{ x: number; y: number; width: number; height: number }>): void;
         /** Focus window: a right-click on its title row, passed on by the main process (S14-J). */
@@ -74,10 +78,15 @@ declare global {
       /** A task (and session); without a task (a topic session) the workbench shows the board; `topicId`: that topic's
        * canvas (画布审阅, 2026-10-27), opening the question `calloutId`. */
       openInWorkbench?(target: { taskId?: string; sessionId?: string; show?: boolean; passage?: Passage; topicId?: string; calloutId?: string; /** 设置 on this page (远程, 2026-10-29). */ settings?: "remote" }): Promise<void>;
+      /** 在中转里打开 (2026-11-05): an AMO 中转 client Studio can find; showing a thread in it (false: none found). */
+      relayAvailable?(): Promise<boolean>;
+      openInRelay?(threadId: string): Promise<boolean>;
       /** 画布小窗 (2026-10-27): a topic's canvas in the small window on top. */
       openCanvasMini?(target: { topicId?: string }): Promise<void>;
       /** In the 画布小窗: keep it on top of other windows (or not); without a value, whether it is. */
       canvasMiniTop?(on?: boolean): Promise<boolean>;
+      /** 计划窗口 (2026-11-09): a session's plan (its latest, or the version `itemId`) in a window of its own. */
+      openPlan?(target: { sessionId: string; itemId?: string }): Promise<void>;
       /** One window drag's summary, for logs/resize-trace.log (Electron). */
       trace?(summary: unknown): void;
       windowControls?: {

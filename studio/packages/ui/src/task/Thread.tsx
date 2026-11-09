@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type SetStateAction } from "react";
 import { readSessionDraft, writeSessionDraft } from "./sessionDraft.js";
-import type { Annotation, ApprovalDecision, DecisionRequest, ModelProfile, Session, SessionItem, SessionPreset, SlashCommand, SubsessionNote, Task, Workspace } from "@amo-studio/protocol";
+import type { Annotation, ApprovalDecision, DecisionRequest, ModelProfile, Session, SessionItem, SessionPreset, SlashCommand, SubsessionNote, SubsessionSetup, Task, Workspace } from "@amo-studio/protocol";
 import { call, copyText, HostApiError, type HostLink } from "../host/client.js";
 import { SessionOptionsBar } from "../chat/SessionOptionsBar.js";
 import { readSelection, type SelectionAnchor } from "../lib/selection.js";
@@ -8,6 +8,7 @@ import { ReplyNav } from "./ReplyNav.js";
 import { navHistory } from "../shell/navHistory.js";
 import { FindBar } from "../gitreview/FindBar.js";
 import { Transcript, type DeliveryAction } from "../chat/Transcript.js";
+import { SubagentStatusContext } from "../chat/ProcessRows.js";
 import { useScrollOnSend, useTranscriptView } from "../chat/prefs.js";
 import { IconArrowDown, IconArrowUp, IconStop } from "../chat/icons.js";
 import { sessionStats, type ApprovalItem } from "../chat/turns.js";
@@ -31,6 +32,7 @@ import { QuestionSeatContext } from "../chat/questions/QuestionRecord.js";
 import { AnnotationBubble, contentRect, SelectionBar, type BubbleTarget, type ContentRect } from "../review/AnnotationBubble.js";
 import { annotationAt, annotationRect, flashAnnotation, highlightsSupported, useAnnotationHighlights } from "../review/highlights.js";
 import { READ_HERE_EVENT } from "../lib/scrollPin.js";
+import { checkDrawnAfterSend } from "../chat/drawnCheck.js";
 import { readPlaceOf, restoreReadPlace, type ReadPlace } from "./readPlace.js";
 import { unansweredPrompt } from "./takeBack.js";
 import type { AnnotationRefs } from "../review/annotationRefs.js";
@@ -82,7 +84,8 @@ interface ThreadProps {
   onApprove(item: ApprovalItem, decision: ApprovalDecision): void;
   onJump(sessionId: string): void;
   /** `attachments`: ids of uploaded images sent along; `now`: 立即发送 (Ctrl+Enter while it works, 2026-11-02). */
-  onSend(text: string, attachments: string[], now?: boolean): Promise<boolean>;
+  /** `subsessions`: the 子会话设定 the message names (2026-11-05). */
+  onSend(text: string, attachments: string[], now?: boolean, subsessions?: SubsessionSetup[]): Promise<boolean>;
   onInterrupt(): void;
   /** 立即发送 a waiting message / 重新发送 one never read (the buttons under it). */
   onDelivery?(itemId: string, action: DeliveryAction): void;
@@ -188,8 +191,15 @@ export function Thread({ link, presets, session, firstMessage, profile, profiles
   }, [session?.id]);
   const planReview = asked?.source === "plan-review" ? asked : null;
   const isRevising = !!planReview && revising === planReview.id;
+  // 计划窗口 (2026-11-09, plans/done/plan-review-window.md): a plan is read, annotated and answered in its own window; a
+  // session run on another computer, or a page without the app around it, keeps the plan card and the composer.
+  const openPlan = useMemo(
+    () => (sessionId && session?.runtime !== "remote" && window.amo?.openPlan ? (itemId?: string) => void window.amo?.openPlan?.({ sessionId, ...(itemId ? { itemId } : {}) }) : undefined),
+    [sessionId, session?.runtime],
+  );
   const seat = useMemo(
     () => ({
+      ...(openPlan ? { openPlan } : {}),
       isOpen: (id: string) => asked?.id === id && asked.source !== "plan-review" && !hiddenCards.has(id),
       reopen: (id: string) =>
         setHiddenCards((cur) => {
@@ -198,7 +208,7 @@ export function Thread({ link, presets, session, firstMessage, profile, profiles
           return next;
         }),
     }),
-    [asked, hiddenCards],
+    [asked, hiddenCards, openPlan],
   );
   const nativeQuestionOpen = !!asked && seat.isOpen(asked.id);
   const decision = decisions.find((d) => d.id === decisionId && !hiddenCards.has(d.id)) ?? decisions.find((d) => !hiddenCards.has(d.id));
@@ -292,6 +302,7 @@ export function Thread({ link, presets, session, firstMessage, profile, profiles
   // out (a scroll event in between would otherwise turn following off). Off: the reading place stays.
   const jumpOnSend = useScrollOnSend();
   const jumpToEnd = () => {
+    if (scroller.current) checkDrawnAfterSend(scroller.current, session?.id);
     if (!jumpOnSend) return;
     const el = scroller.current;
     stick.current = true;
@@ -304,8 +315,9 @@ export function Thread({ link, presets, session, firstMessage, profile, profiles
     });
   };
 
-  // A Claude subagent has no conversation of its own; it is followed from its parent session.
-  const claudeSub = session?.runtime === "claude" && session.kind === "sub";
+  // A Claude subagent has no conversation of its own; it is followed from its parent session. So is a DSH one
+  // (2026-11-06): Studio shows it from DSH's log; messages to it go through its parent (DSH's send_message).
+  const claudeSub = (session?.runtime === "claude" || session?.runtime === "dsh") && session.kind === "sub";
   // 远程 (step 2): a copy of another computer's session — its subagents follow their parent there too, a revoked one is
   // only read, and while that computer is away nothing goes out (what is typed stays).
   const isRemote = session?.runtime === "remote";
@@ -319,6 +331,12 @@ export function Thread({ link, presets, session, firstMessage, profile, profiles
   // opening it counts as seeing it; or Focus just sent the person here for it. Not when it opens at a place of its own
   // (后退, a bookmarked passage).
   const seenData = useSessionSeen();
+  // The ▸ rows' subagents, by session id (their status shows on the row).
+  const waitsForSubagents = session?.runtime === "dsh" && sessions.some((s) => s.parentId === session.id && s.kind === "sub" && s.status === "running");
+  const subagentStatus = useMemo(() => {
+    const byId = new Map(sessions.filter((s) => s.kind === "sub").map((s) => [s.id, s.status]));
+    return (id: string) => byId.get(id);
+  }, [sessions]);
   const arrival = useRef<{ id: string | null; awaits: boolean }>({ id: null, awaits: false });
   if (session && arrival.current.id !== session.id) arrival.current = { id: session.id, awaits: initialScroll === undefined && !atPassage && (awaitsPerson(session, sessions, seenData) || (cameFromFocus(session.id) && session.status !== "running")) };
   useEffect(() => {
@@ -335,7 +353,7 @@ export function Thread({ link, presets, session, firstMessage, profile, profiles
     ? "子 agent 不能单独接收消息，请在父会话里继续。"
     : blocked
       ? `${blocked}${readOnly ? "" : "（可以先写好）"}`
-      : composerPlaceholder({ readOnly, claudeSub, isRevising, planReview: !!planReview, generating, queues, waitsForTurn: session?.runtime === "dsh" });
+      : composerPlaceholder({ readOnly, claudeSub, isRevising, planReview: !!planReview, planWindow: !!openPlan, generating, queues, waitsForTurn: session?.runtime === "dsh" });
   const stats = useMemo(() => sessionStats(items), [items]);
   const sendLabel = generating ? (queues ? "排队" : "插话") : "发送";
   // 立即发送 (2026-11-02): Claude and Codex (a remote copy's computer says what it can); DSH waits for the turn's end.
@@ -415,6 +433,7 @@ export function Thread({ link, presets, session, firstMessage, profile, profiles
     setDraft("");
     const sent = attach.take();
     jumpToEnd();
+    const setups = text ? mentions.setups(text) : [];
     const message = withFileRefs(text ? mentions.expand(text) : "", sent.refs);
     const ids = sent.images.flatMap((i) => (i.id ? [i.id] : []));
     const givesWay = now && sendsNow;
@@ -432,7 +451,7 @@ export function Thread({ link, presets, session, firstMessage, profile, profiles
       setDraft((d) => (d.trim() ? d : text));
       onError?.(`发出去 ${SEND_GIVE_UP_MS / 1000} 秒了，Host 还没回应：文字放回了输入框。先看一眼对话里有没有这条，没有再发。`);
     }, SEND_GIVE_UP_MS);
-    const ok = await onSend(message, ids, givesWay);
+    const ok = await onSend(message, ids, givesWay, setups);
     settled = true;
     clearTimeout(slow);
     clearTimeout(giveUp);
@@ -578,7 +597,9 @@ ${d}` : back));
             <AttachLink.Provider value={link}>
               <QuestionSeatContext.Provider value={seat}>
                 {/* A remote session's approvals grey while its computer is away (or the grant is gone): they are checked again there. */}
-                <Transcript session={session} items={items} annotations={annotations} model={model} busy={busy || !!blocked} view={view} onApprove={onApprove} onJump={onJump} keepTurn={initialScroll?.key} {...(onDelivery && !readOnly && !blocked ? { onDelivery: deliver } : {})} givingWay={halting === "now"} />
+                <SubagentStatusContext.Provider value={subagentStatus}>
+                  <Transcript session={session} items={items} annotations={annotations} model={model} busy={busy || !!blocked} view={view} onApprove={onApprove} onJump={onJump} keepTurn={initialScroll?.key} {...(onDelivery && !readOnly && !blocked ? { onDelivery: deliver } : {})} givingWay={halting === "now"} waitsForSubagents={waitsForSubagents} />
+                </SubagentStatusContext.Provider>
               </QuestionSeatContext.Provider>
             </AttachLink.Provider>
           </div>
@@ -660,6 +681,7 @@ ${d}` : back));
               sessionId={session.id}
               item={planReview}
               revising={isRevising}
+              {...(openPlan ? { onOpen: () => openPlan(planReview.id) } : {})}
               onRevise={() => {
                 const text = draft.trim();
                 if (text) {
@@ -828,7 +850,7 @@ ${d}` : back));
         <SubSessionDialog
           link={link}
           profiles={profiles}
-          session={session}
+          defaultPick={{ profileId: session.profileId, model: session.options.model ?? null }}
           notes={subsessionNotes}
           onDone={(spec) => {
             const caret = mentions.finishSubsession(spec);

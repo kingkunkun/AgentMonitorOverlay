@@ -1,9 +1,9 @@
-// AMO 中转 (Relay, 2026-10-26, plans/relay.md): what the relay service, its clients (the tray program, the MCP) and
+// AMO 中转 (Relay, 2026-10-26, plans/done/relay.md): what the relay service, its clients (the tray program, the MCP) and
 // later the UI share. A small team on one LAN; people talk to each other directly, and an AI session can send a
 // person a 「请求」 (body + questions) that they answer one by one. Everything is kept on the service.
 
 export const RELAY_APP = "amo-relay";
-export const RELAY_VERSION = "0.7.11";
+export const RELAY_VERSION = "0.7.12";
 export const RELAY_DEFAULT_PORT = 47120;
 
 export interface Member {
@@ -42,7 +42,7 @@ export interface Answer {
 
 /**
  * Who wrote a message: the person, or an AI on their behalf (the client is the MCP client's name, e.g. claude-code).
- * `conv` (2026-10-30, plans/relay-in-sessions.md): which AI conversation of theirs — `relay inbox` takes back only what
+ * `conv` (2026-10-30, plans/done/relay-in-sessions.md): which AI conversation of theirs — `relay inbox` takes back only what
  * that conversation sent, and Studio sends each reply back into the session that asked.
  */
 export type Via = { kind: "person" } | { kind: "ai"; client?: string; conv?: string };
@@ -70,11 +70,11 @@ export interface Message {
   createdAt: number;
 }
 
-/** A session (stage 2a, plans/relay-tasks.md): open = with the person asked, returned = back with the one who asked. */
+/** A session (stage 2a, plans/done/relay-tasks.md): open = with the person asked, returned = back with the one who asked. */
 export type SessionState = "open" | "returned" | "done";
 
 /** What the people in a session can do to it besides writing. */
-export type SessionAction = "done" | "reopen" | "handle" | "toAi" | "handoff";
+export type SessionAction = "done" | "reopen" | "handle" | "toAi" | "handoff" | "take";
 
 /** A request thread is a session: someone (or their AI) asks a person to handle one thing. */
 export interface RequestState {
@@ -105,6 +105,23 @@ export interface RequestState {
   askSeq: number | null;
   /** The AI conversation on the asking side that last wrote with a mark (Via.conv); null when none did. */
   conv: string | null;
+  /**
+   * 已接手，不用回复 (2026-11-05, the user): the person asked took it on without replying, which closed it (state done).
+   * null when it was not closed that way (or was reopened since).
+   */
+  takenAt: number | null;
+  /** With takenAt: their note goes to the asking AI (it runs once more). Off unless ticked — most sessions an AI sent
+   * after finishing a round (a review asked for) need nothing more said back (the user, 2026-11-05). */
+  tellAi: boolean;
+}
+
+/**
+ * The asking side's AI has something to take: the session came back to it, or was taken on with a note for it — and it
+ * has not fetched that yet. Studio's Host, `relay inbox` and `relay_inbox` all go by this.
+ */
+export function dueForAi(r: RequestState, me: string): boolean {
+  if (r.from !== me || r.handler !== "ai" || r.pickedAt !== null) return false;
+  return (r.state === "returned" && r.waitingOn === me) || (r.state === "done" && r.takenAt !== null && r.tellAi);
 }
 
 export interface Thread {
@@ -161,7 +178,7 @@ export interface NewMessage {
 }
 
 /** Pushed over /ws to the members it concerns. */
-// ---- team tasks (stage 2b, plans/relay-tasks.md): a task is always in someone's hands and moves on by 流转.
+// ---- team tasks (stage 2b, plans/done/relay-tasks.md): a task is always in someone's hands and moves on by 流转.
 
 export const TASK_STATUSES = ["待处理", "开发中", "已完成", "已搁置"] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];

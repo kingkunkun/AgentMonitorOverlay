@@ -13,7 +13,7 @@ import { takeInbox } from "./inbox.js";
 import { newRepliesText, notesAsText, sessionStateText, taskAsText, threadAsText, usagePrompt } from "./usage.js";
 import { typeOf } from "./types.js";
 
-// amo-relay: the relay service, this machine's identity, and the relay for AIs without MCP (plans/relay.md).
+// amo-relay: the relay service, this machine's identity, and the relay for AIs without MCP (plans/done/relay.md).
 //   serve [--port 47120] [--host 0.0.0.0] [--data <dir>] [--public <dir>] [--platform-dir <dir>] [--name 策划组] [--passphrase <邀请口令>]
 //         (passphrase also from AMO_RELAY_PASSPHRASE; public = client/ + downloads/, default: next to this file;
 //         platform dir = the AMO platform's files, platform.ts, also from AMO_RELAY_PLATFORM_DIR, default: none;
@@ -298,8 +298,9 @@ async function main(): Promise<void> {
       const [versions, notes] = await Promise.all([client.versions(pos[0]), client.notes(pos[0])]);
       const f = versions.find((v) => v.id === pos[0])!;
       out(`## ${f.name} v${f.version} · ${f.type} · ${f.size} 字节\n`);
-      if (/^text\/|json|xml|markdown/.test(f.type)) out(await (await client.fileData(f.id)).text());
-      out(`\n${notesAsText(f, notes)}`);
+      const text = /^text\/|json|xml|markdown/.test(f.type) ? await (await client.fileData(f.id)).text() : undefined;
+      if (text !== undefined) out(text);
+      out(`\n${notesAsText(f, notes, text)}`);
       return;
     }
     case "handoff": {

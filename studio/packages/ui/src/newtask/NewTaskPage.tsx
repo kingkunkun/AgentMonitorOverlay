@@ -17,6 +17,8 @@ import { useDraftChoices } from "./useDraftChoices.js";
 import { MentionList, useComposerMentions } from "../attach/useMentions.js";
 import { FileSelector } from "../attach/FileSelector.js";
 import { PromptTemplateDialog } from "../attach/PromptTemplateDialog.js";
+import { SubSessionDialog } from "../attach/SubSessionDialog.js";
+import { subSessionSetups } from "../attach/mentions.js";
 import { useAttachments } from "../attach/useAttachments.js";
 import { AttachTray } from "../attach/AttachTray.js";
 import { IconPaperclip } from "../attach/icons.js";
@@ -84,7 +86,8 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
   const attach = useAttachments(link);
   const picker = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
-  const presets = useSettings(link)?.presets ?? [];
+  const settings = useSettings(link);
+  const presets = settings?.presets ?? [];
   const { choices } = useProfileChoices(link, draft.pick.profileId);
   const model = choices ? activeModel(choices, draft.pick.model ? { model: draft.pick.model } : {}) : undefined;
   // 接续已有会话 (2026-11-05): the outside session picked; not kept in the draft (it may be taken on elsewhere meanwhile).
@@ -126,6 +129,8 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
     onFile: (path) => attach.addFiles([path]),
     onFind: (query) => setFinding({ query }),
     onMark: (ref) => attach.addRefs([ref]),
+    // 2026-11-05: the task's first session may start sub-sessions, so 开子会话… is offered here too.
+    subsession: true,
   });
 
   const where = `${draft.projectId ? `在 ${projects.find((w) => w.id === draft.projectId)?.name ?? "?"} 里运行` : "不指定项目：在公共目录里运行"}${topic ? ` · 放进「${topic.title}」` : ""}`;
@@ -137,6 +142,8 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
     if (!resume && !draft.text.trim()) return setError(file ? "写一句话再放进待办。" : "写一句话再开始。");
     if (!file && !draft.pick.profileId) return setError("先选一个模型。");
     if (file && !attach.empty) return setError("放进待办不带图片和文件：先移除它们，或者直接开始。");
+    // A 子会话设定 lives with the session it is sent to: a filed task has none yet (2026-11-05).
+    if (file && Object.entries(draft.refs ?? {}).some(([name, r]) => r.kind === "subsession" && draft.text.includes(`@${name}`))) return setError("放进待办不带子会话设定：直接开始，或者先去掉 @子会话。");
     if (attach.uploading) return setError("图片还在上传，稍等一下。");
     if (attach.failed) return setError("有图片上传失败，移除后再开始。");
     setBusy(true);
@@ -145,8 +152,9 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
     try {
       const text = withFileRefs(draftText(draft), attach.files.map(attach.refOf));
       const images = attach.images.flatMap((i) => (i.id ? [i.id] : []));
+      const setups = draft.refs ? subSessionSetups(draft.text, new Map(Object.entries(draft.refs))) : [];
       const { refs: _refs, ...rest } = draft;
-      const created = await submitDraft(link, { ...rest, text, ...(resume && !rest.title.trim() ? { title: resume.title } : {}) }, file, onCanvas, images, resume?.id);
+      const created = await submitDraft(link, { ...rest, text, ...(resume && !rest.title.trim() ? { title: resume.title } : {}) }, file, onCanvas, images, resume?.id, setups);
       setResume(null);
       attach.reset();
       reset({ projectId: draft.projectId, topicId: draft.topicId });
@@ -257,7 +265,7 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
                 maxLength={100}
               />
             </label>
-            {/* 2026-10-29: the topic first, then the project, its preferred ones first (plans/remote-page-and-new-task.md 4.2). */}
+            {/* 2026-10-29: the topic first, then the project, its preferred ones first (plans/done/remote-page-and-new-task.md 4.2). */}
             <ChoiceRow label="专题" noun="专题" choices={rows.topicChoices} selected={draft.topicId} onPick={rows.pickTopic} />
             <ChoiceRow label="项目" noun="项目" choices={rows.projectChoices} selected={draft.projectId} onPick={rows.pickProject}>
               {window.amo?.pickDirectory && (
@@ -462,6 +470,21 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
           projects={projects}
           onDone={(body) => {
             const caret = mentions.finishTemplate(body);
+            requestAnimationFrame(() => {
+              input.current?.focus();
+              if (caret !== null) input.current?.setSelectionRange(caret, caret);
+            });
+          }}
+        />
+      )}
+      {mentions.askingSubsession && (
+        <SubSessionDialog
+          link={link}
+          profiles={profiles}
+          defaultPick={draft.pick}
+          notes={settings?.subsessionNotes ?? []}
+          onDone={(spec) => {
+            const caret = mentions.finishSubsession(spec);
             requestAnimationFrame(() => {
               input.current?.focus();
               if (caret !== null) input.current?.setSelectionRange(caret, caret);

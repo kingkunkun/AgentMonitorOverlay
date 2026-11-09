@@ -1,14 +1,15 @@
 import { randomBytes } from "node:crypto";
-import { NO_REMOTE_ALLOWED, REMOTE_KINDS, REMOTE_PERMISSIONS, RUNTIME_LABELS, type HostEvent, type Id, type ModelProfile, type RemoteAllowed, type RemoteGrant, type RemoteItemsAnswer, type RemoteFileAsk, type RemotePermission, type RemotePush,type RemoteTaskSnapshot, type RemoteTaskView, type RemoteViewAsk, type ReviewOpenTarget, type SessionItem, type SessionOptions, type Task } from "@amo-studio/protocol";
+import { NO_REMOTE_ALLOWED, REMOTE_KINDS, isCommon, REMOTE_PERMISSIONS, RUNTIME_LABELS, type HostEvent, type Id, type ModelProfile, type RemoteAllowed, type RemoteGrant, type RemoteItemsAnswer, type RemoteFileAsk, type RemotePermission, type RemotePush,type RemoteTaskSnapshot, type RemoteTaskView, type RemoteViewAsk, type ReviewOpenTarget, type Session, type SessionItem, type SessionOptions, type Task } from "@amo-studio/protocol";
 import type { DeviceRef } from "@amo-studio/relay";
-import type { HostService } from "../../service.js";
+import type { FeatureHost } from "../../core/feature.js";
+import type { RemoteUses } from "./service.js";
 import { HostError, boundedText } from "../../core/shared.js";
 import type { DeviceLink } from "./link.js";
 import { attachedPaths, itemForPeer, readRemoteFile, type FileRoots } from "./files.js";
 import { claimedText, type UploadInbox } from "./uploads.js";
 import { answerView, ViewAnswers } from "./views.js";
 
-// 远程, step 2 on A (plans/remote-session.md, 2026-10-29): the tasks this computer granted to paired devices, what such
+// 远程, step 2 on A (plans/done/remote-session.md, 2026-10-29): the tasks this computer granted to paired devices, what such
 // a device may ask of them, and what A tells it unasked as they change. The grant is the whole task: every session in
 // it, delegated sessions and subagents included (「授权范围」). Commands are checked against the grant one by one; a
 // device reaches nothing else of this computer — no other task, project, setting or file.
@@ -18,7 +19,7 @@ const ALLOWED_KEY = "remote.allowed";
 
 /** What the remote parts need of the feature that holds the connection. */
 export interface RemoteContext {
-  host: HostService;
+  host: FeatureHost<RemoteUses>;
   link(): DeviceLink | null;
   /** This computer's name, for what the other side reads. */
   deviceName(): string;
@@ -181,7 +182,17 @@ export class RemoteGrants {
   }
 
   private view(task: Task): RemoteTaskView {
-    return { id: task.id, title: task.title, ...(task.description ? { description: task.description } : {}), column: task.column, createdAt: task.createdAt, updatedAt: task.updatedAt };
+    return { id: task.id, title: task.title, ...(task.description ? { description: task.description } : {}), column: task.column, createdAt: task.createdAt, updatedAt: task.updatedAt, project: this.projectName(task.workspaceId) };
+  }
+
+  /** A project as the device sees it (2026-11-09): its name, never its folder (the path has the user's name in it); null: the common folder. */
+  private projectName(workspaceId: Id): string | null {
+    const ws = this.store.getWorkspace(workspaceId);
+    return ws && !isCommon(ws) ? ws.name : null;
+  }
+
+  private sessionPush(session: Session): RemotePush {
+    return { type: "session", session, project: this.projectName(session.workspaceId) };
   }
 
   private taskPush(task: Task): RemotePush {
@@ -230,7 +241,7 @@ export class RemoteGrants {
     if (task.remote) throw new HostError("bad_request", "这是别的电脑授权给这台电脑的远程任务，不能再转授权");
     if (task.archivedAt) throw new HostError("read_only", "任务已归档，不能授权");
     const p = this.ctx.peer(peer, "owner");
-    // Only a device this computer allowed to pair may reach it (the owner side, plans/remote-session.md「B 是谁」).
+    // Only a device this computer allowed to pair may reach it (the owner side, plans/done/remote-session.md「B 是谁」).
     if (!p) throw new HostError("bad_request", "只能授权给这台电脑允许配对的设备（在顶栏的「远程」里配对）");
     const list = this.list();
     const had = list.find((g) => g.taskId === taskId && same(g, peer));
@@ -293,7 +304,9 @@ export class RemoteGrants {
     const task = this.store.getTask(taskId);
     if (!task) throw new HostError("not_found", "任务已经不在了");
     const allowed = this.allowedFor(taskId);
-    return { task: this.view(task), sessions: this.store.listSessions({ taskId }), profiles: this.profilesOf(taskId, allowed), allowed, grantedAt: g.grantedAt };
+    const sessions = this.store.listSessions({ taskId });
+    const sessionProjects = Object.fromEntries(sessions.map((s) => [s.id, this.projectName(s.workspaceId)]));
+    return { task: this.view(task), sessions, sessionProjects, profiles: this.profilesOf(taskId, allowed), allowed, grantedAt: g.grantedAt };
   }
 
   /** The task's folder on this computer (its project's, or the common folder), as the device's paths are named from it. */
@@ -457,7 +470,7 @@ export class RemoteGrants {
           return ok(await readRemoteFile(this.fileRoots(taskId), b as unknown as RemoteFileAsk, this.ctx.deviceName()));
         }
         case REMOTE_KINDS.view: {
-          // 远程 Reviewer (plans/remote-reviewer.md, 2026-11-02): a read of the task's 查看包 or Review, checked in views.ts.
+          // 远程 Reviewer (plans/done/remote-reviewer.md, 2026-11-02): a read of the task's 查看包 or Review, checked in views.ts.
           const taskId = id(b.taskId, "taskId");
           this.grantFor(from, taskId);
           const task = this.store.getTask(taskId);
@@ -512,7 +525,17 @@ ${taskId}`, ask, () => answerView({ host: this.ctx.host, task, root }, ask)));
       }
       case "session.upserted":
         this.taskOf.set(e.session.id, e.session.taskId);
-        for (const g of to(e.session.taskId)) this.push(g, { type: "session", session: e.session });
+        for (const g of to(e.session.taskId)) this.push(g, this.sessionPush(e.session));
+        return;
+      // A project renamed here: the granted tasks and sessions in it say its new name there.
+      case "workspace.upserted":
+        for (const taskId of new Set(grants.map((g) => g.taskId))) {
+          const task = this.store.getTask(taskId);
+          if (!task || task.archivedAt) continue;
+          const gs = to(taskId);
+          if (task.workspaceId === e.workspace.id) for (const g of gs) this.push(g, this.taskPush(task));
+          for (const s of this.store.listSessions({ taskId })) if (s.workspaceId === e.workspace.id) for (const g of gs) this.push(g, this.sessionPush(s));
+        }
         return;
       case "item.appended":
       case "item.updated": {

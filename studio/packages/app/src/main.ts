@@ -3,18 +3,20 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { connectHost, HostStartError, keepHostAlive, putHostJson, readHostJson, requestShutdown, stopHost, waitForExit, type HostConnection, type HostLinkOptions } from "./host-link.js";
 import { remoteInUse, remoteQuitNote, type RemoteState } from "@amo-studio/protocol";
-import { createFocusWindow, displays, letTitleDragsMove, mainBounds, pagePressed, recoverLostClicks, refitFocusWindow, rescaleFocusWindow, setFocusActivatable, ShellPrefs, UI_SCALES, uiScaleOk } from "./focus-window.js";
+import { createFocusWindow, displays, focusResizer, letTitleDragsMove, mainBounds, pagePressed, recoverLostClicks, refitFocusWindow, rescaleFocusWindow, setFocusActivatable, ShellPrefs, UI_SCALES, uiScaleOk } from "./focus-window.js";
 import { centreIn, displayFor } from "./placement.js";
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { platformDataDir, resolveDataDir } from "./paths.js";
+import { platformDataDir, removeStudioRunning, resolveDataDir, writeStudioRunning } from "./paths.js";
 import { runSetup, SETUP_TEMP_PROFILE } from "./setup.js";
 import { installNotesLink } from "./notes-link.js";
+import { findRelayExe, openInRelay } from "./relay-link.js";
 import { installWindowControls, sendMaximized, setupReviewWindows, setupViewerWindows } from "@amo-studio/reviewer";
 import { TrayMenu, type MenuEntry } from "@amo-studio/traymenu";
 import { installMarksWindow } from "./marks-window.js";
 import { installCanvasWindow } from "./canvas-window.js";
+import { installPlanWindows } from "./plan-window.js";
 import { ResizeTrace } from "./resize-trace.js";
 import { setupBotFlight } from "./bot-window.js";
 import { installFolderIpc } from "./folders.js";
@@ -68,6 +70,8 @@ let host: HostConnection | null = null;
 let stopKeepAlive: (() => void) | null = null;
 let mainWindow: BrowserWindow | null = null;
 let focusWindow: BrowserWindow | null = null;
+/** 拖拽调整大小: the open Focus window's resizer (focusResizer). */
+let resizeFocus: ((phase: "start" | "move" | "end") => void) | null = null;
 let tray: Tray | null = null;
 /** The app is quitting: the workbench window really closes (otherwise × only hides it). */
 let appQuitting = false;
@@ -104,7 +108,19 @@ function setFocusVisible(on: boolean): void {
       testMode,
       scale: prefs.uiScale(),
       saved: prefs.focusPos(),
+      base: prefs.focusSize(),
       onMoved: (pos) => prefs.setFocusPos(pos),
+    });
+    const win = focusWindow;
+    resizeFocus = focusResizer(win, {
+      testMode,
+      scale: () => win.webContents.getZoomFactor() || prefs.uiScale(),
+      done: (base, at) => {
+        prefs.setFocusSize(base);
+        if (!testMode) prefs.setFocusPos(at);
+        trace?.note("focus", "resized", `${base.width}×${base.height}`);
+        if (testMode) (globalThis as { __amoFocusResized?: unknown }).__amoFocusResized = { base, bounds: win.getBounds() };
+      },
     });
     focusWindow.on("closed", () => {
       focusWindow = null;
@@ -117,6 +133,7 @@ function setFocusVisible(on: boolean): void {
   } else if (!on && focusWindow) {
     focusWindow.destroy();
     focusWindow = null;
+    resizeFocus = null;
     bot.land();
   }
   mainWindow?.webContents.send("amo:focus-changed", on);
@@ -235,7 +252,7 @@ async function quitCompletely(): Promise<void> {
 let sleepBlocker: number | null = null;
 
 /**
- * 被远程使用时不睡眠 (plans/remote-session.md, 2026-10-29): while a task is granted to a device that is online, the
+ * 被远程使用时不睡眠 (plans/done/remote-session.md, 2026-10-29): while a task is granted to a device that is online, the
  * system does not sleep (prevent-app-suspension: the screen still turns off); released when none is. Read from the Host
  * every 20 s (AMO_STUDIO_REMOTE_WATCH_MS in tests). Tests record it in __amoSleepBlocked instead of asking Windows.
  */
@@ -320,8 +337,11 @@ function writeShellFile(): void {
   } catch {
     // the platform then only waits for the Host
   }
+  // Where this Studio's data dir is, for 中转's 在 Studio 里打开 (2026-11-05; paths.ts studioRunningFile).
+  writeStudioRunning(process.env, { pid: process.pid, exe: process.execPath, dataDir });
 }
 function removeShellFile(): void {
+  removeStudioRunning(process.env, process.pid);
   try {
     const was = JSON.parse(readFileSync(shellFile, "utf8")) as { pid?: unknown };
     if (was.pid === process.pid) rmSync(shellFile, { force: true });
@@ -398,7 +418,7 @@ if (!app.requestSingleInstanceLock() || quitAsked(process.argv)) {
   const setUiScale = (scale: number) => {
     prefs.setUiScale(scale);
     for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.setZoomFactor(scale);
-    if (focusWindow) rescaleFocusWindow(focusWindow, scale);
+    if (focusWindow) rescaleFocusWindow(focusWindow, scale, prefs.focusSize());
     for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send("amo:ui-scale-changed", scale);
   };
   app.on("web-contents-created", (_e, contents) => {
@@ -466,6 +486,21 @@ if (!app.requestSingleInstanceLock() || quitAsked(process.argv)) {
     trace?.note("focus", on === true ? "moving on" : "moving off");
     if (testMode) (globalThis as { __amoFocusMoving?: boolean }).__amoFocusMoving = on === true;
   });
+  // 拖拽调整大小 (2026-11-06): while it is on, Focus may activate like 移动位置 (a press on the grip must reach the page,
+  // and Chromium drops presses on a window that cannot activate); its drags resize the window (focusResizer).
+  ipcMain.on("amo:focus-sizing", (event, on: unknown) => {
+    if (!focusWindow || event.sender !== focusWindow.webContents) return;
+    setFocusActivatable(focusWindow, on === true);
+    trace?.note("focus", on === true ? "sizing on" : "sizing off");
+    if (testMode) (globalThis as { __amoFocusSizing?: boolean }).__amoFocusSizing = on === true;
+  });
+  ipcMain.on("amo:focus-resize", (event, phase: unknown) => {
+    if (!focusWindow || event.sender !== focusWindow.webContents || (phase !== "start" && phase !== "move" && phase !== "end")) return;
+    resizeFocus?.(phase);
+  });
+  // 在中转里打开 (2026-11-05, relay-link.ts): the AMO 中转 client shows a thread a session sent. Tests only record it.
+  ipcMain.handle("amo:relay-available", () => testMode || findRelayExe() !== null);
+  ipcMain.handle("amo:relay-open", (_event, threadId: unknown) => typeof threadId === "string" && openInRelay(threadId, { testMode }));
   // "在工作台打开" from Focus: the workbench shows that task and session (and comes forward, except in tests).
   ipcMain.handle("amo:open-in-workbench", (_event, target: unknown) => {
     const t = target as { taskId?: unknown; sessionId?: unknown; show?: unknown; passage?: unknown; topicId?: unknown; calloutId?: unknown; settings?: unknown } | null;
@@ -625,6 +660,8 @@ if (!app.requestSingleInstanceLock() || quitAsked(process.argv)) {
       // The file marks window (文件标记).
       installMarksWindow({ url: process.env.AMO_STUDIO_DEV_URL ?? `${host.url}/`, preload: join(here, "preload.cjs"), icon: APP_ICON, testMode, mainWindow });
       installCanvasWindow({ url: process.env.AMO_STUDIO_DEV_URL ?? `${host.url}/`, preload: join(here, "preload.cjs"), icon: APP_ICON, testMode, mainWindow });
+      // 计划窗口 (2026-11-09): a plan Claude asks to have reviewed, one window per session.
+      installPlanWindows({ url: process.env.AMO_STUDIO_DEV_URL ?? `${host.url}/`, preload: join(here, "preload.cjs"), icon: APP_ICON, testMode, mainWindow });
       if (!testMode) {
         // Displays unplugged, rearranged or rescaled: keep both windows reachable.
         const refit = () => {

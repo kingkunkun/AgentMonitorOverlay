@@ -1,17 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { inTurn, type ApprovalDecision, type Attachment, type Id, type ModelOption, type ModelProfile, type ProfileChoices, type QuestionReply, type Session, type SessionOptions, type SlashCommand, type SlashCommandList, type SlashCommandResult, type UserDelivery, type Workspace, type AccountUsage } from "@amo-studio/protocol";
+import { inTurn, type ApprovalDecision, type Attachment, type Id, type ModelOption, type ModelProfile, type ProfileChoices, type QuestionReply, type Session, type SessionOptions, type SlashCommand, type SlashCommandList, type SlashCommandResult, type UserDelivery, type Workspace, type AccountUsage, type codex } from "@amo-studio/protocol";
 import type { Store } from "../../store/store.js";
-import { codexThreadParams, profileGone } from "../profiles.js";
+import { codexThreadParams, profileGone, type CodexConfig } from "../profiles.js";
 import { McpIdentities } from "../../mcp/identity.js";
 import { codexAutoCompactConfig } from "../compact.js";
 import { CODEX_DEFAULT_PERMISSION, codexPermission, codexPermissions } from "../choices.js";
 import { RuntimeBase, STOP_GRACE_MS, type RuntimeEvents, type SendOptions } from "../runtime.js";
 import { withDelivery } from "../items.js";
 import type { CodexServerHandle } from "./server-manager.js";
-import { codexUsage, reviewTarget, STANDARD_TIER, toModelOption, type CodexModel, type CodexSkill, type GetAccountRateLimitsResponse } from "./account.js";
+import { codexUsage, isTokenExpired, reviewTarget, STANDARD_TIER, toModelOption, type CodexModel, type CodexSkill, type GetAccountRateLimitsResponse } from "./account.js";
 import { CodexAsks } from "./asks.js";
 import { CodexEvents } from "./events.js";
 import { newSessionState, type CodexCore, type SessionState } from "./state.js";
+import { mcpSkippedNotice } from "../mcp-launch.js";
 
 export { codexRetry, codexUsage, fastTier, reviewTarget } from "./account.js";
 export { describePlan, describeReview, describeTool, inputQuestions } from "./describe.js";
@@ -27,6 +28,8 @@ export { describePlan, describeReview, describeTool, inputQuestions } from "./de
 export interface CodexServers {
   ensure(profileId: string): Promise<CodexServerHandle>;
   on(event: "ready", listener: (handle: CodexServerHandle) => void): unknown;
+  /** Studio's MCP servers that are on but Codex cannot take (server-manager.ts). */
+  unsupportedMcp?(): Array<{ name: string; type: string }>;
 }
 
 export interface CodexRuntimeOptions {
@@ -120,8 +123,9 @@ export class CodexRuntime extends RuntimeBase {
       ...this.threadParams(profile, token),
       ...(options.model ? { model: options.model } : {}),
       ...(developerInstructions ? { developerInstructions } : {}),
-    } as never);
-    const session = this.findByThread(started.thread.id) ?? this.createSession({
+    });
+    const existing = this.findByThread(started.thread.id);
+    const session = existing ?? this.createSession({
       taskId: input.taskId,
       topicId: input.topicId,
       parentId: null,
@@ -134,6 +138,9 @@ export class CodexRuntime extends RuntimeBase {
     });
     if (token) this.options.identities!.bind(token, session.id);
     if (developerInstructions) this.options.roleGiven?.(session.id);
+    // MCP servers that are on but Codex cannot take (SSE) are left out of its config: say so instead of nothing (2026-11-09).
+    const skipped = existing ? [] : (this.options.servers.unsupportedMcp?.() ?? []);
+    if (skipped.length) this.appendItem(session.id, { type: "notice", level: "warning", message: mcpSkippedNotice(skipped, "Codex") });
     if (input.text) await this.sendMessage(session.id, input.text);
     return this.store.getSession(session.id)!;
   }
@@ -148,11 +155,11 @@ export class CodexRuntime extends RuntimeBase {
   }
 
   /** `extra`: more input (a skill); `again`: the row of a message sent again (重新发送), reused instead of a new one. */
-  private async send(sessionId: Id, text: string, images: readonly Attachment[], extra: ReadonlyArray<Record<string, unknown>>, options: SendOptions = {}, again?: Id): Promise<{ mode: "start" | "steer" }> {
+  private async send(sessionId: Id, text: string, images: readonly Attachment[], extra: readonly codex.v2.UserInput[], options: SendOptions = {}, again?: Id): Promise<{ mode: "start" | "steer" }> {
     const session = this.writable(sessionId);
     const handle = await this.handleFor(session.profileId);
     const st = this.sessionState(sessionId);
-    const input = [...(text ? [{ type: "text", text, text_elements: [] }] : []), ...images.map((a) => ({ type: "localImage", path: a.path })), ...extra];
+    const input: codex.v2.UserInput[] = [...(text ? [{ type: "text" as const, text, text_elements: [] }] : []), ...images.map((a) => ({ type: "localImage" as const, path: a.path })), ...extra];
     if (!session.title) this.updateSession(sessionId, { title: (text || "图片").slice(0, 60) });
     // The person's next message is the answer to request_user_input_async (the card, or typed by hand).
     this.asks.closeAsync(sessionId);
@@ -169,7 +176,7 @@ export class CodexRuntime extends RuntimeBase {
       const entry = { itemId: row, kind: "steer" as const, input };
       st.sent.set(clientId, entry);
       try {
-        await handle.client.request("turn/steer", { threadId: session.runtimeRef!, expectedTurnId: st.activeTurnId, input, clientUserMessageId: clientId } as never);
+        await handle.client.request("turn/steer", { threadId: session.runtimeRef!, expectedTurnId: st.activeTurnId, input, clientUserMessageId: clientId });
         // An async question answered while its turn still runs: the session runs again (unless something else waits).
         if (this.store.getSession(sessionId)?.status === "awaiting-answer") this.asks.afterAnswer(sessionId);
         if (options.now) await this.sendNow(sessionId, row);
@@ -195,7 +202,7 @@ export class CodexRuntime extends RuntimeBase {
     // Status and the active turn come from turn/started and turn/completed: a short turn can finish before this
     // response arrives, so setting them here would leave the session stuck in "running".
     try {
-      await handle.client.request("turn/start", { threadId: session.runtimeRef!, input, ...(clientId ? { clientUserMessageId: clientId } : {}), ...this.turnOptions(session.options), ...(await this.serviceTier(session)) } as never);
+      await handle.client.request("turn/start", { threadId: session.runtimeRef!, input, ...(clientId ? { clientUserMessageId: clientId } : {}), ...this.turnOptions(session.options), ...(await this.serviceTier(session)) });
     } catch (err) {
       if (row && clientId) {
         st.sent.delete(clientId);
@@ -217,7 +224,7 @@ export class CodexRuntime extends RuntimeBase {
     const waiting = [...st.sent.values()].some((m) => m.itemId === itemId && m.kind === "steer");
     if (!waiting || !st.activeTurnId || !session.runtimeRef) return;
     const handle = await this.handleFor(session.profileId);
-    await handle.client.request("turn/interrupt", { threadId: session.runtimeRef, turnId: st.activeTurnId } as never);
+    await handle.client.request("turn/interrupt", { threadId: session.runtimeRef, turnId: st.activeTurnId });
   }
 
   /** 重新发送 (2026-11-02): a message Codex never read goes again, as the same row; also a held one of Studio's inbox. */
@@ -254,7 +261,7 @@ export class CodexRuntime extends RuntimeBase {
     let handle: CodexServerHandle;
     try {
       handle = await this.handleFor(session.profileId);
-      await handle.client.request("turn/start", { threadId: session.runtimeRef, input: first.input, clientUserMessageId: firstId, ...this.turnOptions(session.options), ...(await this.serviceTier(session)) } as never);
+      await handle.client.request("turn/start", { threadId: session.runtimeRef, input: first.input, clientUserMessageId: firstId, ...this.turnOptions(session.options), ...(await this.serviceTier(session)) });
     } catch (err) {
       this.emit("log", `could not send the unread messages of ${sessionId}: ${String(err)}`);
       for (const [clientId] of left) st.sent.delete(clientId);
@@ -265,7 +272,7 @@ export class CodexRuntime extends RuntimeBase {
       // The new turn is over already (a short one): what is left starts the next.
       if (!st.activeTurnId) return void this.afterTurn(sessionId);
       try {
-        await handle.client.request("turn/steer", { threadId: session.runtimeRef, expectedTurnId: st.activeTurnId, input: m.input, clientUserMessageId: clientId } as never);
+        await handle.client.request("turn/steer", { threadId: session.runtimeRef, expectedTurnId: st.activeTurnId, input: m.input, clientUserMessageId: clientId });
       } catch {
         if (!st.activeTurnId && st.sent.get(clientId) === m) void this.afterTurn(sessionId);
         return;
@@ -292,7 +299,18 @@ export class CodexRuntime extends RuntimeBase {
     if (refresh) {
       try {
         const handle = await this.handleFor(profileId);
-        const r = (await handle.client.request("account/rateLimits/read", { excludeResetCreditDetails: true } as never)) as unknown as GetAccountRateLimitsResponse;
+        const read = async () => (await handle.client.request("account/rateLimits/read", { excludeResetCreditDetails: true })) as unknown as GetAccountRateLimitsResponse;
+        let r: GetAccountRateLimitsResponse;
+        try {
+          r = await read();
+        } catch (err) {
+          // 问题 #18 (2026-11-09): a long-running app-server answers the quota read with 401 token_expired instead of
+          // renewing the ChatGPT token first. `account/read` with refreshToken renews it (Codex's own login, as its
+          // protocol says), then the quota is read once more; another failure shows as before.
+          if (!isTokenExpired(err)) throw err;
+          await handle.client.request("account/read", { refreshToken: true });
+          r = await read();
+        }
         this.usageCache.set(profileId, codexUsage(profile, r.rateLimits));
       } catch (err) {
         this.usageCache.set(profileId, { profileId, label: profile.label, windows: [], note: `读不到用量：${String((err as Error).message ?? err)}`, updatedAt: new Date().toISOString() });
@@ -301,12 +319,17 @@ export class CodexRuntime extends RuntimeBase {
     return this.usageCache.get(profileId) ?? { profileId, label: profile.label, windows: [], note: "展开刷新后显示", updatedAt: null };
   }
 
+  /** 远程额度 (2026-11-06): only what was read before (account/rateLimits/updated, or a refresh). */
+  cachedUsage(profileId: Id): AccountUsage | null {
+    return this.usageCache.get(profileId) ?? null;
+  }
+
   /** `thread/name/set`: the name the TUI and `codex resume` show as well. */
   async rename(sessionId: Id, title: string): Promise<Session> {
     const session = this.requireSession(sessionId);
     if (session.runtimeRef) {
       const handle = await this.handleFor(session.profileId);
-      await handle.client.request("thread/name/set", { threadId: session.runtimeRef, name: title } as never);
+      await handle.client.request("thread/name/set", { threadId: session.runtimeRef, name: title });
     }
     return this.updateSession(sessionId, { title });
   }
@@ -329,7 +352,7 @@ export class CodexRuntime extends RuntimeBase {
     if (!asking) {
       asking = (async () => {
         const handle = await this.handleFor(profile.id);
-        const r = (await handle.client.request("model/list", { includeHidden: false } as never)) as unknown as { data: CodexModel[] };
+        const r = (await handle.client.request("model/list", { includeHidden: false })) as unknown as { data: CodexModel[] };
         const models = r.data.map((m) => toModelOption(m, profile));
         // A profile pinned to a model the list does not show (hidden, or a custom catalog) still offers it.
         if (profile.model && !models.some((m) => m.id === profile.model)) models.unshift({ id: profile.model, label: profile.model, efforts: [], isDefault: true });
@@ -346,7 +369,7 @@ export class CodexRuntime extends RuntimeBase {
     const st = this.sessionState(sessionId);
     if (!st.activeTurnId || !session.runtimeRef) return;
     this.asks.cancelQuestionsOf(sessionId);
-    // 停止's fallback (2026-11-04, plans/message-delivery.md): the app-server is shared by the channel's sessions, so it
+    // 停止's fallback (2026-11-04, plans/done/message-delivery.md): the app-server is shared by the channel's sessions, so it
     // is not closed; the turn is taken as stopped here, and what the turn had not read becomes 没送到.
     const turnId = st.activeTurnId;
     const grace = this.options.stopGraceMs ?? STOP_GRACE_MS;
@@ -357,7 +380,7 @@ export class CodexRuntime extends RuntimeBase {
       this.setStatus(sessionId, "idle");
     }, "taking it as stopped");
     const handle = await this.handleFor(session.profileId);
-    await handle.client.request("turn/interrupt", { threadId: session.runtimeRef, turnId } as never);
+    await handle.client.request("turn/interrupt", { threadId: session.runtimeRef, turnId });
   }
 
   /** Forks with an explicit provider so the fork never falls back to the server default. */
@@ -367,7 +390,7 @@ export class CodexRuntime extends RuntimeBase {
     const profile = this.profile(profileId ?? parent.profileId);
     const handle = await this.handleFor(parent.profileId);
     const token = this.options.identities?.issue();
-    const r = await handle.client.request("thread/fork", { threadId: parent.runtimeRef, ...this.threadParams(profile, token) } as never);
+    const r = await handle.client.request("thread/fork", { threadId: parent.runtimeRef, ...this.threadParams(profile, token) });
     // thread/started for the fork may already have created the session.
     const fork = this.findByThread(r.thread.id) ?? this.events.adoptThread(r.thread, parent, "fork", parent.profileId);
     if (token) this.options.identities!.bind(token, fork.id);
@@ -381,7 +404,7 @@ export class CodexRuntime extends RuntimeBase {
       if (!s.runtimeRef || s.kind === "sub") continue;
       try {
         const handle = await this.handleFor(s.profileId);
-        await handle.client.request("thread/archive", { threadId: s.runtimeRef } as never);
+        await handle.client.request("thread/archive", { threadId: s.runtimeRef });
       } catch (err) {
         this.emit("log", `thread/archive failed for ${s.id}: ${String(err)}`);
       }
@@ -395,8 +418,8 @@ export class CodexRuntime extends RuntimeBase {
       if (!s.runtimeRef || s.kind === "sub") continue;
       try {
         const handle = await this.handleFor(s.profileId);
-        await handle.client.request("thread/unarchive", { threadId: s.runtimeRef } as never);
-        await handle.client.request("thread/resume", { threadId: s.runtimeRef, ...this.identityConfig(s.id), ...this.permissions(s.options) } as never);
+        await handle.client.request("thread/unarchive", { threadId: s.runtimeRef });
+        await handle.client.request("thread/resume", { threadId: s.runtimeRef, ...this.identityConfig(s.id), ...this.permissions(s.options) });
       } catch (err) {
         this.emit("log", `thread/unarchive failed for ${s.id}: ${String(err)}`);
       }
@@ -448,7 +471,7 @@ export class CodexRuntime extends RuntimeBase {
     const cached = this.skillCache.get(key);
     if (cached && Date.now() - cached.at < 60_000) return cached.skills;
     const handle = await this.handleFor(session.profileId);
-    const r = (await handle.client.request("skills/list", { cwds: [cwd] } as never)) as unknown as { data: Array<{ skills: CodexSkill[] }> };
+    const r = (await handle.client.request("skills/list", { cwds: [cwd] })) as unknown as { data: Array<{ skills: CodexSkill[] }> };
     const skills = r.data.flatMap((e) => e.skills).filter((s) => s.enabled !== false);
     this.skillCache.set(key, { at: Date.now(), skills });
     return skills;
@@ -468,9 +491,9 @@ export class CodexRuntime extends RuntimeBase {
       // The person's command opens the turn in the conversation (Codex writes no message of its own for it).
       this.appendItem(sessionId, { type: "user", text: `/${name}${args ? ` ${args}` : ""}` }, { method: "command" });
       if (name === "compact") {
-        await handle.client.request("thread/compact/start", { threadId: session.runtimeRef! } as never);
+        await handle.client.request("thread/compact/start", { threadId: session.runtimeRef! });
       } else {
-        const r = (await handle.client.request("review/start", { threadId: session.runtimeRef!, target: reviewTarget(args), delivery: "inline" } as never)) as unknown as { turn: { id: string } };
+        const r = (await handle.client.request("review/start", { threadId: session.runtimeRef!, target: reviewTarget(args), delivery: "inline" })) as unknown as { turn: { id: string } };
         st.reviewTurns.add(r.turn.id);
       }
       return { mode: "start" };
@@ -487,7 +510,7 @@ export class CodexRuntime extends RuntimeBase {
     if (!s.runtimeRef) throw new Error(`session ${sessionId} has no thread yet`);
     const handle = await this.handleFor(s.profileId);
     // Make sure the thread is loaded on this server so `codex --remote … resume` finds it.
-    await handle.client.request("thread/resume", { threadId: s.runtimeRef, ...this.identityConfig(s.id), ...this.permissions(s.options) } as never).catch(() => undefined);
+    await handle.client.request("thread/resume", { threadId: s.runtimeRef, ...this.identityConfig(s.id), ...this.permissions(s.options) }).catch(() => undefined);
     return { url: handle.url, token: handle.token, threadId: s.runtimeRef };
   }
 
@@ -547,7 +570,7 @@ export class CodexRuntime extends RuntimeBase {
       if (s.profileId !== handle.profileId || !s.runtimeRef || s.archivedAt || s.kind === "sub") continue;
       try {
         // A restarted app-server loads the thread again; only then does the identity header need setting again.
-        const r = await handle.client.request("thread/resume", { threadId: s.runtimeRef, ...this.identityConfig(s.id), ...this.permissions(s.options) } as never);
+        const r = await handle.client.request("thread/resume", { threadId: s.runtimeRef, ...this.identityConfig(s.id), ...this.permissions(s.options) });
         // Turn events may have been missed while disconnected; take the status from the server's view.
         const active = (r.thread as { status?: { type?: string } }).status?.type === "active";
         const st = this.sessionState(s.id);
@@ -588,7 +611,7 @@ export class CodexRuntime extends RuntimeBase {
    */
   private turnOptions(options: SessionOptions) {
     const { approvalPolicy, sandbox, reviewer } = this.permissionOf(options);
-    const sandboxPolicy =
+    const sandboxPolicy: codex.v2.SandboxPolicy =
       sandbox === "danger-full-access"
         ? { type: "dangerFullAccess" }
         : sandbox === "read-only"
@@ -598,7 +621,7 @@ export class CodexRuntime extends RuntimeBase {
       approvalPolicy,
       approvalsReviewer: reviewer,
       sandboxPolicy,
-      summary: "auto",
+      summary: "auto" as const,
       ...(options.model ? { model: options.model } : {}),
       ...(options.effort ? { effort: options.effort } : {}),
     };
@@ -634,7 +657,7 @@ export class CodexRuntime extends RuntimeBase {
 
   /** For thread/resume: the session's identity header (takes effect when the server loads the thread again). */
   /** thread/resume's config: the AMO MCP identity header and the 自动压缩点. */
-  private identityConfig(sessionId: Id): { config: Record<string, unknown> } {
+  private identityConfig(sessionId: Id): { config: CodexConfig } {
     const ids = this.options.identities;
     return { config: { ...codexAutoCompactConfig(this.store, this.store.getSession(sessionId)?.profileId), ...(ids ? McpIdentities.threadConfig(ids.tokenFor(sessionId)) : {}) } };
   }

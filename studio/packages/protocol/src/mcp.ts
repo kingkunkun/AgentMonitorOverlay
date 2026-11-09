@@ -1,6 +1,6 @@
 import type { Id, Timestamp } from "./entities.js";
 
-// MCP 设置 (2026-11-04, plans/mcp.md): which MCP servers sessions get, besides Studio's own `amo`. Three levels decide
+// MCP 设置 (2026-11-04, plans/done/mcp.md): which MCP servers sessions get, besides Studio's own `amo`. Three levels decide
 // whether one is on — the session's choice, then its project's, then the global one, then the server's default — and
 // the person's own Claude Code config (~/.claude.json, a project's .mcp.json) is read when 「加载本机已配置的 MCP」 is on.
 
@@ -142,4 +142,20 @@ export interface StudioMcpServerPatch {
 export function mcpSummary(spec: McpServerSpec): string {
   if (spec.type === "stdio") return [spec.command ?? "", ...(spec.args ?? [])].filter(Boolean).join(" ");
   return spec.url ?? "";
+}
+
+// ---- Host routes (declared here, part of api.ts's HostRoutes) --------------------------------------------------
+
+/** MCP 设置 (2026-11-04, plans/done/mcp.md). */
+export interface McpRoutes {
+  "GET /api/mcp": { req: void; res: McpState };
+  "PUT /api/mcp": { req: { loadLocal?: boolean; choices?: McpChoices }; res: McpState };
+  "POST /api/mcp/servers": { req: NewStudioMcpServer; res: StudioMcpServer };
+  "PATCH /api/mcp/servers/:id": { req: StudioMcpServerPatch; res: StudioMcpServer };
+  "DELETE /api/mcp/servers/:id": { req: void; res: { ok: true } };
+  "GET /api/mcp/projects/:id": { req: void; res: McpProjectState };
+  "PUT /api/mcp/projects/:id": { req: { choices: McpChoices }; res: McpProjectState };
+  "GET /api/sessions/:id/mcp": { req: void; res: McpSessionState };
+  /** `apply`: when the change reaches the session. */
+  "PUT /api/sessions/:id/mcp": { req: { choices: McpChoices }; res: McpSessionState & { apply: McpApply } };
 }

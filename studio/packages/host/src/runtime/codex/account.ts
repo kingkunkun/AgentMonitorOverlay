@@ -1,4 +1,4 @@
-import type { AccountUsage, ModelOption, ModelProfile, TurnRetry } from "@amo-studio/protocol";
+import type { AccountUsage, codex, ModelOption, ModelProfile, TurnRetry } from "@amo-studio/protocol";
 
 // What a Codex app-server says about the account and its models (stage 16 split out of codex-runtime.ts): models and
 // their fast tier, the quota, skills, /code-review targets and why a turn retries.
@@ -48,12 +48,12 @@ export interface CodexSkill {
 }
 
 /** `/code-review` arguments: nothing (uncommitted changes), `base <branch>`, `commit <sha>`, or review instructions. */
-export function reviewTarget(args: string): Record<string, unknown> {
+export function reviewTarget(args: string): codex.v2.ReviewTarget {
   const text = args.trim();
   const base = /^base\s+(\S+)$/i.exec(text);
-  if (base) return { type: "baseBranch", branch: base[1] };
+  if (base) return { type: "baseBranch", branch: base[1]! };
   const commit = /^commit\s+([0-9a-f]{4,40})$/i.exec(text);
-  if (commit) return { type: "commit", sha: commit[1], title: null };
+  if (commit) return { type: "commit", sha: commit[1]!, title: null };
   return text ? { type: "custom", instructions: text } : { type: "uncommittedChanges" };
 }
 
@@ -95,4 +95,10 @@ export function codexUsage(profile: ModelProfile, limits: { primary: CodexRateWi
     .filter((w): w is NonNullable<CodexRateWindow> => !!w)
     .map((w) => ({ label: windowLabel(w.windowDurationMins), usedPercent: w.usedPercent, resetsAt: w.resetsAt ? new Date(w.resetsAt * 1000).toISOString() : null }));
   return { profileId: profile.id, label: profile.label, windows, note: windows.length ? null : "这个账号没有用量限制", updatedAt: new Date().toISOString() };
+}
+
+/** The quota read failed because the ChatGPT login's access token ran out (问题 #18: `401 Unauthorized … token_expired`). */
+export function isTokenExpired(err: unknown): boolean {
+  const message = String((err as Error | undefined)?.message ?? err);
+  return /token_expired|token has expired/i.test(message) || (/\b401\b/.test(message) && /unauthori[sz]ed/i.test(message));
 }

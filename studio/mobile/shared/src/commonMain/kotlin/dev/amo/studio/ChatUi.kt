@@ -25,7 +25,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import okio.ByteString.Companion.encodeUtf8
 
-// The conversation page (2026-10-31 redesign, plans/android-mobile-redesign.md 第 3 步): a turn's tool calls and thinking
+// The conversation page (2026-10-31 redesign, plans/done/android-mobile-redesign.md 第 3 步): a turn's tool calls and thinking
 // fold into one line, Markdown renders as blocks, the composer starts at one line with the send button inside it,
 // approvals and questions waiting for you are pinned above it, and 「↓」 brings you back to the newest message.
 
@@ -85,7 +85,7 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
     LaunchedEffect(atBottom, newest) { if (atBottom) seen = newest }
     val pinned = remember(rows) { reversed.indexOfFirst { it is ItemRow && pending(it.entry) } }
     val pinnedVisible = pinned >= 0 && list.layoutInfo.visibleItemsInfo.any { it.index == pinned }
-    val status = session?.let { s -> listOfNotNull(if (s.archived) "已归档" else if (running) "正在回复…" else sessionStatusLabel(s.state), state.profiles.find { it.first == s.profileId }?.second).joinToString(" · ") }
+    val status = session?.let { s -> listOfNotNull(if (s.archived) "已归档" else if (running) "正在回复…" else sessionStatusLabel(s.state), state.profiles.find { it.first == s.profileId }?.second, s.project).joinToString(" · ") }
 
     Column(Modifier.fillMaxSize()) {
         TopBar(session?.title?.ifBlank { null } ?: "未命名会话", status, back = back) {

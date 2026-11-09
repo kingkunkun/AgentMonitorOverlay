@@ -1,9 +1,10 @@
 import { inTurn, type Id, type Session, type SessionItem } from "@amo-studio/protocol";
 import { newId, type SessionItemInput } from "../../store/store.js";
-import { Feature } from "../../core/feature.js";
-import { HostError } from "../../core/shared.js";
+import { Feature, type FeatureHost } from "../../core/feature.js";
+import type { SessionsFeature } from "./service.js";
+import { HostError, isRemoteCopy } from "../../core/shared.js";
 
-// 会话收件箱 (2026-11-04, plans/message-delivery.md): messages from agents and from Studio itself — a 中转 reply, 值守
+// 会话收件箱 (2026-11-04, plans/done/message-delivery.md): messages from agents and from Studio itself — a 中转 reply, 值守
 // going on in a session, 传话 (task_message), a forwarded mail, session_send, session_start's report — go into the
 // conversation at once as a row `delivery: "held"` (「等这一轮结束后送进去」) and are sent once the session is free: not in
 // a turn, not waiting on the person, not handed to a terminal. Before, each place called sendMessage as the person's
@@ -21,10 +22,20 @@ const PEER_QUEUE_KEY = "sessions.peer-queue";
 const TURN_SEEN_MS = 3000;
 
 export class SessionInbox extends Feature {
+  constructor(
+    host: FeatureHost,
+    /** The feature the inbox is part of (it sends through it). */
+    private readonly sessions: SessionsFeature,
+  ) {
+    super(host);
+  }
+
   private known: Set<Id> | null = null;
   /** One delivery at a time per session; `again`: something came meanwhile, look once more after it. */
   private readonly flushing = new Map<Id, Promise<void>>();
   private readonly again = new Set<Id>();
+  /** Of `again`: the look once more is the person's message ending a pause (withTurn), not to be lost behind a running delivery. */
+  private readonly againWithTurn = new Set<Id>();
   /**
    * Sessions the person stopped (2026-11-04, the user): what is held waits for their next message, and goes in with it,
    * or for 立即发送 — a session stopped on purpose is not started again by a reply arriving. Until the Host restarts.
@@ -51,7 +62,7 @@ export class SessionInbox extends Feature {
     const s = this.store.getSession(sessionId);
     if (!s || this.told.has(sessionId)) return;
     this.told.add(sessionId);
-    const message = "你停下了这个会话：别的会话、中转、值守发来的消息先不送进去，等你发下一条消息时一起送；想现在送就点它旁边的「立即发送」。";
+    const message = "你停下了这个会话：别的会话、中转、值守发来的消息先不送进去，等你发下一条消息时，排在它后面一起送进去；想现在送就点它旁边的「立即发送」。";
     this.publish({ type: "item.appended", item: this.store.appendItem(this.row(s, { type: "notice", level: "info", message }, "inbox/paused")) });
   }
 
@@ -64,12 +75,12 @@ export class SessionInbox extends Feature {
     if (s.archivedAt || s.writer === "archived") throw new HostError("read_only", "这个会话已归档，不能再往里发消息");
     if (s.kind === "sub") throw new HostError("read_only", "子 agent 不能单独接收消息");
     if (!text.trim()) throw new HostError("bad_request", "text is required");
-    if (s.runtime === "remote") {
-      await this.f.sessions.sendMessage(sessionId, text);
+    if (isRemoteCopy(s)) {
+      await this.sessions.sendMessage(sessionId, text);
       return { delivered: true, waiting: 0 };
     }
-    const role = this.f.sessions.roleUpdate(sessionId);
-    const item = this.append(s, this.f.sessions.withRole(text, role.lines));
+    const role = this.sessions.roleUpdate(sessionId);
+    const item = this.append(s, this.sessions.withRole(text, role.lines));
     role.told();
     this.remember(sessionId);
     if (this.paused.has(sessionId)) this.tellPaused(sessionId);
@@ -90,7 +101,7 @@ export class SessionInbox extends Feature {
   /** Watches sessions get free; sends what the last Host left held, and moves session_send's old queue in. */
   watch(): void {
     this.migratePeerQueue();
-    this.f.on("event", (e) => {
+    this.host.on("event", (e) => {
       if (e.type === "session.upserted" && this.ids().has(e.session.id)) void this.flush(e.session.id).catch(() => undefined);
     });
     for (const id of this.ids()) void this.flush(id).catch(() => undefined);
@@ -106,11 +117,13 @@ export class SessionInbox extends Feature {
     const running = this.flushing.get(sessionId);
     if (running) {
       this.again.add(sessionId);
+      if (withTurn) this.againWithTurn.add(sessionId);
       return running;
     }
     const p = this.deliver(sessionId, withTurn).finally(() => {
       this.flushing.delete(sessionId);
-      if (this.again.delete(sessionId)) void this.flush(sessionId).catch(() => undefined);
+      const turn = this.againWithTurn.delete(sessionId);
+      if (this.again.delete(sessionId)) void this.flush(sessionId, turn).catch(() => undefined);
     });
     this.flushing.set(sessionId, p);
     return p;
@@ -126,6 +139,9 @@ export class SessionInbox extends Feature {
     }
     if (this.paused.has(sessionId)) return;
     if (!free(s) && !(withTurn && s.status === "running" && writable(s))) return;
+    // Behind the person's message (2026-11-08): marked so the row says it goes in by itself (see `withPerson`). Not by
+    // status: a Codex session shows `running` only once turn/started comes back, after the person's send has returned.
+    const behindPerson = withTurn;
     const rt = this.runtime;
     // The first starts a turn; the others follow it at once (queued at the CLI, steered in, or DSH's next turn) — once
     // the turn is seen to run: Codex tells it (turn/started) only after its turn/start, and a second turn/start before
@@ -138,6 +154,8 @@ export class SessionInbox extends Feature {
       before = current.seq;
       try {
         if (!rt.resend) throw new Error("this Host cannot send a held message");
+        // Set before sending: the runtime keeps the item's other fields when it changes its delivery.
+        if (behindPerson) this.publish({ type: "item.updated", item: this.store.replaceItem({ ...current, withPerson: true }) });
         await rt.resend(sessionId, it.id, []);
       } catch (err) {
         this.mark(it.id, "unsent");

@@ -78,10 +78,10 @@ export function preview(m: Message | null): string {
   return text;
 }
 
-// ---- sessions (stage 2a, plans/relay-tasks.md): where one stands for me
+// ---- sessions (stage 2a, plans/done/relay-tasks.md): where one stands for me
 
 /** A session the asker's AI fetched and left untouched this long is 卡住. Back and not fetched, it is the asker's at
- * once: since 2026-10-28 the AI does not wait for a reply, the asker copies it over (plans/relay-tasks.md「卡点」). */
+ * once: since 2026-10-28 the AI does not wait for a reply, the asker copies it over (plans/done/relay-tasks.md「卡点」). */
 export const AI_STUCK_MS = 30 * 60_000;
 
 export interface SessionStatus {
@@ -98,6 +98,8 @@ export function sessionStatus(t: ThreadView, me: string, now = Date.now(), limit
   const r = t.request!;
   const stuckMs = limits ? limits.aiStuckMinutes * 60_000 : AI_STUCK_MS;
   const asker = `${r.from}${r.byAi ? " 的 AI" : ""}`;
+  // 已接手，不用回复 (2026-11-05): closed by the person asked taking it on.
+  if (r.state === "done" && r.takenAt) return { text: r.to === me ? "你已接手 · 不用回复" : `${r.to} 已接手 · 不用回复`, dot: "done", needsMe: false, warn: false };
   if (r.state === "done") return { text: "已完成", dot: "done", needsMe: false, warn: false };
   if (r.waitingOn !== me) {
     if (r.state === "returned" && r.handler === "ai") return { text: r.pickedAt ? `${r.from} 的 AI 处理中` : `已返回给 ${r.from}`, dot: "run", needsMe: false, warn: false };

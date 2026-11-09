@@ -1,8 +1,9 @@
 import { composeRemoteReviewMessage, sortComments, type GitReviewComment, type Id, type NewGitReviewComment, type Task } from "@amo-studio/protocol";
-import type { HostService } from "../../service.js";
+import type { FeatureHost } from "../../core/feature.js";
+import type { RemoteUses } from "./service.js";
 import { HostError } from "../../core/shared.js";
 
-// 远程 Reviewer 的批注 (plans/remote-reviewer.md step 3, 2026-11-02, the user): B's comments on a remote task's files
+// 远程 Reviewer 的批注 (plans/done/remote-reviewer.md step 3, 2026-11-02, the user): B's comments on a remote task's files
 // and changes stay on B — the task's computer never sees them as comments. B has no project of A's (review_comments
 // belongs to a project), so each copy keeps its own list beside it, in the kv table, gone with the copy. The windows
 // write them as they write any comments (the same routes, through /api/remote/view/<task>/…); copied out, the paths
@@ -23,7 +24,7 @@ const ROUTES: Array<{ method: string; re: RegExp; name: "list" | "add" | "copy" 
 ];
 
 export class RemoteComments {
-  constructor(private readonly host: () => HostService) {}
+  constructor(private readonly host: () => FeatureHost<RemoteUses>) {}
 
   private get store() {
     return this.host().store;

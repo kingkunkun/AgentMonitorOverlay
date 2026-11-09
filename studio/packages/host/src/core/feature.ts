@@ -2,14 +2,66 @@ import type { Id, ModelProfile, Session, Task, Topic, Workspace } from "@amo-stu
 import type { HostEventInput, Store } from "../store/store.js";
 import type { SessionRuntimeApi } from "../runtime/runtime.js";
 import type { HostService } from "../service.js";
+import type { TeamLink } from "./teamlink.js";
 import type { HostErrorCode } from "@amo-studio/protocol";
 
 /**
- * Base of every feature (features/<name>/service.ts): the shared store, runtime and helpers through the Host, and the
- * other features as `this.f.<name>` for the few calls that cross a feature's edge.
+ * The features HostService holds, by the name it holds them under (service.ts checks this list against its fields).
+ * A feature names the ones it uses in `Feature<…>` (plans/host-structure.md 8c, 2026-11-06).
  */
-export abstract class Feature {
-  constructor(protected readonly host: HostService) {}
+export type FeatureName =
+  | "projects"
+  | "config"
+  | "claudeAccounts"
+  | "tasks"
+  | "topics"
+  | "sessions"
+  | "planning"
+  | "collab"
+  | "canvases"
+  | "canvasReview"
+  | "review"
+  | "promptTemplates"
+  | "mcp"
+  | "attachments"
+  | "scratchpad"
+  | "gitReview"
+  | "viewPacks"
+  | "files"
+  | "openIn"
+  | "marks"
+  | "topicDocs"
+  | "taskPlans"
+  | "relays"
+  | "chatFiles"
+  | "cli"
+  | "data"
+  | "stats"
+  | "channels"
+  | "dsh"
+  | "maintenance"
+  | "remote"
+  | "teamRelay"
+  | "issues"
+  | "duty";
+
+/** The Host without its features: the store, the runtimes, the event stream and the helpers every feature shares. */
+export type HostCore = Omit<HostService, FeatureName>;
+
+/**
+ * The Host as a feature (or a part of one, or a module of its folder) may use it: its core, and the features `D` it
+ * declared. Modules of a feature's folder that need other features take this instead of HostService, so what they
+ * use is declared too (src/features/feature-deps.test.ts reads the declarations).
+ */
+export type FeatureHost<D extends FeatureName = never> = HostCore & Pick<HostService, D>;
+
+/**
+ * Base of every feature (features/<name>/service.ts): the shared store, runtime and helpers through the Host, and the
+ * other features it declared in `D` as `this.f.<name>` for the calls that cross a feature's edge. Declaring a new one
+ * is checked by src/features/feature-deps.test.ts (the dependency graph, and no new cycles).
+ */
+export abstract class Feature<D extends FeatureName = never> {
+  constructor(protected readonly host: FeatureHost<D>) {}
 
   get store(): Store {
     return this.host.store;
@@ -23,8 +75,12 @@ export abstract class Feature {
   protected get options(): HostService["options"] {
     return this.host.options;
   }
-  /** The other features. */
-  protected get f(): HostService {
+  /** The AMO platform's login and this computer's device, to speak to the team server (core/teamlink.ts). */
+  protected get teamLink(): TeamLink {
+    return this.host.teamLink;
+  }
+  /** The other features this one declared (`D`). */
+  protected get f(): Pick<HostService, D> {
     return this.host;
   }
 

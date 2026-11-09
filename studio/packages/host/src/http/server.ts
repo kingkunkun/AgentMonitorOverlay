@@ -11,7 +11,7 @@ import { HostError, type HostService } from "../service.js";
 import { handleMcpRequest } from "../mcp/amo-mcp.js";
 import { listenInStudioRange } from "../net.js";
 import { FEATURES } from "../features/index.js";
-import { sessionMoving } from "../features/tasks/service.js";
+import { isRemoteCopy, sessionMoving } from "../core/shared.js";
 import { FileReply, JsonReply, route, str, obj, type Route, type RouteContext } from "./route.js";
 
 export type { RouteContext } from "./route.js";
@@ -69,21 +69,21 @@ export async function startHostServer(options: HostServerOptions): Promise<HostS
 
   // A remote task's copies (runtime "remote") run on the other computer: stopping this Host cuts none of them, so they
   // do not hold back 完全退出 or the platform's 重启 Studio (2026-10-29).
-  const runningCount = () => service.store.listSessions().filter((s) => s.runtime !== "remote" && sessionMoving(s)).length;
+  const runningCount = () => service.store.listSessions().filter((s) => !isRemoteCopy(s) && sessionMoving(s)).length;
   let shuttingDown = false;
   const routes: Route[] = [
-    route("GET", "/api/state", () => service.snapshot()),
+    route("GET /api/state", () => service.snapshot()),
     // The shell's keepalive asks this (2026-10-27): it answers at once, without building the whole state. 2026-10-28: also
     // without the token, with how many sessions are at work (counted as the board's 进行中, sessionMoving), so the AMO
     // platform can ask before it updates Studio. A number only: no titles or other content. 2026-10-29: and the version
     // of the Studio that started it, so the platform can tell a Host older than the Studio it has installed.
-    route("GET", "/api/health", () => ({ ok: true, pid: process.pid, running: runningCount(), version: options.version ?? "dev" }), { open: true }),
+    route("GET /api/health", () => ({ ok: true, pid: process.pid, running: runningCount(), version: options.version ?? "dev" }), { open: true }),
     // 完全退出 / 重启 Studio (2026-10-29): stops the Host, with the token (POST is never open). Sessions at work are not cut
     // unless the caller says so ({ interrupt: true }, after asking the person): otherwise 409 with how many there are.
     // The platform never sends it (AGENTS.md, constraint 6).
     ...(options.onShutdown
       ? [
-          route("POST", "/api/shutdown", (ctx) => {
+          route("POST /api/shutdown", (ctx) => {
             const running = runningCount();
             if (running > 0 && obj(ctx.body).interrupt !== true) return new JsonReply(409, { ok: false, running, error: { code: "conflict", message: `${running} 个会话正在进行，没有关闭后台` } });
             if (!shuttingDown) {
@@ -180,7 +180,7 @@ export async function startHostServer(options: HostServerOptions): Promise<HostS
 
   const sendFile = (res: ServerResponse, file: FileReply) => {
     if (!existsSync(file.path)) return fail(res, 404, "not_found", "file not found");
-    res.writeHead(200, { "content-type": file.mime, "cache-control": file.options.fresh ? "no-store" : "private, max-age=31536000, immutable" });
+    res.writeHead(200, { "content-type": file.mime, "cache-control": file.options.fresh ? "no-store" : "private, max-age=31536000, immutable", ...(file.options.cors ? { "access-control-allow-origin": "*" } : {}) });
     // A remote task's copy (at most 20 MB) is read whole: a stream to a picture the page no longer shows was seen to
     // stay open, holding the file, so archiving the copy could not delete its folder (2026-10-29).
     if (file.options.whole) {
@@ -247,7 +247,7 @@ export async function startHostServer(options: HostServerOptions): Promise<HostS
         req.method === "GET" || req.method === "DELETE" ? undefined : matched?.route.rawBody ? await readRaw(req, matched.route.rawBody) : await readBody(req);
       if (matched) {
         // A copy of a paired device's task (远程, step 2) takes only some of the API.
-        service.remote.guardRoute(req.method!, matched.route.path, matched.params);
+        service.remote.guardRoute(matched.route, matched.params);
         const out = await matched.route.handle({ method: req.method!, path: url.pathname, params: matched.params, query: url.searchParams, body });
         return out instanceof FileReply ? sendFile(res, out) : out instanceof JsonReply ? send(res, out.status, out.body) : send(res, 200, out);
       }

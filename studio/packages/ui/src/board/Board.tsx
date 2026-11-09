@@ -2,7 +2,7 @@ import { useState } from "react";
 import { TASK_COLUMNS, taskProject, type RemoteState, type Session, type Task, type TaskColumn, type Topic, type Workspace } from "@amo-studio/protocol";
 import type { HostLink } from "../host/client.js";
 import { copyStatus, grantsOf, useRemote, type CopyStatus } from "../remote/remote.js";
-import { teamWaits, useTeamThreads } from "../teamrelay/TeamRelay.js";
+import { takenText, teamTaken, teamWaits, useSeenTaken, useTeamThreads } from "../teamrelay/TeamRelay.js";
 import { COLUMN_NAMES, relativeTime, SESSION_LOOK, taskSessions, taskStatus } from "../lib/status.js";
 import { ArchiveIcon } from "../task/Archived.js";
 import { ArchivedTasks } from "./ArchivedTasks.js";
@@ -61,6 +61,7 @@ interface BoardProps {
 export function Board({ tasks, sessions, workspaces, topics, scope, onOpen, onMove, mail, decisions, checklist, onArchive, link }: BoardProps) {
   const remote = useRemote(link ?? null);
   const teamThreads = useTeamThreads(link ?? null);
+  const { seen: seenTaken } = useSeenTaken(teamThreads);
   const visible = tasks.filter((t) => inScope(t, scope)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const [dragging, setDragging] = useState<Task | null>(null);
   const [over, setOver] = useState<TaskColumn | null>(null);
@@ -77,7 +78,7 @@ export function Board({ tasks, sessions, workspaces, topics, scope, onOpen, onMo
       key={task.id}
       task={task}
       sessions={taskSessions(task, sessions)}
-      teamWaiting={teamWaits(teamThreads, taskSessions(task, sessions))}
+      teamWaiting={[...teamWaits(teamThreads, taskSessions(task, sessions)), ...teamTaken(teamThreads, taskSessions(task, sessions), Date.now(), seenTaken).map(takenText)]}
       scope={scope}
       grouped={grouped}
       workspaces={workspaces}
@@ -247,6 +248,12 @@ function TaskCard({
         <span className="card-where card-remote" data-testid="card-remote" title={`在 ${copy.name}（${task.remote!.account}）上运行：模型调用和命令都在那台电脑上`}>
           <span className="remote-badge">远程</span>
           <span className="card-remote-where">{off ? copy.label : `在 ${copy.name} 上`}</span>
+          {/* Its project on that computer (2026-11-09), when that computer says it. */}
+          {task.remote?.project !== undefined && (
+            <span className="card-remote-project" title={task.remote.project ? `${copy.name} 上的项目：${task.remote.project}` : `在 ${copy.name} 的公共目录里运行`} data-testid="card-remote-project">
+              · {task.remote.project ?? "未指定项目"}
+            </span>
+          )}
         </span>
       )}
       {(topic || noTopic || project) && !copy && (

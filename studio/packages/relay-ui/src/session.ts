@@ -44,6 +44,10 @@ export class Session {
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private deadTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
+  /** The socket has opened since start (the list is loaded again then). */
+  private opened = false;
+  /** Loads of the list going on: the threads events touched meanwhile. */
+  private touched = new Set<Set<string>>();
   /** The thread on screen: its messages count as read while the window has focus. */
   openThread: string | null = null;
 
@@ -78,8 +82,12 @@ export class Session {
 
   async start(): Promise<void> {
     this.closed = false;
-    await this.reload();
+    // The list now, for the first screen, and once more when the socket opens (2026-11-05): a session asked between the
+    // list's answer and the socket's opening was lost until the next reload. What the socket brings while a load is on
+    // its way is kept (see reload).
+    this.opened = false;
     this.connect();
+    await this.reload();
   }
 
   stop(): void {
@@ -109,8 +117,19 @@ export class Session {
   }
 
   async reload(): Promise<void> {
-    const [threads, members, tasks, settings] = await Promise.all([this.client.threads(), this.client.members(), this.client.tasks(), this.client.settings()]);
-    this.set({ threads, members, tasks, settings });
+    const touched = new Set<string>();
+    this.touched.add(touched);
+    try {
+      const [threads, members, tasks, settings] = await Promise.all([this.client.threads(), this.client.members(), this.client.tasks(), this.client.settings()]);
+      // Threads the socket brought or changed while the list was on its way are as new as the list, or newer.
+      const now = new Map(this.state.threads.map((t) => [t.id, t]));
+      const listed = new Set(threads.map((t) => t.id));
+      const merged = threads.map((t) => (touched.has(t.id) ? (now.get(t.id) ?? t) : t));
+      const added = [...touched].filter((id) => !listed.has(id)).flatMap((id) => (now.has(id) ? [now.get(id)!] : []));
+      this.set({ threads: [...added, ...merged], members, tasks, settings });
+    } finally {
+      this.touched.delete(touched);
+    }
   }
 
   private connect(): void {
@@ -119,7 +138,8 @@ export class Session {
     const ws = new WebSocket(url);
     this.ws = ws;
     ws.onopen = () => {
-      const missed = this.retry > 0;
+      const missed = this.retry > 0 || !this.opened;
+      this.opened = true;
       this.retry = 0;
       this.alive(ws);
       this.set({ connection: "online", offlineSince: null, retryAt: null });
@@ -140,6 +160,8 @@ export class Session {
   }
 
   private handle(e: RelayEvent): void {
+    const id = e.type === "thread" || e.type === "message" || e.type === "updated" ? e.thread.id : e.type === "archived" || e.type === "read" ? e.threadId : null;
+    if (id) for (const t of this.touched) t.add(id);
     if (e.type === "hello" || e.type === "client") this.set({ client: e.type === "hello" ? e.client : e.version });
     else if (e.type === "members") this.set({ members: e.members });
     else if (e.type === "thread") this.adopt({ ...e.thread, unread: 0, readSeq: 0, last: null, archived: false });

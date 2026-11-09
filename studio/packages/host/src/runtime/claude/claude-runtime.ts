@@ -14,6 +14,7 @@ import { claudeAutoCompactEnv } from "../compact.js";
 import { spawnClaudeProcess } from "../priority.js";
 import { localClaudeHome, readClaudeLogin, rememberSessionLogin, sessionClaudeLogin } from "./claude-login.js";
 import { keepsProcess } from "./wake.js";
+import { shellHelpEnv } from "../agent-env.js";
 import { agentsMdInstructions } from "./project-instructions.js";
 import { AMO_MCP_INSTRUCTIONS, AMO_MCP_NAME, type AmoTool } from "../../mcp/tools.js";
 import { sameProcessPart, sdkServer, type McpLaunch, type McpSource } from "../mcp-launch.js";
@@ -207,7 +208,7 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
   }
 
   /**
-   * 接续已有会话 (2026-11-05, plans/resume-cli-sessions.md): Claude sessions started outside Studio (a terminal, the
+   * 接续已有会话 (2026-11-05, plans/done/resume-cli-sessions.md): Claude sessions started outside Studio (a terminal, the
    * Claude desktop app), read where the local login's sessions are. Only the subscription on the local login sees them.
    */
   async outsideSessions(): Promise<OutsideSessionList> {
@@ -390,7 +391,11 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
     live.interrupted = true;
     this.asks.declineAll(live);
     const grace = this.options.stopGraceMs ?? STOP_GRACE_MS;
-    const stillRunning = () => this.live.get(sessionId) === live && live.running && !live.finished;
+    // The turn that was stopped, not just one (2026-11-09, the user: s-35db5a8c, 停止 then a fuller message sent a few
+    // seconds later — the stopped turn had ended at once, and 15 s after 停止 Studio closed the process in the middle of
+    // the new one). The process lives on between turns, so `running` alone is any turn's.
+    const turn = live.turn;
+    const stillRunning = () => this.live.get(sessionId) === live && live.running && !live.finished && live.turn === turn;
     this.armStopGrace(sessionId, grace, stillRunning, () => {
       this.appendItem(sessionId, { type: "notice", level: "warning", message: `点了停止 ${Math.round(grace / 1000)} 秒后 Claude 还没停下（它可能卡在某个命令或文件操作上），Studio 关掉了它的进程。发一条消息即可接着对话。` });
       void this.close(sessionId);
@@ -460,6 +465,13 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
     return this.usageTracker.usage(profile, refresh);
   }
 
+  /** 远程额度 (2026-11-06): what usage() last read, without asking the account. */
+  cachedUsage(profileId: Id): AccountUsage | AccountUsage[] | null {
+    const profile = this.options.profiles.find((p) => p.id === profileId);
+    if (!profile || !this.isSubscription(profile)) return null;
+    return this.usageTracker.cached(profile);
+  }
+
   /** The session's title in its transcript (what `claude --resume` lists); a session without a transcript yet keeps it here only. */
   async rename(sessionId: Id, title: string): Promise<Session> {
     const session = this.requireSession(sessionId);
@@ -484,7 +496,7 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
       try {
         await live.q.setModel(options.model ?? this.profile(session.profileId).model ?? undefined);
         await live.q.setPermissionMode(claudePermissionMode(options.permission));
-        await live.q.applyFlagSettings({ effortLevel: (options.effort as never) ?? null });
+        await live.q.applyFlagSettings({ effortLevel: (options.effort as never) ?? null, fastMode: (options.fast as never) ?? null });
       } catch (err) {
         this.emit("log", `could not switch options of ${sessionId}: ${String(err)}`);
       }
@@ -558,7 +570,7 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
     const workspace = this.store.getWorkspace(session.workspaceId);
     if (!workspace) throw new Error(`workspace ${session.workspaceId} not found`);
     const home = this.homeOf(sessionId);
-    const env = { ...claudeEnv(this.profile(session.profileId), this.options.providers, this.options.credentials, home, this.options.baseEnv), ...claudeAutoCompactEnv(this.store, session.profileId) };
+    const env = { ...shellHelpEnv(this.store), ...claudeEnv(this.profile(session.profileId), this.options.providers, this.options.credentials, home, this.options.baseEnv), ...claudeAutoCompactEnv(this.store, session.profileId) };
     await this.close(sessionId);
     const ref = session.runtimeRef!;
     const seen = hasTranscript(ref, home) ? (await readTranscript(ref, workspace.path, home)).length : 0;
@@ -712,8 +724,8 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
       prompt: input(),
       options: {
         cwd: workspace.path,
-        // 自动压缩点 (设置 → 模型) over the provider's own window.
-        env: { ...claudeEnv(profile, this.options.providers, this.options.credentials, home, this.options.baseEnv), ...claudeAutoCompactEnv(this.store, profile.id) },
+        // 自动压缩点 (设置 → 模型) over the provider's own window; 命令行适配 (agent-env.ts) under everything.
+        env: { ...shellHelpEnv(this.store), ...claudeEnv(profile, this.options.providers, this.options.credentials, home, this.options.baseEnv), ...claudeAutoCompactEnv(this.store, profile.id) },
         // As in a terminal: CLAUDE.md, settings, hooks, commands and skills of the project and of the config dir (Studio's
         // own with the token, the person's with the local login).
         settingSources: CLI_SETTING_SOURCES,
@@ -739,7 +751,10 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
         // turned on are approved for it. Elsewhere, or with 加载本机 off, only what Studio passes (strict).
         ...(plan.strict ? { strictMcpConfig: true } : {}),
         ...(plan.deny.length ? { managedSettings: { deniedMcpServers: plan.deny.map((serverName) => ({ serverName })) } } : {}),
-        ...(plan.enableJson.length ? { settings: { enabledMcpjsonServers: plan.enableJson } } : {}),
+        // Fast mode (2026-11-05): only when chosen (on or off); never chosen, the person's own setting applies.
+        ...(plan.enableJson.length || session.options.fast !== undefined
+          ? { settings: { ...(plan.enableJson.length ? { enabledMcpjsonServers: plan.enableJson } : {}), ...(session.options.fast !== undefined ? { fastMode: session.options.fast } : {}) } }
+          : {}),
         // A session that already has a transcript continues it; a new one starts under the id Studio chose.
         ...(hasTranscript(ref, home) ? { resume: ref } : { sessionId: ref }),
         pathToClaudeCodeExecutable: exe,

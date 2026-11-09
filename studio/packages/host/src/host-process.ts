@@ -16,7 +16,8 @@ import { RuntimeRouter } from "./runtime/runtime.js";
 import { personClaudeConfig } from "./features/mcp/local.js";
 import type { McpLaunch } from "./runtime/mcp-launch.js";
 import type { McpServerSpec } from "@amo-studio/protocol";
-import { AMO_MCP_INSTRUCTIONS, amoToolsFor } from "./mcp/tools.js";
+import { amoInstructions, amoToolsFor } from "./mcp/tools.js";
+import { shellHelpEnv } from "./runtime/agent-env.js";
 import { recordRole, roleCard, roleCardFor } from "./features/guide/role.js";
 import { McpIdentities } from "./mcp/identity.js";
 import { CodexServerManager } from "./runtime/codex/server-manager.js";
@@ -25,6 +26,7 @@ import { BUILTIN_BALANCES, BUILTIN_PROFILES, CODEX_PROVIDERS, type CodexProvider
 import { ChannelRegistry } from "./runtime/channels.js";
 import { HostService } from "./service.js";
 import type { RemoteOptions } from "./features/remote/service.js";
+import type { TeamLinkOptions } from "./core/teamlink.js";
 import { Store } from "./store/store.js";
 import { WindowsTerminalLauncher, type TerminalLauncher } from "./terminal/launcher.js";
 
@@ -79,6 +81,11 @@ export interface StartHostOptions {
    * Host (bin.ts) turns it on; the Reviewer and tests that start a Host leave it off, so they never reach a server.
    */
   remote?: RemoteOptions;
+  /**
+   * The AMO platform's login and this computer's device (core/teamlink.ts, 2026-11-05): read for 远程, 会话里用中转 and
+   * the 问题页. Studio's Host (bin.ts) turns it on, and with it 中转's watch for replies — no longer only with 远程.
+   */
+  teamLink?: TeamLinkOptions;
   /** Studio's version, for /api/health (bin.ts: AMO_STUDIO_VERSION from the shell, else "dev"). */
   version?: string;
   /**
@@ -222,6 +229,8 @@ export async function startHost(options: StartHostOptions): Promise<RunningHost>
           mcp: () => mcp,
           // MCP 设置: Studio's servers that are on, when a server starts (not passed to running ones).
           extraMcp: (): Record<string, McpServerSpec> => service.mcp.codexServers(),
+          // 命令行适配 (设置 → 功能): a server started after the switch changes has it.
+          baseEnv: () => shellHelpEnv(liveKv),
         });
     const servers = options.servers ?? manager!;
     // Only app-servers Studio launches have the AMO MCP configured; threads then name their session to it.
@@ -274,9 +283,9 @@ export async function startHost(options: StartHostOptions): Promise<RunningHost>
         try {
           const card = roleCard(service, sessionId);
           recordRole(service, sessionId);
-          return `${AMO_MCP_INSTRUCTIONS}\n\n${card}`;
+          return `${amoInstructions(service)}\n\n${card}`;
         } catch {
-          return AMO_MCP_INSTRUCTIONS;
+          return amoInstructions(service);
         }
       },
     });
@@ -344,10 +353,11 @@ export async function startHost(options: StartHostOptions): Promise<RunningHost>
       },
     });
     mcp = { url: `${http.url}/mcp`, token: mcpToken };
-    if (options.remote) {
-      service.remote.start(options.remote);
+    if (options.teamLink) {
+      service.teamLink.start(options.teamLink);
       service.teamRelay.start();
     }
+    if (options.remote) service.remote.start(options.remote);
     // 值守 (2026-10-31): its clock runs in every Host; without items it does nothing.
     service.duty.start();
     const info: HostInfo = { url: http.url, port: http.port, pid: process.pid, startedAt: new Date().toISOString() };
@@ -389,6 +399,7 @@ export async function startHost(options: StartHostOptions): Promise<RunningHost>
         service.duty.stop();
         service.teamRelay.stop();
         service.remote.stop();
+        service.teamLink.stop();
         await finalHttp.close();
         await finalClaude.closeAll();
         await finalDsh.closeAll();

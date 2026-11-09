@@ -52,6 +52,11 @@ export async function launchStudio(
   const codexHome = join(root, "codex-home");
   mkdirSync(dataDir, { recursive: true });
   mkdirSync(codexHome, { recursive: true });
+  // No plugin marketplace sync (2026-11-05): with a fresh CODEX_HOME every Codex app-server the test starts clones
+  // github.com/openai/plugins in the background, and that git inherits the Electron process's stdio. When GitHub is
+  // slow it outlives the app, so app.close() (which waits for those pipes to close) hung for the whole 90 s afterEach
+  // timeout. The same switch as server-manager.test.ts.
+  writeFileSync(join(codexHome, "config.toml"), "[features]\nplugins = false\n");
   const mock = options.mockModel === false ? null : await startMockModel();
   const claudeMock = options.mockModel === false ? null : await startMockAnthropic();
   const mockEnv: Record<string, string> = mock
@@ -144,7 +149,7 @@ export async function launchFirstRun(portableDir: string): Promise<{ app: Electr
 }
 
 /** Which window: the workbench, the Focus window (#focus), the scratchpad window (#scratchpad), a Git Review window (#review?…), the file marks window (#marks…) or a viewer window (#viewer?…). */
-export type WindowKind = "main" | "focus" | "scratchpad" | "review" | "marks" | "viewer" | "canvas-mini";
+export type WindowKind = "main" | "focus" | "scratchpad" | "review" | "marks" | "viewer" | "canvas-mini" | "plan";
 
 /** Saves a PNG of the (hidden) main window, or another window, to studio/screenshots/<stage>/<name>.png. */
 export async function screenshot(app: ElectronApplication, stage: string, name: string, page?: Page, which: WindowKind = "main"): Promise<string> {
@@ -161,7 +166,7 @@ export async function screenshot(app: ElectronApplication, stage: string, name: 
   // Several windows of a kind (viewers): the one showing `page`.
   const exact = page && which !== "main" ? page.url() : null;
   const base64 = await app.evaluate(async ({ BrowserWindow }, [kind, url]) => {
-    const kindOf = (url: string) => (url.endsWith("#focus") ? "focus" : url.endsWith("#scratchpad") ? "scratchpad" : url.includes("#review") ? "review" : url.includes("#marks") ? "marks" : url.includes("#viewer") ? "viewer" : url.includes("#canvas-mini") ? "canvas-mini" : "main");
+    const kindOf = (url: string) => (url.endsWith("#focus") ? "focus" : url.endsWith("#scratchpad") ? "scratchpad" : url.includes("#review") ? "review" : url.includes("#marks") ? "marks" : url.includes("#viewer") ? "viewer" : url.includes("#canvas-mini") ? "canvas-mini" : url.includes("#plan") ? "plan" : "main");
     const all = BrowserWindow.getAllWindows();
     const win = (url && all.find((w) => w.webContents.getURL() === url)) || all.find((w) => kindOf(w.webContents.getURL()) === kind)!;
     return (await win.webContents.capturePage()).toPNG().toString("base64");
@@ -175,7 +180,7 @@ export async function screenshot(app: ElectronApplication, stage: string, name: 
 /** Window state used to assert the red line: test windows never take focus and stay off every display. */
 export function windowState(app: ElectronApplication, which: WindowKind = "main") {
   return app.evaluate(({ BrowserWindow, screen }, kind) => {
-    const kindOf = (url: string) => (url.endsWith("#focus") ? "focus" : url.endsWith("#scratchpad") ? "scratchpad" : url.includes("#review") ? "review" : url.includes("#marks") ? "marks" : url.includes("#viewer") ? "viewer" : url.includes("#canvas-mini") ? "canvas-mini" : "main");
+    const kindOf = (url: string) => (url.endsWith("#focus") ? "focus" : url.endsWith("#scratchpad") ? "scratchpad" : url.includes("#review") ? "review" : url.includes("#marks") ? "marks" : url.includes("#viewer") ? "viewer" : url.includes("#canvas-mini") ? "canvas-mini" : url.includes("#plan") ? "plan" : "main");
     const win = BrowserWindow.getAllWindows().find((w) => kindOf(w.webContents.getURL()) === kind)!;
     const b = win.getBounds();
     const onScreen = screen.getAllDisplays().some((d) => {

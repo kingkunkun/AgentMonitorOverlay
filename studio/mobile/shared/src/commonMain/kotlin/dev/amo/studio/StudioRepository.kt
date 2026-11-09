@@ -44,7 +44,7 @@ import kotlin.uuid.Uuid
 /**
  * The phone is only a guest device; every operation remains authorized by the remote Host.
  *
- * 2026-10-31 rewrite (plans/android-mobile-redesign.md): the connection, commands and file transfer are as before; what
+ * 2026-10-31 rewrite (plans/done/android-mobile-redesign.md): the connection, commands and file transfer are as before; what
  * changed is how much goes over the wire and how often. A session's history is fetched from where the phone's copy
  * ends (re-reading only what can still change: pending approvals and questions, running tools, streaming text), tasks
  * are fetched a few at a time and only on connect or coming back, pushed task and session changes are applied as they
@@ -360,10 +360,13 @@ class StudioRepository(private val platform: Platform) {
         state.value.selectedPeer?.takeIf { it.online }?.let { runCatching { fetchCatalog(it) } }
         state.value.selectedSession?.let { fetchItems(it.id) }
     }
-    private fun session(row: JSONObject) = RemoteSession(
+    private fun session(row: JSONObject, projects: JSONObject?, fallback: String?) = RemoteSession(
         row.str("id"), row.str("title"), row.str("status"), row.str("profileId"), !row.isNull("archivedAt") || row.str("writer") == "archived",
         kind = row.str("kind", "main"), parentId = row.str("startedBy").ifBlank { row.str("parentId") }.ifBlank { null }, updatedAt = row.str("updatedAt"),
+        project = projectLabel(projects, row.str("id")) ?: fallback,
     )
+    /** A project as the computer named it (2026-11-09): JSON null is its common folder; absent, an older computer that does not say. */
+    private fun projectLabel(o: JSONObject?, key: String): String? = when { o == null || !o.has(key) -> null; o.isNull(key) -> "未指定项目"; else -> o.str(key) }
     private fun profiles(snapshot: JSONObject): List<Pair<String, String>> {
         val a = snapshot.optJSONArray("allowed") ?: JSONArray()
         val allowed = (0 until a.length()).map { a.optString(it) }.toSet()
@@ -371,7 +374,9 @@ class StudioRepository(private val platform: Platform) {
     }
     private fun taskOf(peer: Peer, id: String, snapshot: JSONObject, revoked: Boolean = false): RemoteTask {
         val row = snapshot.optJSONObject("task") ?: JSONObject()
-        return RemoteTask(id, row.str("title"), peer, revoked, row.str("description"), row.str("updatedAt"), snapshot.objects("sessions").map(::session))
+        val project = projectLabel(row, "project")
+        val projects = snapshot.optJSONObject("sessionProjects")
+        return RemoteTask(id, row.str("title"), peer, revoked, row.str("description"), row.str("updatedAt"), snapshot.objects("sessions").map { session(it, projects, project) }, project)
     }
     /** Puts a task (new or changed) into the state, keeping what is selected in step. */
     private fun putTask(task: RemoteTask, snapshot: JSONObject?) {
@@ -479,7 +484,7 @@ class StudioRepository(private val platform: Platform) {
     fun startSession(profileId: String, text: String) = mutate {
         val task = active(); check(state.value.profiles.any { it.first == profileId }) { "这个模型未获远端允许" }
         val result = command(task.peer, "rt.start", JSONObject().put("taskId", task.id).put("profileId", profileId).put("text", text)); fetchTask(task.peer, task.id)
-        if (state.value.selectedTask?.key == task.key) result.optJSONObject("session")?.let { selectSession(session(it)) }
+        if (state.value.selectedTask?.key == task.key) result.optJSONObject("session")?.let { row -> selectSession(state.value.sessions.find { it.id == row.str("id") } ?: session(row, null, task.project)) }
     }
     private fun sessionCommand(kind: String, extra: JSONObject = JSONObject()) = mutate {
         val task = active(); val session = state.value.selectedSession ?: error("请先选择会话")
@@ -520,6 +525,7 @@ class StudioRepository(private val platform: Platform) {
                 if (snapshot == null || old == null) { if (old == null && row.str("taskId").isNotBlank()) launch { fetchTask(peer, row.str("taskId")) }; return }
                 val list = snapshot.objects("sessions").filterNot { it.str("id") == row.str("id") } + row
                 snapshot.put("sessions", JSONArray(list))
+                if (body.has("project")) snapshot.put("sessionProjects", (snapshot.optJSONObject("sessionProjects") ?: JSONObject()).put(row.str("id"), if (body.isNull("project")) JSONObject.NULL else body.str("project")))
                 putTask(taskOf(peer, old.id, snapshot, old.revoked), null)
             }
             "catalog" -> if (state.value.selectedPeer?.identity == peer.identity) {

@@ -5,11 +5,19 @@ import { Markdown } from "../lib/markdown.js";
 import { copyText } from "../host/client.js";
 import { IconCheck, IconChevronDown, IconChevronRight, IconCopy, IconEdit, IconTerminal, IconSparkle } from "./icons.js";
 import { ProcessGroup, Shimmer, MemberRow } from "./ProcessRows.js";
-import { buildTranscript, foldable, formatDuration, formatTokens, outputSpeed, segmentMembers, turnLabel, windowStart, type AgentItem, type ApprovalItem, type Row, type Segment, type TurnItem } from "./turns.js";
+import { buildTranscript, clock, foldable, formatDuration, formatTokens, outputSpeed, segmentMembers, turnLabel, windowStart, type AgentItem, type ApprovalItem, type Row, type Segment, type TurnItem } from "./turns.js";
 import type { TranscriptView } from "./prefs.js";
 import { MessageFiles, MessageImages } from "../attach/MessageAttachments.js";
 import { splitFileRefItems } from "../attach/refs.js";
 import { mentionSpans, splitMentionRefs } from "../attach/mentions.js";
+
+/** The line under a message whose @ names were explained to the model (2026-11-05: sub-session setups named too). */
+function mentionBrief(blocks: string): string {
+  const kinds = ["项目", "任务", "会话"].filter((k) => blocks.includes(`提到的${k}：`));
+  const sub = blocks.includes("子会话的设定（") || blocks.includes("子会话的开法（");
+  if (!kinds.length && sub) return "AMO：已附上子会话设定";
+  return `AMO：已附上提到的${kinds.join("、") || "任务、会话"}说明${sub ? "和子会话设定" : ""}`;
+}
 import { TurnChanges } from "../files/ChangedFiles.js";
 import { QuestionRecord } from "./questions/QuestionRecord.js";
 import { CommandRecord, CompactionRow, NoticeRow } from "./cli/CliRows.js";
@@ -40,18 +48,23 @@ interface TranscriptProps {
    * the row still read 「等待送达 · 立即发送」 as if the send had not gone): waiting messages say it is being interrupted.
    */
   givingWay?: boolean;
+  /**
+   * A DSH session whose subagents still run (2026-11-06): DSH's turn ends only once they have, so a message waits for
+   * them; the row says so.
+   */
+  waitsForSubagents?: boolean;
 }
 
 export type DeliveryAction = "now" | "resend";
 
 /** onDelivery for the person's messages, however deep in the turns they are drawn. */
-const DeliveryContext = createContext<{ onDelivery: TranscriptProps["onDelivery"]; givingWay: boolean }>({ onDelivery: undefined, givingWay: false });
+const DeliveryContext = createContext<{ onDelivery: TranscriptProps["onDelivery"]; givingWay: boolean; waitsForSubagents: boolean }>({ onDelivery: undefined, givingWay: false, waitsForSubagents: false });
 
 /** Drawn again only when what it shows changes (2026-10-20: every key typed in the composer drew the whole conversation). */
 export const Transcript = memo(TranscriptBody);
 
-function TranscriptBody({ session, items, annotations, model, busy, view, onApprove, onJump, keepTurn, onDelivery, givingWay = false }: TranscriptProps) {
-  const delivery = useMemo(() => ({ onDelivery, givingWay }), [onDelivery, givingWay]);
+function TranscriptBody({ session, items, annotations, model, busy, view, onApprove, onJump, keepTurn, onDelivery, givingWay = false, waitsForSubagents = false }: TranscriptProps) {
+  const delivery = useMemo(() => ({ onDelivery, givingWay, waitsForSubagents }), [onDelivery, givingWay, waitsForSubagents]);
   const sessionRunning = session?.status === "running" || session?.status === "awaiting-approval" || session?.status === "awaiting-answer";
   const segments = useMemo(() => buildTranscript(items, sessionRunning), [items, sessionRunning]);
   // Turns the person unfolded or folded, against how finished turns start: folded, except in 详细 (2026-11-04, the
@@ -355,7 +368,7 @@ function UserBubble({ item }: { item: Extract<SessionItem, { type: "user" }> }) 
         <MessageFiles files={refs} />
         {blocks && (
           <span className={commit ? "msg-role-update quick-commit" : "msg-role-update"} title={blocks} data-testid="msg-mention-brief">
-            {commit ? `快速提交 · ${commit.push ? "提交、合并并推送" : "提交、合并，不推送"}` : `AMO：已附上提到的${["项目", "任务", "会话"].filter((k) => blocks.includes(`提到的${k}：`)).join("、") || "任务、会话"}说明`}
+            {commit ? `快速提交 · ${commit.push ? "提交、合并并推送" : "提交、合并，不推送"}` : mentionBrief(blocks)}
           </span>
         )}
         {update && (
@@ -364,7 +377,7 @@ function UserBubble({ item }: { item: Extract<SessionItem, { type: "user" }> }) 
           </span>
         )}
       </div>
-      {item.delivery && <DeliveryLine itemId={item.id} delivery={item.delivery} />}
+      {item.delivery && <DeliveryLine itemId={item.id} delivery={item.delivery} withPerson={item.withPerson === true} />}
     </div>
   );
 }
@@ -373,8 +386,8 @@ function UserBubble({ item }: { item: Extract<SessionItem, { type: "user" }> }) 
  * 立即发送 (2026-11-02): a message sent while the model worked and not read yet (Claude: after its next tool call or at
  * the turn's end; Codex: at its next step), or one whose process went before reading it.
  */
-function DeliveryLine({ itemId, delivery }: { itemId: string; delivery: NonNullable<Extract<SessionItem, { type: "user" }>["delivery"]> }) {
-  const { onDelivery, givingWay } = useContext(DeliveryContext);
+function DeliveryLine({ itemId, delivery, withPerson }: { itemId: string; delivery: NonNullable<Extract<SessionItem, { type: "user" }>["delivery"]>; withPerson: boolean }) {
+  const { onDelivery, givingWay, waitsForSubagents } = useContext(DeliveryContext);
   const [asked, setAsked] = useState(false);
   useEffect(() => setAsked(false), [delivery]);
   // `held` (2026-11-04): from an agent or from Studio (中转回复, 值守, 传话…), in the session's inbox until its turn is over;
@@ -383,19 +396,27 @@ function DeliveryLine({ itemId, delivery }: { itemId: string; delivery: NonNulla
   const waiting = delivery === "waiting" || held;
   // 问题 #16: once 立即发送 is under way (this button, or Ctrl+Enter in the composer) the row says so until it is read.
   const interrupting = delivery === "waiting" && (asked || givingWay);
+  const forSubagents = delivery === "waiting" && waitsForSubagents;
+  // 2026-11-08: went in right behind the person's message after a pause; read next by itself, so no 立即发送 (it would
+  // cut off the person's own turn). Ctrl+Enter in the composer still makes the turn give way.
+  const behindPerson = delivery === "waiting" && withPerson && !interrupting && !forSubagents;
   const title = interrupting
     ? "正在让模型停下当前这一步，停下后马上读到这条（它手上的命令或输出可能要几秒才收得住）"
-    : held
-      ? "这条是 AMO 替别处转来的（中转回复、值守、传话、子会话的回报…）：等会话这一轮做完再送进去，不打断它；Studio 重启了也会接着送"
-      : waiting
-        ? "模型还没读到这条：工具调用后或这一轮结束时读到"
-        : "这条消息没送进会话（会话的进程没了，或者送的时候出错了），模型没读到它";
+    : behindPerson
+      ? "你停下会话期间转来的消息，已经随你刚发的消息一起送进去了（排在它后面），模型接下来会读到，不用再点"
+      : held
+        ? "这条是 AMO 替别处转来的（中转回复、值守、传话、子会话的回报…）：等会话这一轮做完再送进去，不打断它；Studio 重启了也会接着送"
+        : forSubagents
+          ? "DSH 要等它开的子 agent 都跑完，这一轮才结束，这条要等那时才送到。「立即发送」会打断这一轮。不想等的话，让它用 AMO 的子会话（session_start）开子 agent"
+          : waiting
+            ? "模型还没读到这条：工具调用后或这一轮结束时读到"
+            : "这条消息没送进会话（会话的进程没了，或者送的时候出错了），模型没读到它";
   return (
-    <div className={`msg-delivery ${delivery}${interrupting ? " interrupting" : ""}`} data-testid="msg-delivery" data-delivery={interrupting ? "interrupting" : delivery}>
+    <div className={`msg-delivery ${delivery}${interrupting ? " interrupting" : ""}`} data-testid="msg-delivery" data-delivery={interrupting ? "interrupting" : behindPerson ? "behind-person" : delivery}>
       <span className="msg-delivery-state" title={title}>
-        {interrupting ? "◐ 正在打断当前这一步，停下后马上发出…" : held ? (asked ? "◐ 正在送进去…" : "◐ 等这一轮结束后送进去") : waiting ? "◐ 等待送达" : "! 没送到"}
+        {interrupting ? "◐ 正在打断当前这一步，停下后马上发出…" : behindPerson ? "◐ 已随你刚发的消息一起送进去，模型接下来会读到" : held ? (asked ? "◐ 正在送进去…" : "◐ 等这一轮结束后送进去") : forSubagents ? "◐ 等子 agent 跑完后送到" : waiting ? "◐ 等待送达" : "! 没送到"}
       </span>
-      {onDelivery && !interrupting && (
+      {onDelivery && !interrupting && !behindPerson && (
         <button
           type="button"
           className="msg-delivery-btn"
@@ -449,11 +470,6 @@ function ApprovalCard({ item, busy, onApprove }: { item: ApprovalItem; busy: boo
 }
 
 // ---- footer -----------------------------------------------------------------------------------------------------
-
-const clock = (iso: string) => {
-  const d = new Date(iso);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-};
 
 /** What the turn's Claude subagents spent (each one's row carries its total), null when it started none that counted. */
 export function subagentsUsage(items: readonly SessionItem[]): SubsUsage | null {

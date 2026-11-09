@@ -125,17 +125,32 @@ export type FrameMessage =
   | { type: "placed"; found: string[] }
   | { type: "select"; anchor: PassageAnchor | null; rect?: { left: number; top: number; right: number; bottom: number } }
   | { type: "hit"; id: string }
-  | { type: "scroll" }
+  /** `y`: how far the page is scrolled (查看器的返回 puts it back there, 2026-11-06). */
+  | { type: "scroll"; y?: number }
   | { type: "press" }
   | { type: "link"; href: string }
+  /**
+   * A picture to show enlarged (2026-11-06): a link to an image file (`href` as written), or a click on a picture that
+   * is no link (`href` its src as written, `src` what it loaded, when it did: a data: or web address the viewer can show).
+   */
+  | { type: "image"; href: string | null; src: string | null; alt: string }
+  /** Alt+← or the mouse's back button inside the page: the viewer's 返回 (keys in the frame do not reach the window). */
+  | { type: "back" }
   | { type: "copy"; text: string }
+  /** Ctrl+F inside the page (2026-11-06): the viewer's find bar opens, with the selected text when it is one line. */
+  | { type: "find-open"; text: string }
+  /** What a search found in the page: how many (at most FIND_MAX) and which one is current (-1: none). */
+  | { type: "found"; count: number; current: number }
   /** A right click on the page (位置批注): the place, its element's source line, the words nearest it, and the selection if any. */
   | { type: "point"; x: number; y: number; line: number; point: GitCommentPoint; near: PassageAnchor; selection: PassageAnchor | null };
 
 /** A place to pin on the page: `n` is the label on its pin, `draft` the one being written. */
 export type PointMark = PassageAnchor & { id: string; n: string; point: GitCommentPoint; draft?: boolean };
 
-export type ToFrame = { type: "marks"; marks: Array<PassageAnchor & { id: string }>; points: PointMark[]; hot: string | null } | { type: "go"; id: string } | { type: "clear" };
+export type ToFrame = { type: "marks"; marks: Array<PassageAnchor & { id: string }>; points: PointMark[]; hot: string | null } | { type: "go"; id: string } | { type: "clear" } | { type: "selectAll" } | { type: "scrollTo"; y: number }
+  /** 查找 (2026-11-06): search the page for `query`; `step` 0 starts at what is in view, 1 / -1 go to the next / previous. */
+  | { type: "find"; query: string; caseSensitive: boolean; step: 0 | 1 | -1 }
+  | { type: "find-clear" };
 
 /** Elements whose content is not markup: what is inside is left alone. */
 const RAW_TEXT = new Set(["script", "style", "textarea", "title", "xmp", "noscript", "iframe", "noembed", "noframes", "plaintext"]);
@@ -447,7 +462,7 @@ function frameMain(makeKit: typeof passageKit) {
 
   window.addEventListener("message", (e) => {
     if (e.source !== parent) return;
-    const d = (e.data as { amoPassage?: { type: string; marks?: typeof marks; points?: PointMark[]; hot?: string | null; id?: string } } | null)?.amoPassage;
+    const d = (e.data as { amoPassage?: { type: string; marks?: typeof marks; points?: PointMark[]; hot?: string | null; id?: string; y?: number } } | null)?.amoPassage;
     if (!d) return;
     if (d.type === "marks") {
       marks = d.marks ?? [];
@@ -471,7 +486,93 @@ function frameMain(makeKit: typeof passageKit) {
       const box = r.getBoundingClientRect();
       window.scrollBy({ top: box.top - Math.max(40, (innerHeight - box.height) / 2) });
     } else if (d.type === "clear") getSelection()?.removeAllRanges();
+    // Ctrl+A pressed outside the page (2026-11-05): its text, not the viewer's buttons and comments.
+    else if (d.type === "selectAll" && document.body) getSelection()?.selectAllChildren(document.body);
+    // 查看器的返回 (2026-11-06): back where the page was left.
+    else if (d.type === "scrollTo" && typeof d.y === "number") scrollTo(0, d.y);
+    else if (d.type === "find") {
+      const f = d as unknown as { query: string; caseSensitive: boolean; step: 0 | 1 | -1 };
+      findText(String(f.query ?? ""), f.caseSensitive === true, f.step === 1 || f.step === -1 ? f.step : 0);
+    } else if (d.type === "find-clear") clearFind();
   });
+
+  // 查找 (2026-11-06; the user: 查看渲染时，无法用 ctrl+f 搜索具体的文字): the viewer's find bar cannot reach into this
+  // frame, so the search runs here — the page's visible text (and what folded <details> hold), painted with the CSS
+  // Custom Highlight API, so the page itself is not changed — and what it found goes back to the bar.
+  const FIND_MAX = 5000;
+  let findKey = "";
+  let found: Range[] = [];
+  let currentFound = -1;
+  const highlights = () => (typeof CSS !== "undefined" && "highlights" in CSS && typeof Highlight !== "undefined" ? CSS.highlights : null);
+  const findStyle = () => {
+    if (document.getElementById("amo-find-style")) return;
+    const st = document.createElement("style");
+    st.id = "amo-find-style";
+    st.textContent = "::highlight(amo-find){background:rgba(255,213,79,.55);color:inherit}::highlight(amo-find-current){background:#ff9632;color:#000}";
+    (document.head ?? document.documentElement).appendChild(st);
+  };
+  const searchable = (node: Text) => {
+    const el = node.parentElement;
+    if (!el || el.closest("script,style,noscript,template,amo-pins")) return false;
+    const look = el as Element & { checkVisibility?: () => boolean };
+    return look.checkVisibility ? look.checkVisibility() || !!el.closest("details:not([open])") : true;
+  };
+  const clearFind = () => {
+    findKey = "";
+    found = [];
+    currentFound = -1;
+    highlights()?.delete("amo-find");
+    highlights()?.delete("amo-find-current");
+  };
+  const paintFind = () => {
+    const h = highlights();
+    if (!h) return;
+    h.set("amo-find", new Highlight(...found));
+    const cur = found[currentFound];
+    if (cur) h.set("amo-find-current", new Highlight(cur));
+    else h.delete("amo-find-current");
+  };
+  const showFound = () => {
+    const r = found[currentFound];
+    if (!r) return;
+    for (let el = r.startContainer.parentElement; el; el = el.parentElement) if (el.tagName === "DETAILS" && !(el as HTMLDetailsElement).open) (el as HTMLDetailsElement).open = true;
+    let box = r.getBoundingClientRect();
+    if (box.top < 24 || box.bottom > innerHeight - 24 || box.left < 0 || box.right > innerWidth) {
+      // Its own scrolling box first (a page that scrolls a panel, not the window), then the window.
+      r.startContainer.parentElement?.scrollIntoView({ block: "center", inline: "nearest" });
+      box = r.getBoundingClientRect();
+      if (box.top < 24 || box.bottom > innerHeight - 24) scrollBy({ top: box.top - innerHeight / 3 });
+    }
+  };
+  const findText = (query: string, caseSensitive: boolean, step: 0 | 1 | -1) => {
+    const key = JSON.stringify([query, caseSensitive]);
+    if (key !== findKey || step === 0) {
+      findKey = key;
+      found = [];
+      if (query && document.body) {
+        findStyle();
+        const q = caseSensitive ? query : query.toLowerCase();
+        const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        for (let n = walk.nextNode() as Text | null; n && found.length < FIND_MAX; n = walk.nextNode() as Text | null) {
+          if (!n.data.trim() || !searchable(n)) continue;
+          const t = caseSensitive ? n.data : n.data.toLowerCase();
+          for (let at = t.indexOf(q); at >= 0 && found.length < FIND_MAX; at = t.indexOf(q, at + q.length)) {
+            const r = document.createRange();
+            r.setStart(n, at);
+            r.setEnd(n, at + q.length);
+            found.push(r);
+          }
+        }
+      }
+      // From what is in view: the first match not above the top of the window.
+      const i = found.findIndex((r) => r.getBoundingClientRect().bottom >= 0);
+      currentFound = found.length ? (i >= 0 ? i : 0) : -1;
+      if (step !== 0 && found.length) currentFound = (currentFound + (step === 1 ? 0 : -1) + found.length) % found.length;
+    } else if (found.length) currentFound = (currentFound + step + found.length) % found.length;
+    paintFind();
+    showFound();
+    post({ type: "found", count: found.length, current: currentFound });
+  };
 
   const report = () => {
     const sel = getSelection();
@@ -496,18 +597,51 @@ function frameMain(makeKit: typeof passageKit) {
     }, 0),
   );
   document.addEventListener("keyup", (e) => e.shiftKey && report());
-  window.addEventListener("scroll", () => post({ type: "scroll" }), { capture: true, passive: true });
+  // Ctrl+F in the page: the viewer's find bar (keys in the frame do not reach the window), not the page's own.
+  document.addEventListener("keydown", (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "f") return;
+    e.preventDefault();
+    const picked = getSelection()?.toString() ?? "";
+    post({ type: "find-open", text: picked && !/[\r\n]/.test(picked) && picked.length <= 200 ? picked : "" });
+  });
+  document.addEventListener("keydown", (e) => {
+    if (!e.altKey || e.ctrlKey || e.shiftKey || e.metaKey || e.key !== "ArrowLeft" || e.defaultPrevented) return;
+    e.preventDefault();
+    post({ type: "back" });
+  });
+  document.addEventListener("mouseup", (e) => {
+    if (e.button !== 3) return;
+    e.preventDefault();
+    post({ type: "back" });
+  });
+  window.addEventListener("scroll", () => post({ type: "scroll", y: document.scrollingElement?.scrollTop ?? scrollY }), { capture: true, passive: true });
+  // A link to a picture shows it enlarged over the page instead of opening it in place of the page (2026-11-06: the
+  // user clicked a screenshot in a report and could not get back). By its name, its query and fragment left out.
+  const pictureLink = (href: string) => /\.(png|jpe?g|gif|webp|bmp|svg|ico|avif)$/i.test(href.replace(/[?#].*$/, ""));
   document.addEventListener(
     "click",
     (e) => {
       // As written: resolved here it would be against the viewer's own address.
-      const href = ((e.target as Element | null)?.closest?.("a[href]") as HTMLAnchorElement | null)?.getAttribute("href") ?? "";
+      const a = (e.target as Element | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
+      const href = a?.getAttribute("href") ?? "";
       if (!href || href.startsWith("#") || /^javascript:/i.test(href)) return;
       e.preventDefault();
+      if (pictureLink(href)) {
+        const img = a!.querySelector("img");
+        return post({ type: "image", href, src: null, alt: img?.alt || a!.textContent?.trim() || "" });
+      }
       post({ type: "link", href });
     },
     true,
   );
+  // A click on a picture that is no link: enlarged too, after the page's own handlers (its own gallery comes first).
+  window.addEventListener("click", (e) => {
+    const img = e.target as HTMLImageElement | null;
+    if (e.defaultPrevented || img?.tagName !== "IMG" || img.closest("a[href]")) return;
+    // What it loaded, when the viewer can load it too: inlined (data:) or from the web; else its src as written.
+    const loaded = img.complete && img.naturalWidth > 0 && /^(data:image\/|https?:)/i.test(img.currentSrc) ? img.currentSrc : null;
+    post({ type: "image", href: img.getAttribute("src"), src: loaded, alt: img.alt || "" });
+  });
   // In-page anchors: a srcdoc page reads `#x` against the viewer's address, so they would not move; done here, after
   // the page's own handlers (tabs and the like take theirs first).
   window.addEventListener("click", (e) => {

@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { inTurn, type AccountUsage, type ApprovalDecision, type Attachment, type DshCheck, type FolderAccessStatus, type Id, type ModelOption, type ModelProfile, type ProfileChoices, type QuestionReply, type Session, type SessionOptions, type UserDelivery, type Workspace, type McpApply } from "@amo-studio/protocol";
+import { inTurn, type AccountUsage, type ApprovalDecision, type Attachment, type DshCheck, type FolderAccessStatus, type Id, type ModelOption, type ModelProfile, type ProfileChoices, type QuestionReply, type Session, type SessionOptions, type UserDelivery, type Workspace, type McpApply, type McpServerSpec } from "@amo-studio/protocol";
 import type { Store } from "../../store/store.js";
 import { newId } from "../../store/store.js";
 import { MCP_SESSION_HEADER, type McpIdentities } from "../../mcp/identity.js";
@@ -26,7 +26,10 @@ import {
   DSH_ACCOUNT_DEFAULT_MODEL,
   DSH_ACCOUNT_OPTIONS_KEY,
   DSH_ACCOUNT_PROVIDER,
+  DSH_KEY_PLUGIN,
   accountPatchYaml,
+  retryPatchYaml,
+  retryPolicyYaml,
   dshAccountFile,
   dshAccountSignedIn,
   readDshAuth,
@@ -38,9 +41,10 @@ import {
 const ACCOUNT_SIGN_IN = "DSH 桌面版还没有登录 DeepSeek 账号：打开 DeepSeek Harness 桌面版登录，或者在 设置 → 模型 → DeepSeek 里改用 API Key";
 const NO_KEY = "还没有 DeepSeek 的 API Key：在 设置 → 模型 → DeepSeek 里填上，或者改用 DSH 桌面版登录的账号";
 import { blockText, DshTranscript, toolOutput, type AcpUpdate } from "./transcript.js";
+import { DshSubagents } from "./subagents.js";
 import { grantFailurePath, windowsFolderAccess, type FolderAccess, type FolderAccessState } from "./folder-access.js";
-import { withoutHostEnv } from "../agent-env.js";
-import { acpServer, type McpSource } from "../mcp-launch.js";
+import { shellHelpEnv, withoutHostEnv } from "../agent-env.js";
+import { acpServer, mcpFits, mcpSkippedNotice, type McpSource, type McpTransports } from "../mcp-launch.js";
 
 // DeepSeek sessions on a DeepSeek Harness source clone (stage 17, plans/done/stage-17-dsh.md). Each session runs its own
 // `node <clone>/apps/cli/lib/bin.js --profile acp` in its workspace: DSH's sandbox follows the process's working
@@ -147,7 +151,7 @@ interface Live {
   inflight: boolean;
   /**
    * Messages sent while a turn runs (their rows `waiting`), sent together when it ends — also after 停止, as Claude's
-   * and Codex's are (2026-11-02, plans/send-now.md). An error, the process going or archiving makes them 没送到.
+   * and Codex's are (2026-11-02, plans/done/send-now.md). An error, the process going or archiving makes them 没送到.
    */
   queue: QueuedMessage[];
   /** 停止 went unanswered and Studio closed the process: the turn ends as stopped, not as an error. */
@@ -237,6 +241,8 @@ export class DshRuntime extends RuntimeBase implements SessionRuntimeApi {
   private readonly live = new Map<Id, Live>();
   /** Sessions whose process is being started or resumed. */
   private readonly starting = new Map<Id, Promise<Live>>();
+  /** What each session was last told about MCP servers left out (said again only when it changes). */
+  private readonly mcpTold = new Map<Id, string>();
   private closing = false;
   private readonly folderAccess: FolderAccess | null;
   /** Each session's folder-access notice in this run, and each folder's permissions as last read. */
@@ -244,9 +250,12 @@ export class DshRuntime extends RuntimeBase implements SessionRuntimeApi {
   private readonly folderChecks = new Map<string, Promise<FolderAccessState | null>>();
   /** The setup or scan on each folder (by lower-cased path) in this run: running, or how the last one went. */
   private readonly folderJobs = new Map<string, { job: "setup" | "scan" | "revert"; state: "running" | "done" | "failed"; error?: string }>();
+  /** DSH's own subagents, from their logs (2026-11-06; ACP sends nothing of them). */
+  private readonly subagents: DshSubagents;
 
   constructor(private readonly options: DshRuntimeOptions) {
     super(options.store, "dsh", options.now, options.profiles);
+    this.subagents = new DshSubagents({ core: this.makeCore(), home: join(options.dir, "home"), turnRef: (id) => this.live.get(id)?.transcript.turnRef() ?? {} });
     this.folderAccess =
       options.folderAccess !== undefined ? options.folderAccess : options.agent || process.platform !== "win32" ? null : windowsFolderAccess(join(options.dir, "acl-backup"));
     // The last Host stopped mid-turn: the turn is over (its process went with the Host), and what waited for it was
@@ -270,9 +279,13 @@ export class DshRuntime extends RuntimeBase implements SessionRuntimeApi {
     const extra = this.extraMcp({ workspaceId: input.workspace.id, ...(options.mcp ? { mcp: options.mcp } : {}) });
     let session: Session;
     let image = false;
+    let skipped: ReturnType<typeof fitMcp>["skipped"] = [];
     try {
-      image = (await this.initialize(conn)).image;
-      const created = await conn.request<{ sessionId: string; configOptions?: ConfigOption[] }>("session/new", { cwd: input.workspace.path, mcpServers: [...this.mcpServers(token), ...extra.list] });
+      const init = await this.initialize(conn);
+      image = init.image;
+      const fit = fitMcp(extra.specs, init.mcp);
+      skipped = fit.skipped;
+      const created = await conn.request<{ sessionId: string; configOptions?: ConfigOption[] }>("session/new", { cwd: input.workspace.path, mcpServers: [...this.mcpServers(token), ...fit.list] });
       this.remember(created.configOptions, profile);
       session = this.createSession({
         taskId: input.taskId,
@@ -292,6 +305,7 @@ export class DshRuntime extends RuntimeBase implements SessionRuntimeApi {
     if (token) this.options.identities!.bind(token, session.id);
     const live = this.adopt(session, conn, {}, permission, image, options.model);
     live.mcpKey = extra.key;
+    this.tellSkippedMcp(session.id, skipped);
     await this.applyOptions(session.id, live);
     if (input.text) await this.sendMessage(session.id, input.text);
     return this.store.getSession(session.id)!;
@@ -450,7 +464,10 @@ export class DshRuntime extends RuntimeBase implements SessionRuntimeApi {
     // 停止's fallback (2026-11-04): a DSH stuck in a command or a model call that does not end the prompt has its
     // process closed; what waited for the turn becomes 没送到 (a process that had to be killed may be stuck again).
     const grace = this.options.stopGraceMs ?? STOP_GRACE_MS;
-    this.armStopGrace(sessionId, grace, () => this.live.get(sessionId) === live && live.inflight, () => {
+    // Only the prompt that was stopped (2026-11-09: with Claude, a message sent right after a quick 停止 had its new turn
+    // cut 15 s after 停止; DSH's process lives on between prompts the same way).
+    const turnId = live.transcript.turnRef().turnId;
+    this.armStopGrace(sessionId, grace, () => this.live.get(sessionId) === live && live.inflight && live.transcript.turnRef().turnId === turnId, () => {
       live.killedOnStop = true;
       this.appendItem(sessionId, { type: "notice", level: "warning", message: `点了停止 ${Math.round(grace / 1000)} 秒后 DSH 还没停下（它可能卡在某个命令上），Studio 关掉了它的进程。发一条消息即可接着对话。` }, { method: "dsh/stop", ...live.transcript.turnRef() });
       live.conn.kill();
@@ -534,12 +551,20 @@ export class DshRuntime extends RuntimeBase implements SessionRuntimeApi {
   async closeAll(): Promise<void> {
     this.closing = true;
     await Promise.all([...this.live.keys()].map((id) => this.release(id)));
+    this.subagents.close();
+  }
+
+  /** A DSH subagent's session is shown from DSH's log: its parent talks to it (DSH's send_message). */
+  protected override writable(id: Id): Session {
+    const s = super.writable(id);
+    if (s.kind === "sub") throw Object.assign(new Error("DSH 的子 agent 不能单独接收消息，请在父会话里继续"), { code: "read_only" });
+    return s;
   }
 
   // ---- processes --------------------------------------------------------------------------------------------------
 
   private spawn(cwd: string, profile: ModelProfile | null, permission: DshPermissionMode, label: string, model?: string): AcpConnection {
-    const env: NodeJS.ProcessEnv = { ...withoutHostEnv(this.options.env ?? process.env), [DSH_HOME_ENV]: join(this.options.dir, "home"), [DSH_PERMISSION_ENV]: permission };
+    const env: NodeJS.ProcessEnv = { ...shellHelpEnv(this.store), ...withoutHostEnv(this.options.env ?? process.env), [DSH_HOME_ENV]: join(this.options.dir, "home"), [DSH_PERMISSION_ENV]: permission };
     // A model of the other sign-in (picked before 设置 changed it) is not asked for: the agent starts on its default.
     const usable = model && this.routeAllowed(profile, model) ? model : undefined;
     let patch: string | null;
@@ -556,7 +581,7 @@ export class DshRuntime extends RuntimeBase implements SessionRuntimeApi {
       // A third-party channel: its address. (DSH reads it from the launch environment, which outranks a project's .env.)
       const baseUrl = profile?.provider ? this.options.providers?.[profile.provider]?.baseUrl : undefined;
       if (baseUrl) env[DSH_BASE_URL_ENV] = baseUrl;
-      patch = profile ? (this.catalogPatch(profile) ?? (usable ? this.modelPatch(usable) : null)) : null;
+      patch = (profile ? (this.catalogPatch(profile) ?? (usable ? this.modelPatch(usable) : null)) : null) ?? this.retryPatch();
     }
     let command: string;
     let args: string[];
@@ -576,11 +601,15 @@ export class DshRuntime extends RuntimeBase implements SessionRuntimeApi {
     return new AcpConnection({ command, args, cwd, env, logFile }, (method, params) => this.onRequest(method, params));
   }
 
-  /** ACP's handshake; `image`: whether the agent takes inline images (for the model it starts on). */
-  private async initialize(conn: AcpConnection): Promise<{ protocolVersion: number; image: boolean }> {
-    const init = await conn.request<{ protocolVersion: number; agentCapabilities?: { promptCapabilities?: { image?: boolean } } }>("initialize", { protocolVersion: ACP_VERSION, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } }, 120_000);
+  /**
+   * ACP's handshake; `image`: whether the agent takes inline images (for the model it starts on); `mcp`: the MCP
+   * connections it takes besides stdio (2026-11-09: DSH says http only, and refuses a whole session/new with an SSE one).
+   */
+  private async initialize(conn: AcpConnection): Promise<{ protocolVersion: number; image: boolean; mcp: McpTransports }> {
+    const init = await conn.request<{ protocolVersion: number; agentCapabilities?: { promptCapabilities?: { image?: boolean }; mcpCapabilities?: { http?: boolean; sse?: boolean } } }>("initialize", { protocolVersion: ACP_VERSION, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } }, 120_000);
     if (init.protocolVersion !== ACP_VERSION) throw new Error(`DSH 说的是 ACP ${init.protocolVersion}，Studio 只会 ACP ${ACP_VERSION}`);
-    return { protocolVersion: init.protocolVersion, image: init.agentCapabilities?.promptCapabilities?.image === true };
+    const mcp = init.agentCapabilities?.mcpCapabilities;
+    return { protocolVersion: init.protocolVersion, image: init.agentCapabilities?.promptCapabilities?.image === true, mcp: { http: mcp?.http === true, sse: mcp?.sse === true } };
   }
 
   /** The session's process, started and resumed when there is none. */
@@ -597,10 +626,14 @@ export class DshRuntime extends RuntimeBase implements SessionRuntimeApi {
       const conn = this.spawn(workspace.path, this.profile(session.profileId), permission, session.id, session.options.model);
       let image = false;
       const extra = this.extraMcp(session.id);
+      let skipped: ReturnType<typeof fitMcp>["skipped"] = [];
       try {
-        image = (await this.initialize(conn)).image;
+        const init = await this.initialize(conn);
+        image = init.image;
+        const fit = fitMcp(extra.specs, init.mcp);
+        skipped = fit.skipped;
         const token = this.options.identities?.tokenFor(session.id);
-        const resumed = await conn.request<{ configOptions?: ConfigOption[] }>("session/resume", { sessionId: session.runtimeRef, cwd: workspace.path, mcpServers: [...this.mcpServers(token), ...extra.list] });
+        const resumed = await conn.request<{ configOptions?: ConfigOption[] }>("session/resume", { sessionId: session.runtimeRef, cwd: workspace.path, mcpServers: [...this.mcpServers(token), ...fit.list] });
         this.remember(resumed.configOptions, this.profile(session.profileId));
       } catch (err) {
         conn.kill();
@@ -608,6 +641,7 @@ export class DshRuntime extends RuntimeBase implements SessionRuntimeApi {
       }
       const live = this.adopt(session, conn, {}, permission, image, session.options.model);
       live.mcpKey = extra.key;
+      this.tellSkippedMcp(session.id, skipped);
       await this.applyOptions(session.id, live);
       return live;
     })().finally(() => this.starting.delete(session.id));
@@ -616,7 +650,7 @@ export class DshRuntime extends RuntimeBase implements SessionRuntimeApi {
   }
 
   private adopt(session: Session, conn: AcpConnection, applied: Live["applied"], permission: DshPermissionMode, images: boolean, model: string | undefined): Live {
-    const live: Live = { conn, acpId: session.runtimeRef!, permission, applied, inflight: false, queue: [], images, model, transcript: new DshTranscript(this.makeCore(), session.id, this.store.getWorkspace(session.workspaceId)?.path), waiting: new Map(), idleTimer: null, measuredAt: 0, auto: null, mcpKey: "" };
+    const live: Live = { conn, acpId: session.runtimeRef!, permission, applied, inflight: false, queue: [], images, model, transcript: new DshTranscript(this.makeCore(), session.id, this.store.getWorkspace(session.workspaceId)?.path, this.subagents), waiting: new Map(), idleTimer: null, measuredAt: 0, auto: null, mcpKey: "" };
     this.live.set(session.id, live);
     conn.on("notification", (method, params) => {
       if (method !== "session/update") return;
@@ -636,6 +670,8 @@ export class DshRuntime extends RuntimeBase implements SessionRuntimeApi {
     });
     conn.on("exit", (code) => {
       if (this.live.get(session.id) === live) this.live.delete(session.id);
+      // Its subagents ran in this process: what they last wrote is read, those still running stopped with it.
+      this.subagents.stopTree(session.id);
       if (live.idleTimer) clearTimeout(live.idleTimer);
       if (!this.closing && live.inflight) this.emit("log", `DSH process of ${session.id} exited mid-turn (${code})`);
       // A turn DSH ran by itself is cut off with its process (a Host shutdown leaves it to the next start).
@@ -1075,17 +1111,25 @@ export class DshRuntime extends RuntimeBase implements SessionRuntimeApi {
 
   // ---- helpers ----------------------------------------------------------------------------------------------------
 
-  /** The session's other MCP servers in ACP's shape, and a key to tell a change. */
-  private extraMcp(target: Id | { workspaceId: Id; mcp?: Record<string, boolean> }): { list: unknown[]; key: string } {
+  /** The session's other MCP servers that are on, and a key to tell a change. */
+  private extraMcp(target: Id | { workspaceId: Id; mcp?: Record<string, boolean> }): { specs: Array<[string, McpServerSpec]>; key: string } {
     try {
       const plan = this.options.mcpServers?.launch(target, false);
-      if (!plan) return { list: [], key: "" };
+      if (!plan) return { specs: [], key: "" };
       const names = Object.keys(plan.explicit).sort();
-      return { list: names.map((n) => acpServer(n, plan.explicit[n]!)), key: JSON.stringify(names.map((n) => [n, plan.explicit[n]])) };
+      return { specs: names.map((n) => [n, plan.explicit[n]!]), key: JSON.stringify(names.map((n) => [n, plan.explicit[n]])) };
     } catch (err) {
       this.emit("log", `MCP servers for a DSH session could not be read: ${String(err)}`);
-      return { list: [], key: "" };
+      return { specs: [], key: "" };
     }
+  }
+
+  /** Which servers that are on could not go with the session: said when its process starts, not again while it is the same. */
+  private tellSkippedMcp(sessionId: Id, skipped: ReadonlyArray<{ name: string; type: string }>): void {
+    const message = skipped.length ? mcpSkippedNotice(skipped, "DeepSeek") : "";
+    if (this.mcpTold.get(sessionId) === message) return;
+    this.mcpTold.set(sessionId, message);
+    if (message) this.appendItem(sessionId, { type: "notice", level: "warning", message }, { method: "dsh/mcp" });
   }
 
   private mcpChanged(sessionId: Id, live: Live): boolean {
@@ -1189,6 +1233,15 @@ export class DshRuntime extends RuntimeBase implements SessionRuntimeApi {
     return file;
   }
 
+  /** Only the retry policy (every patch above carries it too), as a DSH patch file. */
+  private retryPatch(): string {
+    const dir = join(this.options.dir, "patches");
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, "retry.yml");
+    writeFileSync(file, retryPatchYaml());
+    return file;
+  }
+
   private cachedOptions(profile: ModelProfile | null): ConfigOption[] | null {
     try {
       const v = JSON.parse(this.store.getKv(this.optionsKey(profile))?.value ?? "null") as unknown;
@@ -1252,6 +1305,9 @@ function takeQueue(live: Live): { text: string; images: ImageBlock[]; items: Id[
 export function modelPatchYaml(provider: string, model: string): string {
   return [
     "# Written by WorkStudio: the session's model as the ACP agent's default, so DSH says whether it takes images.",
+    `- id: ${DSH_KEY_PLUGIN}`,
+    "  config:",
+    ...retryPolicyYaml(),
     "- id: acp",
     "  config:",
     `    provider: ${JSON.stringify(provider)}`,
@@ -1267,10 +1323,11 @@ export function modelPatchYaml(provider: string, model: string): string {
 export function catalogPatchYaml(label: string, models: readonly string[], first: string): string {
   return [
     `# Written by WorkStudio for the channel ${JSON.stringify(label)}: the site's own model names. Rewritten on every start.`,
-    "- id: llm-deepseek",
+    `- id: ${DSH_KEY_PLUGIN}`,
     "  config:",
     "    models:",
     ...models.map((m) => `      - id: ${JSON.stringify(m)}`),
+    ...retryPolicyYaml(),
     "- id: acp",
     "  config:",
     "    provider: deepseek-official",
@@ -1302,4 +1359,15 @@ export function dshModels(config: readonly ConfigOption[]): ModelOption[] {
     ...(effort?.currentValue ? { defaultEffort: effort.currentValue } : {}),
     ...(o.value === model?.currentValue ? { isDefault: true } : {}),
   }));
+}
+
+/** The servers DSH can take in ACP's shape, and the ones it cannot (it refuses the whole session for one, 2026-11-09). */
+export function fitMcp(specs: ReadonlyArray<[string, McpServerSpec]>, transports: McpTransports): { list: unknown[]; skipped: Array<{ name: string; type: string }> } {
+  const list: unknown[] = [];
+  const skipped: Array<{ name: string; type: string }> = [];
+  for (const [name, spec] of specs) {
+    if (mcpFits(spec, transports)) list.push(acpServer(name, spec));
+    else skipped.push({ name, type: spec.type });
+  }
+  return { list, skipped };
 }

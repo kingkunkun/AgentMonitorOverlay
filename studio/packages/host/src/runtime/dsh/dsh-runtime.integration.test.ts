@@ -87,6 +87,45 @@ afterEach(async () => {
 });
 
 describe("DSH runtime", () => {
+  it("shows a subagent DSH starts itself as a child session filled from its log, while it runs (2026-11-06)", async () => {
+    const host = await boot();
+    const s = await start(host, "[[subagent: 1500]]");
+    const sessions = async () => (await call<StateSnapshot>(host, "GET", "/api/state")).sessions;
+    const child = await until(async () => (await sessions()).find((x) => x.parentId === s.id), (c) => !!c);
+    expect(child).toMatchObject({ kind: "sub", runtime: "dsh", title: "数文件" });
+    // While it runs: its command shows in its own session, before the parent's turn is over.
+    const running = await until(() => items(host, child!.id), (l) => l.some((i) => i.type === "tool" && i.input === "Get-ChildItem src"));
+    expect(await status(host, s.id)).toBe("running");
+    expect((await sessions()).find((x) => x.id === child!.id)?.status).toBe("running");
+    expect(running.find((i) => i.type === "user")).toMatchObject({ text: "数一数 src 下的文件" });
+    await idle(host, s.id);
+    const done = await until(() => items(host, child!.id), (l) => l.some((i) => i.type === "turn" && i.state === "completed"));
+    expect((await sessions()).find((x) => x.id === child!.id)).toMatchObject({ status: "completed", runtimeRef: expect.stringMatching(/^[0-9a-f-]{36}$/) });
+    expect(done.map((i) => i.type)).toEqual(["user", "turn", "reasoning", "tool", "agent"]);
+    expect(done.find((i) => i.type === "tool")).toMatchObject({ kind: "list", status: "completed", detail: "a.ts\nb.ts" });
+    expect(replies(done)).toEqual(["共 2 个文件"]);
+    expect(done.find((i) => i.type === "turn")).toMatchObject({ usage: { input: 100, output: 50 } });
+    // The parent: a ▸ row (no tool row), what the agent sent back, and its own reply.
+    const parent = await items(host, s.id);
+    expect(parent.filter((i) => i.type === "tool")).toEqual([]);
+    expect(parent.find((i) => i.type === "subagent")).toMatchObject({ childSessionId: child!.id, summary: "数文件", usage: { input: 100, output: 50 } });
+    expect(parent.find((i) => i.type === "notice")).toMatchObject({ message: "子 agent「数文件」发回了消息：共 2 个文件" });
+    expect(replies(parent).at(-1)).toMatch(/^SUB DONE /);
+    // It takes no messages of its own.
+    await expect(call(host, "POST", `/api/sessions/${child!.id}/messages`, { text: "你好" })).rejects.toThrow(/409.*子 agent 不能单独接收消息/);
+  });
+
+  it("shows why a subagent's turn failed as an error row of its session, as a main session's failed turn has (2026-11-07)", async () => {
+    const host = await boot();
+    const s = await start(host, "[[subagent: 300 fail]]");
+    const child = await until(async () => (await call<StateSnapshot>(host, "GET", "/api/state")).sessions.find((x) => x.parentId === s.id), (c) => !!c);
+    await idle(host, s.id);
+    const list = await until(() => items(host, child!.id), (l) => l.some((i) => i.type === "turn" && i.state === "failed"));
+    expect(list.find((i) => i.type === "error")).toMatchObject({ message: "DeepSeek Messages stream ended before message_stop（STREAM_CLOSED）" });
+    expect(list.find((i) => i.type === "turn")).toMatchObject({ state: "failed", error: "DeepSeek Messages stream ended before message_stop（STREAM_CLOSED）" });
+    expect((await call<StateSnapshot>(host, "GET", "/api/state")).sessions.find((x) => x.id === child!.id)?.status).toBe("error");
+  });
+
   it("fills in the tokens and speed of turns that ended without them, from DSH's log, without touching others (2026-10-27)", async () => {
     const host = await boot();
     const s = await start(host, "你好");
@@ -225,15 +264,21 @@ describe("DSH runtime", () => {
     writeFileSync(join(claudeDir, ".claude.json"), JSON.stringify({ mcpServers: { figma: { type: "http", url: "https://mcp.figma.com/mcp" }, "amo-relay": { command: "node" } } }));
     const host = await boot({ localClaudeHome: claudeDir });
     await call(host, "POST", "/api/mcp/servers", { name: "img", spec: { command: "npx", args: ["img-mcp"], env: { KEY: "k" } } });
+    // An SSE server DSH does not take (2026-11-09: it refused the whole session): left out, and the session says so.
+    await call(host, "POST", "/api/mcp/servers", { name: "canvas", spec: { type: "sse", url: "https://canvas.example/api/mcp/sse" } });
     const s = await start(host, "[[mcp-list]]");
     await idle(host, s.id);
     expect(replies(await items(host, s.id))[0]).toBe("MCP-LIST amo:http,figma:http,img:stdio");
+    const told = (await items(host, s.id)).filter((i) => i.type === "notice" && i.message.includes("没带上 MCP"));
+    expect(told.map((i) => (i.type === "notice" ? i.message : ""))).toEqual([expect.stringContaining("canvas（SSE 连接）。DeepSeek 不支持这种连接方式")]);
     const changed = await call<{ apply: string; entries: Array<{ name: string; on: boolean }> }>(host, "PUT", `/api/sessions/${s.id}/mcp`, { choices: { figma: false, "amo-relay": true } });
     expect(changed.apply).toBe("next-message");
     expect(Object.fromEntries(changed.entries.map((e) => [e.name, e.on]))).toMatchObject({ figma: false, "amo-relay": true, img: true });
     await call(host, "POST", `/api/sessions/${s.id}/messages`, { text: "[[mcp-list]]" });
     await until(() => items(host, s.id), (l) => replies(l).length === 2);
     expect(replies(await items(host, s.id))[1]).toBe("MCP-LIST amo:http,amo-relay:stdio,img:stdio");
+    // Its process started again (the change), still without canvas: not said a second time.
+    expect((await items(host, s.id)).filter((i) => i.type === "notice" && i.message.includes("没带上 MCP"))).toHaveLength(1);
   });
 
   it("resumes the DSH session after a Host restart; model, effort and permission go to DSH", async () => {
@@ -603,6 +648,21 @@ describe("DSH runtime", () => {
     expect(list.some((i) => i.type === "notice" && i.message.includes("DSH 还没停下"))).toBe(true);
     expect(list.some((i) => i.type === "error" && list.indexOf(i) > list.indexOf(userRow(list, "[[stuck]]")!))).toBe(false);
     expect(userRow(list, "第三件事")).toMatchObject({ delivery: "unsent" });
+  });
+
+  it("停止's fallback is for the stopped prompt only: one sent right after a quick stop runs to its end (2026-11-09)", async () => {
+    const host = await boot({ stopGraceMs: 500 });
+    const s = await start(host, "[[slow]]");
+    await until(() => items(host, s.id), (l) => l.some((i) => i.type === "tool"));
+    await call(host, "POST", `/api/sessions/${s.id}/interrupt`);
+    await idle(host, s.id);
+    // Takes 1.5 s, three times the grace, in the same process.
+    await call(host, "POST", `/api/sessions/${s.id}/messages`, { text: "[[subagent: 1500]]" });
+    await until(() => items(host, s.id), (l) => replies(l).some((r) => r.startsWith("SUB DONE ")));
+    await idle(host, s.id);
+    const list = await items(host, s.id);
+    expect(list.some((i) => i.type === "notice" && i.message.includes("DSH 还没停下"))).toBe(false);
+    expect(list.filter((i) => i.type === "turn").at(-1)).toMatchObject({ state: "completed" });
   });
 
   it("a message waiting when the Host stops is 没送到 after the restart, and can be sent again (2026-11-04)", async () => {

@@ -65,6 +65,10 @@ electron.contextBridge.exposeInMainWorld("amo", {
     setIgnoreMouse: (ignore: boolean): void => electron.ipcRenderer.send("amo:focus-mouse", ignore),
     /** Focus window only: 移动位置 starts (true) or ends; while it lasts the window may activate, so a drag moves it. */
     setMoving: (on: boolean): void => electron.ipcRenderer.send("amo:focus-moving", on),
+    /** Focus window only: 拖拽调整大小 is on (true) or off; while on the window may activate, so the grip takes presses. */
+    setSizing: (on: boolean): void => electron.ipcRenderer.send("amo:focus-sizing", on),
+    /** Focus window only: a drag of the resize grip starts, moves or ends; the main process follows the pointer. */
+    resize: (phase: "start" | "move" | "end"): void => electron.ipcRenderer.send("amo:focus-resize", phase),
     /** Focus window only: the parts of the window that are Focus (panel, robot, settings); clicks elsewhere go through. */
     setShape: (rects: Array<{ x: number; y: number; width: number; height: number }>): void => electron.ipcRenderer.send("amo:focus-shape", rects),
     /** Focus window only: the page saw a press (a click Chromium dropped is given back otherwise; focus-clicks.ts). */
@@ -127,8 +131,13 @@ electron.contextBridge.exposeInMainWorld("amo", {
   /** 画布小窗 (2026-10-27): a topic's canvas in the small window on top; and, there, whether it stays on top. */
   openCanvasMini: (target: { topicId?: string }): Promise<void> => electron.ipcRenderer.invoke("amo:open-canvas-mini", target),
   canvasMiniTop: (on?: boolean): Promise<boolean> => electron.ipcRenderer.invoke("amo:canvas-mini-top", on),
+  /** 计划窗口 (2026-11-09): the plan of a session (its latest, or the version `itemId`) in its own window. */
+  openPlan: (target: { sessionId: string; itemId?: string }): Promise<void> => electron.ipcRenderer.invoke("amo:open-plan", target),
   openInWorkbench: (target: { taskId?: string; sessionId?: string; show?: boolean; passage?: Passage; topicId?: string; calloutId?: string; settings?: "remote" }): Promise<void> =>
     electron.ipcRenderer.invoke("amo:open-in-workbench", target),
+  /** 在中转里打开 (2026-11-05): whether this computer has an AMO 中转 client Studio can find; and showing a thread in it. */
+  relayAvailable: (): Promise<boolean> => electron.ipcRenderer.invoke("amo:relay-available"),
+  openInRelay: (threadId: string): Promise<boolean> => electron.ipcRenderer.invoke("amo:relay-open", threadId),
   onNavigate: (cb: (target: { taskId: string; sessionId?: string; passage?: Passage; topicId?: string; calloutId?: string; settings?: "remote" }) => void): (() => void) => {
     const listener = (_event: unknown, target: { taskId: string; sessionId?: string; passage?: Passage; topicId?: string; calloutId?: string; settings?: "remote" }) => cb(target);
     electron.ipcRenderer.on("amo:navigate", listener);

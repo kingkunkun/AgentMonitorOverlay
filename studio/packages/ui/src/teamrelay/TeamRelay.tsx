@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Session, TeamSend, TeamThread } from "@amo-studio/protocol";
 import { call, HostApiError, type HostLink } from "../host/client.js";
 import { upsertById, useLiveResource } from "../host/live.js";
+import { useStoredIds } from "../lib/storedIds.js";
 
-// 会话里用中转 (2026-10-30, plans/relay-in-sessions.md): what a session asks to send through AMO 中转 waits here for the
+// 会话里用中转 (2026-10-30, plans/done/relay-in-sessions.md): what a session asks to send through AMO 中转 waits here for the
 // person — on its task's page and in Focus — every time, auto mode or not (it goes to a real person, as them). Once
 // sent, the task's card and page say whom it waits on; the reply goes back into the session by itself.
 
@@ -40,6 +41,57 @@ export function teamWaits(threads: readonly TeamThread[], sessions: readonly Pic
   const byPerson = new Map<string, TeamThread>();
   for (const t of open) if (!byPerson.has(t.to)) byPerson.set(t.to, t);
   return [...byPerson.values()].map((t) => `等 ${t.to} 回复（中转）· 已等 ${waitedText(now - t.since)}`);
+}
+
+/** How long 「X 已接手」 stays on the task's page and card: a day (then it is one done session among others). */
+export const TAKEN_SHOWN_MS = 24 * 60 * 60_000;
+
+/**
+ * 已接手，不用回复 (2026-11-05): the sessions' threads the person asked took on without replying, in the last day, newest
+ * first — said on the page and the card, while nothing goes into the session (the user: an accepted review needs no
+ * message back).
+ */
+export function teamTaken(threads: readonly TeamThread[], sessions: readonly Pick<Session, "id">[], now = Date.now(), seen: readonly string[] = []): TeamThread[] {
+  const ids = new Set(sessions.map((s) => s.id));
+  return threads.filter((t) => t.state === "done" && t.takenAt && now - t.takenAt < TAKEN_SHOWN_MS && ids.has(t.sessionId) && !seen.includes(t.threadId)).sort((a, b) => b.takenAt! - a.takenAt!);
+}
+
+/**
+ * 「已接手」 the person put away with 知道了 (2026-11-09, the user: 中转回复那里会一直挤占空间，需要能想办法处理掉), per
+ * machine, on the page and the cards alike. Threads no longer listed drop out of it.
+ */
+export function useSeenTaken(threads: readonly TeamThread[]): { seen: readonly string[]; dismiss(threadId: string): void } {
+  const stored = useStoredIds("amo-team-taken-seen");
+  const listed = threads.length ? threads.map((t) => t.threadId).join(" ") : "";
+  useEffect(() => {
+    if (listed) stored.keepOnly(new Set(listed.split(" ")));
+  }, [listed]); // eslint-disable-line react-hooks/exhaustive-deps
+  return { seen: stored.ids, dismiss: (id) => !stored.has(id) && stored.toggle(id) };
+}
+
+/** 「✓ 程序老李 已接手「背包上限存哪」，不用回复」. */
+export const takenText = (t: TeamThread) => `✓ ${t.to} 已接手「${t.title}」，不用回复`;
+
+/** Whether Studio can open threads in the AMO 中转 client here (it found one); asked once per page. */
+function useRelayAvailable(): boolean {
+  const [on, setOn] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void window.amo?.relayAvailable?.().then((v) => alive && setOn(v === true));
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return on;
+}
+
+/** 在中转里打开 (2026-11-05, J2/J3): the thread in the AMO 中转 client. */
+function OpenInRelay({ threadId }: { threadId: string }) {
+  return (
+    <button type="button" className="btn-ghost small" title="在 AMO 中转里打开这个会话" data-testid="open-in-relay" onClick={() => void window.amo?.openInRelay?.(threadId)}>
+      在中转里打开
+    </button>
+  );
 }
 
 /** One pending send: to whom, what it says and asks, the files; 发送 / 不发. */
@@ -102,18 +154,55 @@ export function TeamSendCard({ link, send, from, className = "teamsend-card" }: 
 export function TeamRelayBanner({ link, sends, threads, sessions }: { link: HostLink; sends: readonly TeamSend[]; threads: readonly TeamThread[]; sessions: readonly Session[] }) {
   const ids = new Set(sessions.map((s) => s.id));
   const pending = sends.filter((s) => s.state === "pending" && ids.has(s.sessionId));
-  const waits = teamWaits(threads, sessions);
-  if (!pending.length && !waits.length) return null;
+  const relay = useRelayAvailable();
+  // Each thread waited on, oldest first, with a way to it in 中转 (2026-11-05: one row per thread, not per person).
+  const now = Date.now();
+  const open = threads.filter((t) => t.state === "open" && ids.has(t.sessionId)).sort((a, b) => a.since - b.since);
+  const { seen, dismiss } = useSeenTaken(threads);
+  const taken = teamTaken(threads, sessions, now, seen);
+  // More than one line about 中转 (2026-11-09: they piled up above the conversation): the first shows, the rest fold
+  // into 「还有 N 条」 until opened. What waits for the person (the sends above) always shows.
+  const [unfolded, setUnfolded] = useState(false);
+  if (!pending.length && !open.length && !taken.length) return null;
+  const rows = [
+    ...open.map((t) => (
+      <span key={t.threadId} className="teamsend-wait" data-testid="team-wait">
+        <span className="teamsend-wait-text">
+          ◐ 等 {t.to} 回复（中转）· 已等 {waitedText(now - t.since)} · {t.title}
+        </span>
+        {relay && <OpenInRelay threadId={t.threadId} />}
+      </span>
+    )),
+    ...taken.map((t) => (
+      <span key={t.threadId} className="teamsend-wait taken" data-testid="team-taken" title="对方看过了，不需要回复；这个会话不会再收到消息">
+        <span className="teamsend-wait-text">{takenText(t)}</span>
+        {relay && <OpenInRelay threadId={t.threadId} />}
+        <button type="button" className="btn-ghost small dim" title="不再显示这一条（看板卡片上也不显示）" onClick={() => dismiss(t.threadId)} data-testid="team-taken-dismiss">
+          知道了
+        </button>
+      </span>
+    )),
+  ];
+  const folded = rows.length > 1 && !unfolded;
   return (
     <div className="teamsend-banner" data-testid="teamsend-banner">
       {pending.map((s) => (
         <TeamSendCard key={s.id} link={link} send={s} />
       ))}
-      {waits.map((w) => (
-        <span key={w} className="teamsend-wait" data-testid="team-wait">
-          ◐ {w}
-        </span>
-      ))}
+      {rows.length > 1 ? (
+        <>
+          {/* The toggle at the end of the first line: folded, all of 中转 takes one line. */}
+          <span className="teamsend-fold-line">
+            {rows[0]}
+            <button type="button" className="teamsend-fold" aria-expanded={!folded} onClick={() => setUnfolded(folded)} data-testid="team-fold">
+              {folded ? `还有 ${rows.length - 1} 条中转 ▾` : "收起 ▴"}
+            </button>
+          </span>
+          {!folded && rows.slice(1)}
+        </>
+      ) : (
+        rows
+      )}
     </div>
   );
 }

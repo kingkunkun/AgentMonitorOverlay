@@ -22,12 +22,13 @@ import {
   type ViewPack,
 } from "@amo-studio/protocol";
 import type { DeviceRef } from "@amo-studio/relay";
-import type { HostService } from "../../service.js";
+import type { FeatureHost } from "../../core/feature.js";
+import type { RemoteUses } from "./service.js";
 import { HostError } from "../../core/shared.js";
 import type { RemoteContext } from "./grants.js";
 import { insideFolder, real, slash, underTaskFolder } from "./files.js";
 
-// 远程 Reviewer (plans/remote-reviewer.md, 2026-11-02): B looks at a remote task's 查看包 and Git Review. B's Reviewer
+// 远程 Reviewer (plans/done/remote-reviewer.md, 2026-11-02): B looks at a remote task's 查看包 and Git Review. B's Reviewer
 // windows on such a task use their own Host as always, only through /api/remote/view/<task>/… (ui: remoteViewLink);
 // B's Host (`RemoteViews`) sends each read to A as rt.view and keeps the answer in its data folder, shown again while A
 // is away (said to be old). On A (`answerView`) only the reads the Reviewer makes are answered, each checked:
@@ -40,7 +41,7 @@ import { insideFolder, real, slash, underTaskFolder } from "./files.js";
 
 /** What A answers a Reviewer read of a granted task with. */
 export interface ViewScope {
-  host: HostService;
+  host: FeatureHost<RemoteUses>;
   task: Task;
   /** The task's folder (its project's). */
   root: string;

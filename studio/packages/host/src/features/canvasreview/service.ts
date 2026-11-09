@@ -13,11 +13,11 @@ const CLOSED_LISTED = 30;
 const statusLabel = (s: ReviewStatus) => REVIEW_STATUSES.find((x) => x.id === s)?.label ?? s;
 
 /**
- * 画布审阅 (2026-10-27, plans/review-canvas.md): a review laid out on a topic's canvas as numbered items, agents'
+ * 画布审阅 (2026-10-27, plans/done/review-canvas.md): a review laid out on a topic's canvas as numbered items, agents'
  * remarks and questions pinned to its cards, the person's answers sent back to the asking session, and a session to
  * talk one item over (就这条展开聊).
  */
-export class CanvasReviewFeature extends Feature {
+export class CanvasReviewFeature extends Feature<"canvases" | "sessions" | "tasks"> {
   callouts(topicId: Id): CanvasCallout[] {
     this.requireTopic(topicId);
     return this.store.listCallouts(topicId, CLOSED_LISTED);

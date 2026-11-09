@@ -1,4 +1,4 @@
-import type { Id, Timestamp } from "./entities.js";
+import type { Id, ModelProfile, Timestamp } from "./entities.js";
 
 // 设置 → 模型 (2026-10-15): the person's own model channels on top of the built-in ones — a third-party Claude endpoint
 // (Anthropic-compatible, run by Claude Code) or a third-party Codex endpoint (Responses API, run by Codex), each with
@@ -18,8 +18,10 @@ export const CHANNEL_KIND_LABEL: Record<ChannelKind, string> = { claude: "第三
  * - `openai`: the old OpenAI billing endpoints many relays keep (`/v1/dashboard/billing/subscription` and `/usage`).
  * - `deepseek`: GET https://api.deepseek.com/user/balance.
  * - `custom`: any GET address (`{{baseUrl}}`, `{{apiKey}}` filled in) and where the numbers are in its JSON.
+ * - `deepseek-account`: the built-in DeepSeek on the DSH desktop app's account (2026-11-09): DeepSeek Platform's own
+ *   account summary with that sign-in. Studio's own, not offered for a channel.
  */
-export type BalanceTemplate = "general" | "newapi" | "sub2api" | "openai" | "deepseek" | "custom";
+export type BalanceTemplate = "general" | "newapi" | "sub2api" | "openai" | "deepseek" | "deepseek-account" | "custom";
 
 export const BALANCE_TEMPLATES: ReadonlyArray<{ id: BalanceTemplate; label: string; hint: string }> = [
   { id: "general", label: "通用", hint: "GET 网址/user/balance，用 API Key，读 balance" },
@@ -129,4 +131,24 @@ export interface ChannelBalance {
   /** Why it failed, or a note. */
   message: string | null;
   checkedAt: Timestamp;
+}
+
+// ---- Host routes (declared here, part of api.ts's HostRoutes) --------------------------------------------------
+
+/** 设置 → 模型 (2026-10-15): the person's own channels, hiding a channel from the pickers, balances. */
+export interface ChannelRoutes {
+  "GET /api/channels": { req: void; res: ModelChannel[] };
+  "POST /api/channels": { req: ChannelInput; res: ModelChannel };
+  "PATCH /api/channels/:id": { req: ChannelInput; res: ModelChannel };
+  /** Only a channel no session uses; otherwise hide it. */
+  "DELETE /api/channels/:id": { req: void; res: { ok: true } };
+  /** DSH channel (2026-10-19): the model names the site lists (GET {baseUrl}/v1/models), for the dialog's 从网址读取. */
+  "POST /api/channels/models-test": { req: { id?: Id; baseUrl?: string; key?: string; keyFrom?: string | null }; res: { models: string[] } };
+  /** Asks a balance with settings not saved yet (the 添加/编辑 dialog's 测试); `id` fills in what is stored. */
+  "POST /api/channels/balance-test": { req: { id?: Id; kind?: ChannelKind; baseUrl?: string; balance: BalanceConfig; key?: string; keyFrom?: string | null; accessToken?: string }; res: ChannelBalance };
+  "PUT /api/profiles/:id/hidden": { req: { hidden: boolean }; res: ModelProfile[] };
+  /** `?refresh=1` asks the site again; otherwise the last answer within a minute. */
+  "GET /api/profiles/:id/balance": { req: void; res: ChannelBalance };
+  /** 问题 #14: Claude 订阅's and GPT's request address as the person's Claude Code / Codex setup has it; null for other profiles. */
+  "GET /api/profiles/:id/endpoint": { req: void; res: ProfileEndpoint | null };
 }
