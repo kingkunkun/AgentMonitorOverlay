@@ -15,6 +15,8 @@ import type { OpenInRoutes } from "./openin.js";
 import type { PromptTemplateRoutes } from "./prompt-templates.js";
 import type { QuestionRoutes } from "./questions.js";
 import type { RemoteRoutes } from "./remote.js";
+import type { CooperationRoutes } from "./cooperation.js";
+import type { BuildJobRoutes } from "./build-job.js";
 import type { ViewPackRoutes } from "./viewpacks.js";
 
 export const HOST_DEFAULT_PORT = 47900;
@@ -557,7 +559,8 @@ export interface CredentialStatus {
  * route against this (packages/host/src/http/route.ts).
  */
 export interface HostRoutes
-  extends CanvasRoutes,
+  extends BuildJobRoutes,
+    CanvasRoutes,
     ChannelRoutes,
     ChatFileRoutes,
     CliRoutes,
@@ -572,6 +575,7 @@ export interface HostRoutes
     PromptTemplateRoutes,
     QuestionRoutes,
     RemoteRoutes,
+    CooperationRoutes,
     ViewPackRoutes {
   "GET /api/state": { req: void; res: StateSnapshot };
   /**

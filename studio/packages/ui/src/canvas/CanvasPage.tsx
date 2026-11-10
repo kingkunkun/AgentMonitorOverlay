@@ -19,6 +19,7 @@ import { CanvasMenu, item, SEP, type MenuEntry } from "./CanvasMenu.js";
 import { DescriptionDialog } from "../task/DescriptionDialog.js";
 import { DocsTab } from "./DocsTab.js";
 import { TopicBookmarks } from "../marks/MarksApp.js";
+import { BOOKMARKS_ENABLED } from "@amo-studio/protocol";
 import { PlanBanner, useTaskPlans } from "../taskplans/TaskPlans.js";
 import { readStored, writeStored, readStoredJson, writeStoredJson } from "../lib/stored.js";
 
@@ -1105,7 +1106,7 @@ export function CanvasPage({ link, topic, tasks, allTasks = tasks, topics = [top
             todoTab={planning ? <TodoTab link={link} workspaces={workspaces} profiles={profiles} onOpenTask={onOpenTask} activity={activity} topicId={topic.id} /> : undefined}
             agentTab={<AgentTab link={link} topicId={topic.id} />}
             docsTab={<DocsTab link={link} topicId={topic.id} readOnly={!!topic.archivedAt} />}
-            marksTab={<TopicBookmarks link={link} state={{ tasks: allTasks, sessions, topics, workspaces }} topicId={topic.id} />}
+            marksTab={BOOKMARKS_ENABLED ? <TopicBookmarks link={link} state={{ tasks: allTasks, sessions, topics, workspaces }} topicId={topic.id} /> : undefined}
             talkTab={<TalkTab items={items} callouts={callouts} nameOf={targetName} onFocus={focusCallout} />}
             talkCount={openQuestions.length}
           />

@@ -107,6 +107,7 @@ export class RemoteFeature extends Feature<RemoteUses> {
   readonly usage = new RemoteUsageCopies();
   readonly asks = new TaskAsks(this.context, (peer, kind, body, timeoutMs, offline) => this.copies.ask(peer, kind, body, timeoutMs, offline));
   private readonly onHostEvent = (e: HostEvent) => {
+    if (e.type === "task.upserted") this.host.cooperation.syncOwnTasks();
     try {
       this.grants.onHostEvent(e);
       this.creates.onHostEvent(e);
@@ -303,6 +304,7 @@ export class RemoteFeature extends Feature<RemoteUses> {
   }
 
   private async answerFrame(f: RelayFrameIn): Promise<Answer> {
+    if (!this.enabled()) return { kind: "error", body: { code: "read_only", message: "远程已关闭" } };
     // The server forwards between devices it has as paired; this computer's own list has the last word.
     if (!this.pairs().some((p) => same(p, f.from))) return { kind: "error", body: { code: "not_paired", message: "对方那边已经没有这个配对了" } };
     if (f.kind === "ping") return { kind: "pong", body: { at: Date.now() } };
@@ -589,6 +591,7 @@ export class RemoteFeature extends Feature<RemoteUses> {
         this.presence.set(`${p.peer.account}\n${p.peer.device}`, { online: p.online, lastSeen: p.online ? Date.now() : p.ago === null ? null : Date.now() - p.ago });
         // One more of the own account's devices (2026-10-31): it sees the tasks the others were granted.
         this.grants.shareWith(p.peer);
+        this.host.cooperation.syncOwnTasks();
       }
     } finally {
       // Answered here, elsewhere, or gone: either way it is no longer waiting on this computer.

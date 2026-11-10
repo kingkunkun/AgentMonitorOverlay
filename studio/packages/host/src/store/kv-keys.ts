@@ -19,6 +19,11 @@ export interface KvKey {
 }
 
 export const KV_KEYS: readonly KvKey[] = [
+  { key: "build-job.state", scope: "global", owner: "core/build-job.ts", what: "固定 Jenkins Job 最近的构建状态，不包含凭据" },
+  { key: "build-job.enabled", scope: "global", owner: "core/build-job.ts", what: "是否允许通过按钮和手机聊天触发固定打包 Job" },
+  { key: "cooperation.invite", scope: "global", owner: "core/cooperation.ts", what: "手机服务注册邀请码" },
+  { key: "cooperation.inbox", scope: "global", owner: "core/cooperation.ts", what: "中转收件箱映射到本地任务" },
+  { key: "cooperation.security-version", scope: "global", owner: "core/cooperation.ts", what: "首次升级隐私规则时关闭已有远程连接" },
   // Settings (设置)
   { key: "settings:presets", scope: "global", owner: "core/shared.ts", what: "常用预设" },
   { key: "settings:disabled-features", scope: "global", owner: "core/shared.ts", what: "设置 → 功能：关掉的功能" },

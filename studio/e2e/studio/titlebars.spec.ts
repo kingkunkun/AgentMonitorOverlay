@@ -3,6 +3,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { Topic, Workspace } from "@amo-studio/protocol";
+import { BOOKMARKS_ENABLED } from "@amo-studio/protocol";
 import { launchStudio, screenshot, type Studio } from "../support/studio.js";
 
 // 2026-10-29 (the user: 书签's title bar was still Windows'; every window in AMO's style): 书签, the 画布小窗, Git
@@ -85,12 +86,15 @@ test("书签, 画布小窗, Git Review and the viewer draw their own title bars 
   const topic = await s.api<Topic>("POST", "/api/topics", { title: "掉落调整" });
 
   // 书签.
-  const marks = await opened(app, () => page.evaluate(() => (window as unknown as AmoWindow).amo.openMarks({})));
-  await expect(marks.locator(".mk-title")).toHaveText("书签");
-  await expectTitleBar(marks, ".mk-head", ["最小化", "最大化", "关闭"]);
-  expect(await captionHeight(app, "marks")).toBe(0);
-  await expect(marks).toHaveTitle("书签");
-  await shoot(app, marks, "marks", "marks");
+  let marks: Page | undefined;
+  if (BOOKMARKS_ENABLED) {
+    marks = await opened(app, () => page.evaluate(() => (window as unknown as AmoWindow).amo.openMarks({})));
+    await expect(marks.locator(".mk-title")).toHaveText("书签");
+    await expectTitleBar(marks, ".mk-head", ["最小化", "最大化", "关闭"]);
+    expect(await captionHeight(app, "marks")).toBe(0);
+    await expect(marks).toHaveTitle("书签");
+    await shoot(app, marks, "marks", "marks");
+  }
 
   // 画布小窗: not maximisable, so no 最大化.
   const mini = await opened(app, () => page.evaluate((id) => (window as unknown as AmoWindow).amo.openCanvasMini({ topicId: id }), topic.id));
@@ -120,9 +124,11 @@ test("书签, 画布小窗, Git Review and the viewer draw their own title bars 
   await expect(viewer.getByTestId("win-controls")).toHaveCount(1);
 
   // × closes that window (only the workbench's hides it); the others stay.
-  const closed = marks.waitForEvent("close");
-  await marks.getByTestId("win-controls").getByRole("button", { name: "关闭" }).click();
-  await closed;
+  if (marks) {
+    const closed = marks.waitForEvent("close");
+    await marks.getByTestId("win-controls").getByRole("button", { name: "关闭" }).click();
+    await closed;
+  }
   expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((w) => w.webContents.getURL().includes("#marks")))).toBe(false);
   await expect(review.getByTestId("win-controls")).toBeVisible();
   // 最小化 acts on the window that asked, not on the workbench.

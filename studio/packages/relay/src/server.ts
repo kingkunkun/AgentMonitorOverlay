@@ -31,6 +31,7 @@ import { DEVICE_CHANNEL_VERSION, MAX_DEVICE_FRAME } from "./devices-protocol.js"
 // /api/platform/android and /platform/android/<name>.apk (2026-10-31).
 
 export interface RelayServerOptions {
+  minPasswordLength?: number;
   store: RelayStore;
   /** The invite passphrase registering takes; none = anyone who reaches the service may register. */
   passphrase?: string;
@@ -294,8 +295,10 @@ export async function startRelayServer(opts: RelayServerOptions): Promise<RelayS
       return send(res, 200, health);
     }
     if (method === "POST" && path === "/api/register") {
+      // Local phone servers require a longer password; keep the shared team's existing contract unchanged.
       const body = await readJson(req);
       if (!passphraseOk(body.passphrase)) throw new RelayError("unauthorized", "邀请口令不对");
+      if (typeof body.password !== "string" || body.password.length < (opts.minPasswordLength ?? 4)) throw new RelayError("bad_request", `密码至少 ${opts.minPasswordLength ?? 4} 位`);
       const joined = store.register(body.name, body.password, body.role);
       pushMembers();
       return send(res, 200, joined);

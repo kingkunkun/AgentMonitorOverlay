@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { absolutePath, highlightRuns, type ProjectFiles } from "@amo-studio/protocol";
+import { BOOKMARKS_ENABLED, absolutePath, highlightRuns, type ProjectFiles } from "@amo-studio/protocol";
 import { call, HostApiError, type HostLink } from "../host/client.js";
 import { formatBytes } from "../lib/bytes.js";
 import { formatWhen } from "./refs.js";
@@ -17,7 +17,7 @@ export function FileSelector({
   initialQuery = "",
   action = "引用",
   onPick,
-  onMark,
+  onMark: requestedMark,
   onClose,
 }: {
   link: HostLink;
@@ -29,6 +29,7 @@ export function FileSelector({
   onMark?(path: string): Promise<string>;
   onClose(): void;
 }) {
+  const onMark = BOOKMARKS_ENABLED ? requestedMark : undefined;
   const [query, setQuery] = useState(initialQuery);
   const [result, setResult] = useState<ProjectFiles | null>(null);
   const [error, setError] = useState<string | null>(null);

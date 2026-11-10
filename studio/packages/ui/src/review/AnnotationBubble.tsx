@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
-import type { Annotation } from "@amo-studio/protocol";
+import { BOOKMARKS_ENABLED, type Annotation } from "@amo-studio/protocol";
 import type { SelectionAnchor } from "../lib/selection.js";
 import { FloatBox } from "./FloatBox.js";
 
@@ -86,7 +86,7 @@ export function SelectionBar({
           {copied ? "已复制" : "复制"}
         </button>
       )}
-      {onBookmark && (
+      {BOOKMARKS_ENABLED && onBookmark && (
         <button type="button" onClick={onBookmark} title="加到这个专题的书签" data-testid="selection-bookmark">
           书签
         </button>

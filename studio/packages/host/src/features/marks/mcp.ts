@@ -1,10 +1,11 @@
 import { z } from "zod";
-import { isCommon, lineSuffix, type FileMark } from "@amo-studio/protocol";
+import { BOOKMARKS_ENABLED, isCommon, lineSuffix, type FileMark } from "@amo-studio/protocol";
 import { HostError } from "../../core/shared.js";
 import { answer, type AmoTool, type ToolContext } from "../../mcp/tool-kit.js";
 
 /** The AMO MCP tools of this feature (gathered in mcp/tools.ts). */
 export function marksTools({ service, caller }: ToolContext): AmoTool[] {
+  if (!BOOKMARKS_ENABLED) return [];
   return [
     {
       name: "list_file_marks",

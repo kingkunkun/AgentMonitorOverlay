@@ -1,4 +1,6 @@
 import { EventEmitter } from "node:events";
+import { Cooperation } from "./core/cooperation.js";
+import { BuildJob } from "./core/build-job.js";
 import type { HostErrorCode, HostEvent, Id, ModelProfile, Session, StateSnapshot, Task, Topic, Workspace } from "@amo-studio/protocol";
 import { isCommon } from "@amo-studio/protocol";
 import { type HostEventInput, type Store } from "./store/store.js";
@@ -93,6 +95,8 @@ export class HostService extends EventEmitter<HostServiceEvents> {
    * the 问题页 speak to the team server through it. Started by host-process.ts (or by remote.start, in tests).
    */
   readonly teamLink = new TeamLink();
+  readonly cooperation = new Cooperation(this);
+  readonly buildJob = new BuildJob(this);
   readonly remote: RemoteFeature = new RemoteFeature(this);
   /** 会话里用中转 (2026-10-30): sessions ask people on the team through AMO 中转; replies come back into them. */
   readonly teamRelay: TeamRelayFeature = new TeamRelayFeature(this);

@@ -1,4 +1,5 @@
 import { readFileSync, statSync } from "node:fs";
+import { readCooperation, privateClientPath } from "@amo-studio/account";
 import { basename, isAbsolute } from "node:path";
 import { RELAY_TEXT_MAX, TEAM_SEND_FILES_MAX, type Id, type TeamSend, type TeamThread } from "@amo-studio/protocol";
 import { RelayClient, RelayClientError, dueForAi, newRepliesText, takeSession, threadAsText, type Thread, type Via } from "@amo-studio/relay/light";
@@ -23,7 +24,7 @@ export const TEAM_NOT_SIGNED_IN = "要先在 AMO 平台里登录团队服务器�
 
 type Questions = TeamSend["questions"];
 
-export class TeamRelayFeature extends Feature<"config" | "sessions"> {
+export class TeamRelayFeature extends Feature<"sessions"> {
   private running = false;
   private abort: AbortController | null = null;
   private scanning: Promise<void> | null = null;
@@ -36,6 +37,7 @@ export class TeamRelayFeature extends Feature<"config" | "sessions"> {
 
   /** The 中转 client as the person, and this computer's mark prefix. */
   private relay(): { client: RelayClient; me: string; prefix: string } {
+    if (!readCooperation(this.teamLink.env).relayEnabled) throw new HostError("read_only", "Work中转已关闭，请在合作模式中开启");
     const login = this.teamLink.login();
     if (!login) throw new HostError("bad_request", TEAM_NOT_SIGNED_IN);
     return { client: new RelayClient(login.account.server, login.account.key), me: login.account.name, prefix: `studio:${login.deviceId}:` };
@@ -86,6 +88,9 @@ export class TeamRelayFeature extends Feature<"config" | "sessions"> {
 
   /** team_ask: a new 中转 session for someone to confirm; waits for the person. */
   async requestAsk(sessionId: Id, input: { to?: unknown; title?: unknown; body?: unknown; questions?: unknown; files?: unknown }): Promise<TeamSend> {
+    const source = this.requireSession(sessionId);
+    if (!source.taskId || !this.store.getTask(source.taskId) || source.runtime === "remote") throw new HostError("read_only", "只能从本机 WorkStudio 的任务发送中转问询");
+    if (!this.host.cooperation.taskAllowed(source.taskId)) throw new HostError("read_only", "任务含原生客户端导入的对话，禁止中转转发");
     const { client, me } = this.relay();
     const to = text(input.to, "to");
     const title = text(input.title, "title").slice(0, 200);
@@ -108,7 +113,8 @@ export class TeamRelayFeature extends Feature<"config" | "sessions"> {
 
   /** A new send waits for the person, or goes now when they turned the asking off (a failure is then the tool's answer). */
   private asked(send: TeamSend): Promise<TeamSend> | TeamSend {
-    return this.f.config.teamAutoSend() ? this.deliver(send.id, false) : send;
+    // AI content always needs a person's click, regardless of model bypass/auto permission modes.
+    return send;
   }
 
   /** The person said send it. */
@@ -135,6 +141,7 @@ export class TeamRelayFeature extends Feature<"config" | "sessions"> {
       const missed: string[] = [];
       for (const file of pending.files) {
         try {
+          if (!readCooperation(this.teamLink.env).relayEnabled || privateClientPath(file)) throw new HostError("read_only", "中转已关闭或文件属于原生客户端私有数据");
           await client.upload({ threadId: out.thread.id }, basename(file), readFileSync(file), "", { ai: true });
         } catch (err) {
           missed.push(`${basename(file)}（${err instanceof Error ? err.message : String(err)}）`);
@@ -265,7 +272,7 @@ export class TeamRelayFeature extends Feature<"config" | "sessions"> {
   private async loop(): Promise<void> {
     while (this.running) {
       try {
-        if (!this.teamLink.login()) {
+        if (!this.teamLink.login() || !readCooperation(this.teamLink.env).relayEnabled) {
           await this.pause(this.pauseMs.signedOut);
           continue;
         }
@@ -296,9 +303,14 @@ export class TeamRelayFeature extends Feature<"config" | "sessions"> {
   }
 
   private async scanOnce(): Promise<void> {
-    if (!this.teamLink.login()) return;
+    if (!this.teamLink.login() || !readCooperation(this.teamLink.env).relayEnabled) return;
     const { client, me, prefix } = this.relay();
     const all = await client.threads();
+    for (const t of all.filter((t) => !(t.request?.from === me && t.request.conv?.startsWith(prefix)))) {
+      if (!readCooperation(this.teamLink.env).relayEnabled) return;
+      const content = await client.messages(t.id);
+      await this.host.cooperation.mirrorInbox(t.id, t.title || t.members.filter((n) => n !== me).join("、"), t.lastSeq, threadAsText(content.thread, content.messages));
+    }
     for (const t of all) this.lastSeq = Math.max(this.lastSeq, t.lastSeq);
     const before = this.threads();
     const mine = all.filter((t) => t.request && t.request.from === me && t.request.conv?.startsWith(prefix));
@@ -344,6 +356,7 @@ export class TeamRelayFeature extends Feature<"config" | "sessions"> {
    * into a Codex turn — and one that failed was only a line in host.log, the reply already taken off the relay.
    */
   private tell(sessionId: Id, message: string): void {
+    if (!readCooperation(this.teamLink.env).relayEnabled) return;
     this.f.sessions.inbox.put(sessionId, message).catch((err: unknown) => console.log(`teamrelay: ${String(err)}`));
   }
 }
@@ -368,6 +381,7 @@ function questions(value: unknown): Questions {
 }
 
 function localFiles(value: unknown): string[] {
+  if (Array.isArray(value) && value.some((p) => typeof p === "string" && privateClientPath(p))) throw new HostError("read_only", "禁止发送原生 Claude / Codex / DOT 私有对话文件");
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value) || value.some((f) => typeof f !== "string")) throw new HostError("bad_request", "files must be a list of paths");
   const files = [...new Set((value as string[]).map((f) => f.trim()).filter(Boolean))];

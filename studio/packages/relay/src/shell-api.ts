@@ -47,6 +47,8 @@ export interface McpHookup {
 }
 
 export interface RelayShell {
+  confirmUpload?(files: File[], destination: string): Promise<boolean>;
+  setRelayEnabled?(enabled: boolean): Promise<void>;
   info(): Promise<ShellInfo>;
   /**
    * The team login AMO 平台 keeps (2026-10-29, AGENTS.md rule 7: login lives in the platform), read when asked; null when

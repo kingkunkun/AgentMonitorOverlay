@@ -69,6 +69,9 @@ async function host(name: string, server: string, account: string, key: string) 
   const store = new Store(join(tempDir(`${name}-data`), "studio.db"));
   const servers = new FakeServers(PROFILES);
   const service = new HostService(store, new CodexRuntime({ store, servers, profiles: PROFILES }), PROFILES);
+  // This fixture simulates the person approving each requested transfer; production has no test-mode bypass.
+  const approve = setInterval(() => { for (const request of service.cooperation.state().transfers) service.cooperation.answer(request.id, true); }, 10);
+  cleanups.push(() => clearInterval(approve));
   const options = { env, protector: fake, watchMs: 30, backoff: new Backoff({ baseMs: 30, maxMs: 120 }), pingTimeoutMs: 2000 };
   service.remote.start(options);
   // Off until turned on (2026-10-30).
@@ -996,7 +999,7 @@ describe("remote files between two Hosts (step 3)", () => {
     const coming = b.remote.fetchFile(task.id, "big.png");
     await b.service.tasks.archiveTask(task.id);
     expect(existsSync(join(root, task.id))).toBe(false);
-    await expect(coming).rejects.toThrow("已经归档");
+    await expect(coming).rejects.toThrow(/已经归档|没有授权给你/);
     expect(existsSync(join(root, task.id))).toBe(false);
     expect(readdirSync(root).filter((n) => n.startsWith(".gone-"))).toEqual([]);
   }, 60_000);

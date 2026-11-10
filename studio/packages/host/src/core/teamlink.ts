@@ -77,6 +77,7 @@ export class TeamLink extends EventEmitter<TeamLinkEvents> {
   get env(): Env | undefined {
     return this.opts?.env;
   }
+  get accountOptions() { return { env: this.opts?.env, ...(this.opts?.protector ? { protector: this.opts.protector } : {}) }; }
 
   /** The login and this computer's device id, to speak to the team server as the person; null while not signed in. */
   login(): { account: Account; deviceId: string } | null {

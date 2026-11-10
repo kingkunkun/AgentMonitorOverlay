@@ -18,6 +18,7 @@ test("WorkStudio carries Work中转 with a local UI and a shared platform login"
     const home = join(root, "amo");
     const signed = store.register("入口测试", "test-password-123");
     await account.saveAccount({ server: server.url, name: "入口测试", key: signed.key }, { env: { AMO_HOME: home } });
+    account.updateCooperation({ relayEnabled: true }, { AMO_HOME: home });
     app = await _electron.launch({
       executablePath: join(studioRoot, "release/workstudio-integrated/WorkStudio/WorkStudio.exe"),
       args: ["--amo-app=relay"],
@@ -28,6 +29,10 @@ test("WorkStudio carries Work中转 with a local UI and a shared platform login"
     await expect(page.getByRole("button", { name: "成员", exact: true })).toBeVisible();
     const info = await page.evaluate(() => (window as unknown as { relayShell: { info(): Promise<{ contentVersion: string }> } }).relayShell.info());
     expect(info.contentVersion).toBe("work-bundled");
+    await page.getByRole("button", { name: "关闭中转功能", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Work中转已关闭" })).toBeVisible();
+    await page.getByRole("button", { name: "开启中转", exact: true }).click();
+    await expect(page.locator(".brand-name")).toHaveText("Work中转");
     mkdirSync(join(studioRoot, "screenshots/relay"), { recursive: true });
     const png = await app.evaluate(async ({ BrowserWindow }) => (await BrowserWindow.getAllWindows()[0]!.webContents.capturePage()).toPNG().toString("base64"));
     writeFileSync(join(studioRoot, "screenshots/relay/work-bundled.png"), Buffer.from(png, "base64"));

@@ -11,6 +11,7 @@ const on = (channel: string, listener: (value: never) => void) => {
 };
 
 electron.contextBridge.exposeInMainWorld("relayLoader", {
+  enable: () => invoke("set-enabled", true),
   onState: (listener: (s: unknown) => void) => on("loader-state", listener),
   ready: () => send("loader-ready"),
   submitServer: (server: string) => send("loader-server", server),
@@ -22,6 +23,8 @@ electron.contextBridge.exposeInMainWorld("relayLoader", {
 });
 
 electron.contextBridge.exposeInMainWorld("relayShell", {
+  confirmUpload: (files: File[], destination: string) => invoke("confirm-upload", files.map((file) => ({ name: file.name, size: file.size, path: electron.webUtils.getPathForFile(file) })), destination),
+  setRelayEnabled: (enabled: boolean) => invoke("set-enabled", enabled),
   info: () => invoke("info"),
   accounts: () => invoke("accounts"),
   platformAccount: () => invoke("platform-account"),

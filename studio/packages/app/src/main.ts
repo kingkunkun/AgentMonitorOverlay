@@ -14,7 +14,6 @@ import { installNotesLink } from "./notes-link.js";
 import { findRelayExe, openInRelay } from "./relay-link.js";
 import { installWindowControls, sendMaximized, setupReviewWindows, setupViewerWindows } from "@amo-studio/reviewer";
 import { TrayMenu, type MenuEntry } from "@amo-studio/traymenu";
-import { installMarksWindow } from "./marks-window.js";
 import { installCanvasWindow } from "./canvas-window.js";
 import { installPlanWindows } from "./plan-window.js";
 import { ResizeTrace } from "./resize-trace.js";
@@ -37,9 +36,9 @@ import { installFolderIpc } from "./folders.js";
 const here = dirname(fileURLToPath(import.meta.url));
 const studioRoot = resolve(here, "..", "..", "..");
 // A locally compiled client, or a portable sibling; the platform's install still takes precedence.
-const localRelayExe = app.isPackaged ? join(dirname(process.execPath), "..", "AMO Relay", "AMO Relay.exe") : join(studioRoot, "release", "local-relay", "AMO Relay", "AMO Relay.exe");
+const localRelayExe = app.isPackaged ? process.execPath : join(studioRoot, "release", "workstudio-integrated", "WorkStudio", "WorkStudio.exe");
 const bundledRelay = app.isPackaged && existsSync(join(studioRoot, "packages", "relay-app", "dist", "main.js"));
-const relayLaunch = { localExe: bundledRelay ? process.execPath : localRelayExe, ...(bundledRelay ? { localArgs: ["--amo-app=relay"] } : {}) };
+const relayLaunch = { localExe: bundledRelay ? process.execPath : localRelayExe, localArgs: ["--amo-app=relay"] };
 const testMode = process.env.AMO_STUDIO_TEST === "1";
 /** Window and taskbar icon (the exe's own icon is set when packaging). */
 const APP_ICON = join(here, "..", "assets", "icon.png");
@@ -662,7 +661,7 @@ if (!app.requestSingleInstanceLock() || quitAsked(process.argv)) {
         },
       });
       // The file marks window (文件标记).
-      installMarksWindow({ url: process.env.AMO_STUDIO_DEV_URL ?? `${host.url}/`, preload: join(here, "preload.cjs"), icon: APP_ICON, testMode, mainWindow });
+      // The bookmarks window is disabled by the user's privacy settings.
       installCanvasWindow({ url: process.env.AMO_STUDIO_DEV_URL ?? `${host.url}/`, preload: join(here, "preload.cjs"), icon: APP_ICON, testMode, mainWindow });
       // 计划窗口 (2026-11-09): a plan Claude asks to have reviewed, one window per session.
       installPlanWindows({ url: process.env.AMO_STUDIO_DEV_URL ?? `${host.url}/`, preload: join(here, "preload.cjs"), icon: APP_ICON, testMode, mainWindow });

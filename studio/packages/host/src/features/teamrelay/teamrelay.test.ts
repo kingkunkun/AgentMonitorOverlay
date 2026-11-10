@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { HostEvent, ModelProfile, Session } from "@amo-studio/protocol";
-import { saveAccount, type Protector } from "@amo-studio/account";
+import { saveAccount, updateCooperation, type Protector } from "@amo-studio/account";
 import { RelayClient, RelayStore, startRelayServer, type RelayServer } from "@amo-studio/relay";
 import { removeTempDir } from "@amo-studio/testkit";
 import { CodexRuntime } from "../../runtime/codex/codex-runtime.js";
@@ -53,6 +53,7 @@ async function setup(signedIn = true) {
 
   const home = tempDir("home");
   const env = { AMO_HOME: home, COMPUTERNAME: "PLANNER-PC" };
+  updateCooperation({ relayEnabled: true }, env);
   if (signedIn) await saveAccount({ server: relay.url, name: "策划小王", key: planner.key }, { env, protector: fake });
   const root = tempDir("data");
   const store = new Store(join(root, "studio.db"));
@@ -242,7 +243,7 @@ describe("会话里用中转", () => {
     expect(store.listItems(asking.id).filter((i) => i.type === "user" && i.text.includes("【中转回复】"))).toHaveLength(1);
   });
 
-  it("with 不用先问我 on (设置 → 功能 → 中转) it goes at once; 远程 being off does not stop 中转 (2026-10-30)", async () => {
+  it("auto-send cannot bypass the person's confirmation; remote being off does not stop an explicitly enabled relay", async () => {
     const { service, told, session, coderClient, tool } = await setup();
     // 远程 is off (never turned on here): 中转 only uses the same login.
     expect(service.remote.state().connection.state).toBe("disabled");
@@ -251,16 +252,19 @@ describe("会话里用中转", () => {
     const s = session("任务");
     const asked = await tool(s.id, "team_ask", { to: "程序老李", title: "接口确认", body: "要加字段", questions: [{ text: "加不加", options: ["加", "不加"] }] });
     expect(asked.error).toBe(false);
-    expect(asked.text).toContain("已发给 程序老李");
-    expect(service.teamRelay.sends()).toEqual([expect.objectContaining({ state: "sent", sessionId: s.id })]);
+    expect(asked.text).toContain("确认后发给 程序老李");
+    expect(service.config.settings().teamAutoSend).toBe(false);
+    expect(await coderClient.threads()).toEqual([]);
+    expect(service.teamRelay.sends()).toEqual([expect.objectContaining({ state: "pending", sessionId: s.id })]);
+    await service.teamRelay.send(service.teamRelay.sends()[0]!.id);
     const [thread] = await coderClient.threads();
     expect(thread?.request).toMatchObject({ from: "策划小王", to: "程序老李", byAi: true });
     // A follow-up goes at once too (here it cannot: the session is closed); a failure is the tool's answer, not a
     // message into the session.
     await service.teamRelay.done(s.id, { threadId: thread!.id });
     const failed = await tool(s.id, "team_followup", { threadId: thread!.id, body: "再问" });
-    expect(failed).toMatchObject({ error: true });
-    expect(failed.text).toContain("没发给 程序老李");
+    expect(failed.error).toBe(false);
+    expect(failed.text).toContain("确认后发给 程序老李");
     expect(told).toEqual([]);
     expect(() => service.config.updateSettings({ teamAutoSend: "yes" as never })).toThrow(/teamAutoSend/);
   });

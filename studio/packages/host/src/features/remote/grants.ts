@@ -5,9 +5,10 @@ import type { FeatureHost } from "../../core/feature.js";
 import type { RemoteUses } from "./service.js";
 import { HostError, boundedText } from "../../core/shared.js";
 import type { DeviceLink } from "./link.js";
-import { attachedPaths, itemForPeer, readRemoteFile, type FileRoots } from "./files.js";
+import { attachedPaths, itemForPeer, readRemoteFile, resolveAsked, real, type FileRoots } from "./files.js";
 import { claimedText, type UploadInbox } from "./uploads.js";
 import { answerView, ViewAnswers } from "./views.js";
+import { isBuildCommand } from "../../core/build-job.js";
 
 // 远程, step 2 on A (plans/done/remote-session.md, 2026-10-29): the tasks this computer granted to paired devices, what such
 // a device may ask of them, and what A tells it unasked as they change. The grant is the whole task: every session in
@@ -150,7 +151,8 @@ export class RemoteGrants {
    * A's profiles a session started from a paired device may run in this task: those of 远程设置 (the remote page), or (none chosen)
    * those the task's own sessions use. The default first.
    */
-  allowedFor(taskId: Id): Id[] {
+  allowedFor(taskId: Id, peer?: DeviceRef): Id[] {
+    if (peer && this.ctx.host.cooperation.ownDevice(peer.account)) return this.ctx.host.profiles.filter((p) => !p.hidden && !p.unavailable && p.runtime !== "remote").map((p) => p.id);
     const cfg = this.allowed();
     const usable = (pid: Id) => {
       const p = this.ctx.host.profiles.find((x) => x.id === pid);
@@ -236,6 +238,7 @@ export class RemoteGrants {
   }
 
   private grantOne(taskId: Id, peer: DeviceRef): RemoteGrant {
+    if (!this.ctx.host.cooperation.taskAllowed(taskId)) throw new HostError("read_only", "任务包含过去导入的原生对话，禁止共享");
     const task = this.store.getTask(taskId);
     if (!task) throw new HostError("not_found", `没有任务 ${taskId}`);
     if (task.remote) throw new HostError("bad_request", "这是别的电脑授权给这台电脑的远程任务，不能再转授权");
@@ -283,6 +286,7 @@ export class RemoteGrants {
   // ---- what a device sends
 
   private grantFor(from: DeviceRef, taskId: Id): RemoteGrant {
+    if (!this.ctx.host.cooperation.taskAllowed(taskId)) throw new HostError("read_only", "这个任务包含过去导入的原生对话，禁止远程转发");
     const g = this.list().find((x) => x.taskId === taskId && same(x, from));
     if (!g) throw new HostError("not_found", "这个任务没有授权给你（可能已经收回）");
     return g;
@@ -303,7 +307,7 @@ export class RemoteGrants {
     const g = this.grantFor(from, taskId);
     const task = this.store.getTask(taskId);
     if (!task) throw new HostError("not_found", "任务已经不在了");
-    const allowed = this.allowedFor(taskId);
+    const allowed = this.allowedFor(taskId, from);
     const sessions = this.store.listSessions({ taskId });
     const sessionProjects = Object.fromEntries(sessions.map((s) => [s.id, this.projectName(s.workspaceId)]));
     return { task: this.view(task), sessions, sessionProjects, profiles: this.profilesOf(taskId, allowed), allowed, grantedAt: g.grantedAt };
@@ -347,6 +351,19 @@ export class RemoteGrants {
     const sessions = this.ctx.host.sessions;
     try {
       switch (kind) {
+        case "rt.people": {
+          this.sessionFor(from, id(b.sessionId, "sessionId"), false);
+          return ok({ people: await this.ctx.host.cooperation.teamMembers() });
+        }
+        case "rt.choices": {
+          const s = this.sessionFor(from, id(b.sessionId, "sessionId"), false);
+          return ok({ choices: await this.ctx.host.cooperation.modelChoices(s.profileId), options: s.options ?? {} });
+        }
+        case "rt.options": {
+          const s = this.sessionFor(from, id(b.sessionId, "sessionId"), true);
+          if (from.account !== this.ctx.ownAccount()) throw new HostError("read_only", "只有自己的账号设备能调整模型权限");
+          return ok({ session: await sessions.updateSessionOptions(s.id, b.options) });
+        }
         case REMOTE_KINDS.list:
           return ok({ tasks: this.list().filter((g) => same(g, from)).map((g) => ({ taskId: g.taskId, grantedAt: g.grantedAt })) });
         case REMOTE_KINDS.task:
@@ -357,6 +374,10 @@ export class RemoteGrants {
         }
         case REMOTE_KINDS.send: {
           const s = this.sessionFor(from, id(b.sessionId, "sessionId"), true);
+          if (isBuildCommand(b.text)) {
+            if (from.account !== this.ctx.ownAccount()) throw new HostError("read_only", "只有自己的已配对账号能触发打包");
+            return ok(await this.ctx.host.buildJob.command(s.id, b.text as string));
+          }
           // Pictures and files B sent first (rt.upload): this computer's attachments now; a DSH session takes no pictures.
           const claimed = this.ctx.inbox().claim(from, b.uploads, { noImages: s.runtime === "dsh" });
           const plain = claimed.images.length || claimed.files.length ? (typeof b.text === "string" ? b.text.slice(0, 100_000) : "") : boundedText(b.text, "text", 100_000);
@@ -437,7 +458,7 @@ export class RemoteGrants {
           const task = this.store.getTask(taskId);
           if (!task || task.archivedAt) throw new HostError("read_only", "这个任务已经归档了");
           const profileId = id(b.profileId, "profileId");
-          if (!this.allowedFor(taskId).includes(profileId)) throw new HostError("bad_request", `${this.labelOf(profileId)} 不在 ${this.ctx.deviceName()} 允许远程使用的模型里`);
+          if (!this.allowedFor(taskId, from).includes(profileId)) throw new HostError("bad_request", `${this.labelOf(profileId)} 不在 ${this.ctx.deviceName()} 允许远程使用的模型里`);
           const plain = typeof b.text === "string" && b.text.trim() ? boundedText(b.text, "text", 100_000) : "";
           const permission = this.permissionFor(profileId);
           const options: SessionOptions | undefined = permission ? { permission } : undefined;
@@ -467,7 +488,13 @@ export class RemoteGrants {
         case REMOTE_KINDS.file: {
           const taskId = id(b.taskId, "taskId");
           this.grantFor(from, taskId);
-          return ok(await readRemoteFile(this.fileRoots(taskId), b as unknown as RemoteFileAsk, this.ctx.deviceName()));
+          const roots = this.fileRoots(taskId);
+          const path = resolveAsked(roots, String(b.path ?? ""), typeof b.cwd === "string" ? b.cwd : undefined);
+          const selected = real(path) ?? path;
+          await this.ctx.host.cooperation.confirmTransfer(taskId, `${from.account} / ${from.device}`, selected, Number(b.offset) || 0);
+          this.ctx.host.cooperation.assertRemoteEnabled();
+          this.grantFor(from, taskId);
+          return ok(await readRemoteFile(this.fileRoots(taskId), { ...b, path: selected } as unknown as RemoteFileAsk, this.ctx.deviceName()));
         }
         case REMOTE_KINDS.view: {
           // 远程 Reviewer (plans/done/remote-reviewer.md, 2026-11-02): a read of the task's 查看包 or Review, checked in views.ts.
@@ -477,6 +504,10 @@ export class RemoteGrants {
           const root = this.taskRoot(taskId);
           if (!task || !root) throw new HostError("not_found", "任务的文件夹不在了");
           const ask = b as unknown as RemoteViewAsk;
+          // Reviewer responses can contain full file text/diffs, so they require the same local consent.
+          await this.ctx.host.cooperation.confirmTransfer(taskId, `${from.account} / ${from.device}`, `项目 ${root} / ${ask.path}`, ask.piece?.offset ?? 0);
+          this.ctx.host.cooperation.assertRemoteEnabled();
+          this.grantFor(from, taskId);
           return ok(await this.views.serve(`${from.account}
 ${from.device}
 ${taskId}`, ask, () => answerView({ host: this.ctx.host, task, root }, ask)));
@@ -493,6 +524,8 @@ ${taskId}`, ask, () => answerView({ host: this.ctx.host, task, root }, ask)));
   // ---- what A tells the devices unasked
 
   private push(g: RemoteGrant, body: RemotePush): void {
+    if (!this.ctx.host.cooperation.taskAllowed(g.taskId)) return;
+    if (body.type === "task") { const allowed = this.allowedFor(g.taskId, g); body = { ...body, allowed, profiles: this.profilesOf(g.taskId, allowed) }; }
     const link = this.ctx.link();
     // Nobody to tell while the device is away: it asks for everything again when it is back.
     if (!link || link.state !== "online" || !this.ctx.peer(g)?.online) return;

@@ -12,6 +12,7 @@ import { startHostServer, type HostServer } from "../../http/server.js";
 import { isInside, pathKey, projectOf } from "./service.js";
 import { marksTools } from "./mcp.js";
 import { toolContext, type ToolResult } from "../../mcp/tool-kit.js";
+import { BOOKMARKS_ENABLED } from "@amo-studio/protocol";
 
 // File marks (stage 12, S12-D) through the Host API: marking, dedupe, which project a path belongs to, edits, deleting
 // with the project, and the events that keep open windows current.
@@ -70,6 +71,16 @@ function project(name: string, files: Record<string, string> = {}): string {
 
 type Created = { mark: FileMark; created: boolean };
 
+it.skipIf(BOOKMARKS_ENABLED)("disables bookmark HTTP/MCP access while retaining existing data", async () => {
+  const dir = project("private", { "plan.txt": "keep" });
+  const created = service.marks.create({ path: join(dir, "plan.txt") });
+  expect(await ok("GET", "/api/file-marks")).toEqual([]);
+  expect(await ok("GET", "/api/bookmarks")).toEqual([]);
+  expect((await api("POST", "/api/file-marks", { path: join(dir, "plan.txt") })).status).not.toBe(200);
+  expect(marksTools(toolContext(service, null))).toEqual([]);
+  expect(service.marks.list()).toEqual([expect.objectContaining({ id: created.mark.id })]);
+});
+
 describe("file mark paths", () => {
   const R = resolve("/amo-marks-test");
   it("compares paths without a trailing separator (and without case on Windows)", () => {
@@ -90,7 +101,7 @@ describe("file mark paths", () => {
   });
 });
 
-describe("file marks API", { timeout: 30_000 }, () => {
+describe.skipIf(!BOOKMARKS_ENABLED)("file marks API", { timeout: 30_000 }, () => {
   it("marks files, derives the project, dedupes the same path and range, and lists by project", async () => {
     const dir = project("game", { "drop.lua": "a\nb\nc\n", "docs/readme.md": "# hi\n" });
     const elsewhere = project("loose", { "notes.txt": "x" });
@@ -175,7 +186,7 @@ describe("file marks API", { timeout: 30_000 }, () => {
   });
 });
 
-describe("list_file_marks (AMO MCP)", () => {
+describe.skipIf(!BOOKMARKS_ENABLED)("list_file_marks (AMO MCP)", () => {
   it("reads the caller's project by default, another project by name, 其他 or all", async () => {
     const dir = project("game", { "drop.lua": "a\n" });
     const elsewhere = project("loose", { "notes.txt": "x" });
@@ -199,7 +210,7 @@ describe("list_file_marks (AMO MCP)", () => {
   });
 });
 
-describe("书签 (2026-10-19)", { timeout: 30_000 }, () => {
+describe.skipIf(!BOOKMARKS_ENABLED)("书签 (2026-10-19)", { timeout: 30_000 }, () => {
   it("keeps files and passages under topics, picks the topic from the session, moves and deletes them", async () => {
     const dir = project("game", { "drop.lua": "a\nb\n" });
     const ws = await ok<Workspace>("POST", "/api/workspaces", { path: dir });

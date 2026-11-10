@@ -81,7 +81,7 @@ function RemoteModal({ label, testId, className, onClose, head, children }: { la
         <span className="spacer" />
         {head}
         <button type="button" className="link-btn" onClick={onClose} aria-label={`关闭${label}`} data-testid={`${testId}-close`}>
-          关闭
+          收起窗口
         </button>
       </div>
       {children}
@@ -221,6 +221,7 @@ export function RemoteDialog({
       {shell(
         <div className="remote-body">
           <div className="remote-self" data-testid="remote-self">
+            <button type="button" className="btn-ghost danger" disabled={busy} data-testid="remote-disable-main" onClick={() => void run(() => call(link, "PUT /api/remote/enabled", {}, { enabled: false }))}>关闭远程功能</button>
             <span className="remote-self-line">
               <span data-testid="remote-account">{remote.account.name}</span>
               <span className="remote-sep">·</span>

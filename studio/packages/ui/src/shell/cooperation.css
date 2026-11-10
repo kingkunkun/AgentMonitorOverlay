@@ -1,0 +1,10 @@
+.cooperation-modal { width: min(660px, calc(100vw - 28px)); max-width: 660px; padding: 0; overflow: hidden; }
+.cooperation-content { box-sizing: border-box; padding: 20px; width: 100%; max-height: min(82vh, 760px); overflow-y: auto; }
+.cooperation-content h2 { margin: 0; font-size: 20px; }
+.cooperation-content h3 { font-size: 15px; margin: 14px 0 8px; }
+.cooperation-content p { font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; margin: 8px 0; }
+.cooperation-content hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0; }
+.cooperation-content input:not([type=checkbox]) { box-sizing: border-box; width: 100%; border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: 4px; padding: 8px 10px; font: inherit; }
+.cooperation-content button { font-size: 12px; }
+.cooperation-content details { margin-top: 14px; }
+.cooperation-content summary { cursor: pointer; font-weight: 600; font-size: 14px; }

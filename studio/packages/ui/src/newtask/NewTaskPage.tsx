@@ -220,7 +220,7 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
         <div className="draft">
           <div className="draft-ask-row">
             <h1 className="draft-ask">要推进什么？</h1>
-            {!remoteMode && subscription && (
+            {false && !remoteMode && subscription && (
               <button type="button" className="btn-ghost small draft-resume-btn" onClick={() => setPickingResume(true)} title="把终端或 Claude 桌面版里开的 Claude 会话接过来，在这里接着做" data-testid="draft-resume-open">
                 接续已有会话…
               </button>

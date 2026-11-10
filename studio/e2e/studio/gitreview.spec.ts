@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import type { Session, Task, Workspace } from "@amo-studio/protocol";
+import { BOOKMARKS_ENABLED } from "@amo-studio/protocol";
 import { launchStudio, screenshot, windowState, type Studio, confirmBookmarkNote } from "../support/studio.js";
 
 // S11-D acceptance: a project under git → Review from the task page → file list and both diff views → a comment on
@@ -336,9 +337,11 @@ test("S12-A: file tree, syntax colours, side by side and opening files", async (
   let res = posted();
   await review.getByTestId("review-reveal").click();
   expect(await (await res).json()).toMatchObject({ app: "explorer", dryRun: true });
-  await review.getByTestId("mark-file").click();
-  await confirmBookmarkNote(review);
-  await expect(review.getByTestId("mark-file")).toHaveText("已加书签");
+  if (BOOKMARKS_ENABLED) {
+    await review.getByTestId("mark-file").click();
+    await confirmBookmarkNote(review);
+    await expect(review.getByTestId("mark-file")).toHaveText("已加书签");
+  } else await expect(review.getByTestId("mark-file")).toHaveCount(0);
   // The file list's right-click menu does the same; a deleted file has nothing to open.
   await files.filter({ hasText: "table.lua" }).click({ button: "right" });
   const menu = review.getByRole("menu", { name: "文件" });

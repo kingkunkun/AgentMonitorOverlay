@@ -360,6 +360,7 @@ export function Home({ session, onLogout, resumeOpen = null, updatedTo = null }:
         <div className="brand">
           <img className="brand-mark" src={iconUrl} alt="" />
           <span className="brand-name">Work中转</span>
+          {shell?.setRelayEnabled && <button type="button" className="tb-btn" onClick={() => void shell!.setRelayEnabled!(false)}>关闭中转功能</button>}
           <span className="brand-sep">{session.me.service}</span>
         </div>
         <nav className="view-tabs">

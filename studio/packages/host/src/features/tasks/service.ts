@@ -318,21 +318,17 @@ export class TasksFeature extends Feature<"canvases" | "config" | "mcp" | "remot
 
   /** 接续已有会话 (2026-11-05): Claude sessions started outside Studio that a new task can go on from. */
   outsideSessions(): Promise<OutsideSessionList> {
-    return this.wrap(() => this.runtime.outsideSessions?.() ?? Promise.resolve({ sessions: [], unavailable: "这个 Studio 没有 Claude" }));
+    return Promise.resolve({ sessions: [], unavailable: "隐私规则：不读取或导入原生客户端已有对话" });
   }
 
   async outsidePreview(ref: string): Promise<OutsideSessionPreview> {
-    const preview = await this.wrap(() => this.runtime.outsidePreview?.(ref) ?? Promise.resolve(null));
-    if (!preview) throw new HostError("not_found", "找不到这个会话的对话记录");
-    return preview;
+    throw new HostError("read_only", "隐私规则禁止读取原生客户端已有对话");
   }
 
   /** 接续已有会话 (2026-11-05): the outside Claude session a new one goes on from, checked; undefined when none. */
   private resumeFrom(input: NewSessionInput): string | undefined {
     if (input.resumeFrom === undefined || input.resumeFrom === null) return undefined;
-    if (typeof input.resumeFrom !== "string" || !/^[0-9a-f-]{36}$/i.test(input.resumeFrom)) throw new HostError("bad_request", "resumeFrom must be a Claude session id");
-    if (this.requireProfile(input.profileId).runtime !== "claude") throw new HostError("bad_request", "接续已有会话只能用 Claude");
-    return input.resumeFrom;
+    throw new HostError("read_only", "隐私规则禁止导入原生客户端已有对话");
   }
 }
 

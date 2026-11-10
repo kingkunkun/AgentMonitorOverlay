@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { ChatMark, FileMark } from "@amo-studio/protocol";
+import { BOOKMARKS_ENABLED, type ChatMark, type FileMark } from "@amo-studio/protocol";
 import { call, HostApiError, type HostLink } from "../host/client.js";
 import type { SelectionAnchor } from "../lib/selection.js";
 import { baseName } from "../attach/refs.js";
@@ -15,6 +15,7 @@ type MarksBridge = { openMarks?(target: MarksTarget): Promise<void> };
 
 /** Opens (or brings forward) the one bookmarks window, showing `topicId` first; outside Electron, a new tab. */
 export function openMarks(target: MarksTarget = {}): void {
+  if (!BOOKMARKS_ENABLED) return;
   const bridge = window.amo as MarksBridge | undefined;
   if (bridge?.openMarks) void bridge.openMarks(target);
   else window.open(`${location.pathname}${location.search}${marksHash(target)}`, "_blank");
@@ -40,6 +41,7 @@ export function useMarksShortcut(current: () => MarksTarget): void {
  * (书签说明, 2026-10-20); one already bookmarked comes back as it is, without asking.
  */
 export async function addFileMark(link: HostLink, file: FileRef, line?: number | null, sessionId?: string | null): Promise<{ mark: FileMark; created: boolean }> {
+  if (!BOOKMARKS_ENABLED) throw new BookmarkCancelled();
   const known = findMark(await call(link, "GET /api/file-marks"), file, line);
   if (known) return { mark: known, created: false };
   const note = await askBookmarkNote(`${baseName(file.path)}${line ? `（第 ${line} 行）` : ""}`);
@@ -83,6 +85,7 @@ export async function markOrShow(link: HostLink, file: FileRef, line?: number | 
  * passage already bookmarked comes back as it is, without asking.
  */
 export async function bookmarkPassage(link: HostLink, sessionId: string, anchor: SelectionAnchor): Promise<{ mark: ChatMark; created: boolean }> {
+  if (!BOOKMARKS_ENABLED) throw new BookmarkCancelled();
   const known = (await call(link, "GET /api/bookmarks")).find((m): m is ChatMark => m.kind === "chat" && m.itemId === anchor.itemId && m.start === anchor.start && m.end === anchor.end);
   if (known) return { mark: known, created: false };
   const quote = anchor.quote.replace(/\s+/g, " ").trim();

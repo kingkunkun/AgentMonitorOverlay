@@ -128,6 +128,7 @@ export async function readRemoteFile(roots: FileRoots, ask: RemoteFileAsk, devic
     where = found ? real(found) : null;
   }
   if (!where) throw new HostError("not_found", `${device} 上找不到这个文件：${slash(ask.path)}`);
+  if (privateClientPath(where)) throw new HostError("read_only", "禁止读取或转发原生客户端私有对话文件");
   const root = real(roots.root);
   const attachments = real(roots.attachments);
   let rel: string;
@@ -421,3 +422,4 @@ export class RemoteFiles {
     return { path: f.path, mime };
   }
 }
+import { privateClientPath } from "@amo-studio/account";

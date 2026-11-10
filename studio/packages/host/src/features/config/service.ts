@@ -200,7 +200,7 @@ export class ConfigFeature extends Feature<"claudeAccounts" | "scratchpad"> {
 
   /** 中转: sessions' asks go without waiting for the person (设置 → 功能). */
   teamAutoSend(): boolean {
-    return this.store.getKv(TEAM_AUTO_SEND_KEY)?.value === "1";
+    return false;
   }
 
   /** 命令行适配 (设置 → 功能, agent-env.ts): on unless turned off. */
@@ -280,7 +280,7 @@ export class ConfigFeature extends Feature<"claudeAccounts" | "scratchpad"> {
     }
     if (input.teamAutoSend !== undefined) {
       if (typeof input.teamAutoSend !== "boolean") throw new HostError("bad_request", "teamAutoSend must be true or false");
-      this.store.setKv(TEAM_AUTO_SEND_KEY, input.teamAutoSend ? "1" : "0");
+      this.store.setKv(TEAM_AUTO_SEND_KEY, "0");
     }
     if (input.shellHelp !== undefined) {
       if (typeof input.shellHelp !== "boolean") throw new HostError("bad_request", "shellHelp must be true or false");

@@ -1,7 +1,9 @@
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { Bookmark, Session, Task, Topic, Workspace } from "@amo-studio/protocol";
+import { BOOKMARKS_ENABLED } from "@amo-studio/protocol";
 import { selectAndRelease } from "../support/selection.js";
 import { launchStudio, longTurn, screenshot, showMainWindow, type Studio, confirmBookmarkNote } from "../support/studio.js";
+test.skip(!BOOKMARKS_ENABLED, "This fork disables bookmarks; disabled access is covered by cooperation.spec.ts and Host API tests.");
 
 // 书签 (2026-10-19): a passage of a reply bookmarked from the selection bar goes under the task's topic; the bookmarks
 // window groups by topic, a passage row drags out as a quote and 打开对话 brings the workbench back to it, flashing

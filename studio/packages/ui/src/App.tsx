@@ -21,9 +21,7 @@ import { SearchBox } from "./shell/SearchBox.js";
 import type { SearchHit } from "./shell/search.js";
 import { VIEWS } from "./features.js";
 import { experimentalOn, featureOn, FeaturesProvider } from "./lib/features.js";
-import { openMarks, useMarksShortcut } from "./marks/open.js";
 import { navHistory, useNavHistory } from "./shell/navHistory.js";
-import type { MarksTarget } from "./marks/logic.js";
 import { openReview } from "./gitreview/open.js";
 import { openViewer } from "./viewer/open.js";
 import { readIds } from "./lib/storedIds.js";
@@ -135,16 +133,7 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // 书签 (2026-10-19; 文件标记 before): the topic in front — the task's, or the one the board is scoped to — and its project.
-  const marksTarget = (): MarksTarget => {
-    if (view.kind === "task" && host.kind === "ready") {
-      const task = host.state.tasks.find((t) => t.id === view.taskId);
-      return task ? { topicId: task.topicId ?? "none", workspaceId: task.workspaceId, taskId: task.id } : {};
-    }
-    if (scope.kind === "topic") return { topicId: scope.id };
-    return scope.kind === "workspace" ? { workspaceId: scope.id } : {};
-  };
-  useMarksShortcut(marksTarget);
+  // Bookmarks are disabled for this fork; keep stored data for compatibility.
   // 外部打开 Review (2026-10-18): another tool asked the Host (POST /api/review/open); this window opens the review window.
   // An event replayed after a reconnect is not a new request.
   useEffect(
@@ -301,7 +290,7 @@ export function App() {
         needs={needs}
         scopeName={scopeName}
         focus={focus}
-        onMarks={() => openMarks(marksTarget())}
+        cooperationLink={link}
         nav={{ ...nav, go }}
         remote={{ ...remoteButton(remoteState), current: remoteOpen, open: () => setRemoteOpen(true) }}
         duty={{ on: duty?.items.filter((i) => i.enabled).length ?? 0, total: duty?.items.length ?? 0, running: (duty?.running.length ?? 0) > 0, open: () => setDutyOpen(true) }}

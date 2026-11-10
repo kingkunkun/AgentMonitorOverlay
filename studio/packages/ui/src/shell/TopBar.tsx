@@ -5,6 +5,9 @@ import { showToast } from "../lib/toast.js";
 import type { AnyViewDef, View } from "./views.js";
 import { RemoteIcon } from "./BackButton.js";
 import { WindowControls } from "./WindowControls.js";
+import { CooperationMenu } from "./CooperationMenu.js";
+import { BuildMenu } from "./BuildMenu.js";
+import type { HostLink } from "../host/client.js";
 
 /** Focus window on/off, mirrored from the Electron shell (absent in a plain browser). */
 export function useFocusToggle(): { on: boolean; available: boolean; set(on: boolean): void } {
@@ -32,7 +35,9 @@ export function TopBar({
   mark = "./icon.svg",
   remote,
   duty,
+  cooperationLink,
 }: {
+  cooperationLink?: HostLink;
   /** 值守 (2026-10-31): shown once there are items — how many are on, ◐ while one runs; opens the 值守 dialog. */
   duty?: { on: number; total: number; running: boolean; open(): void };
   /** 远程 (2026-10-29): the button that opens the remote page (remote/remote.ts remoteButton says what it shows). */
@@ -76,6 +81,7 @@ export function TopBar({
         </div>
       )}
       <div className="spacer" />
+      {cooperationLink && <BuildMenu link={cooperationLink} />}
       {needs > 0 && (
         <button type="button" className="needs" onClick={() => onView({ kind: "board" })} data-testid="needs-you">
           <span className="dot" style={{ background: "var(--attention)", width: 7, height: 7 }} />
@@ -106,7 +112,8 @@ export function TopBar({
           值守{duty.running ? " ◐" : ""} {duty.on > 0 ? `${duty.on} 项开着` : "都关着"}
         </button>
       )}
-      {remote?.shown && (
+      {cooperationLink && <CooperationMenu link={cooperationLink} onRemote={() => remote?.open()} />}
+      {!cooperationLink && remote?.shown && (
         <button
           type="button"
           className="tb-btn remote-toggle"
@@ -126,7 +133,7 @@ export function TopBar({
           {remote.waiting && <span className="settings-dot" aria-label="有请求或回复等你看" data-testid="topbar-remote-dot" />}
         </button>
       )}
-      {window.amo?.openInRelay && (
+      {!cooperationLink && window.amo?.openInRelay && (
         <button type="button" className="tb-btn" title="打开 Work中转：团队聊天、AI 问询和回复；使用平台的团队账号" data-testid="topbar-relay" onClick={() => void window.amo!.openInRelay!().then((opened) => { if (!opened) showToast({ text: "没有找到 Work中转客户端，请在 AMO 平台里安装，或先编译本机中转客户端。", error: true }); }).catch((err: unknown) => showToast({ text: err instanceof Error ? err.message : String(err), error: true }))}>
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2.5h12v8H7l-3.5 3v-3H2zM5 5.5h6M5 7.5h4" /></svg>
           Work中转

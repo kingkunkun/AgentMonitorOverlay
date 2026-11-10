@@ -3,7 +3,7 @@ import { anchorOf, findAnchor, flatten, HIGHLIGHT_CSS, paint } from "./anchors.j
 import { timeText } from "./bits.js";
 import { FloatBox } from "../../ui/src/review/FloatBox.js";
 import { FloatPanel, Pick } from "./Dialog.js";
-import { copyText } from "./env.js";
+import { copyText, shell } from "./env.js";
 import { Markdown } from "./Markdown.js";
 import { errorText } from "./Messages.js";
 import type { Session } from "./session.js";
@@ -39,6 +39,8 @@ export function useUpload(session: Session, where: Where | null, toast: (t: stri
       setBusy(true);
       const out: RelayFile[] = [];
       try {
+        const destination = "threadId" in where ? where.threadId : where.taskId;
+        if (shell?.confirmUpload && !(await shell.confirmUpload(list, destination))) return [];
         for (const f of list) out.push(await session.client.upload(where, f.name, f, f.type));
         toast(out.length === 1 ? `已上传 ${out[0]!.name} v${out[0]!.version}` : `已上传 ${out.length} 个文件`);
       } catch (err) {

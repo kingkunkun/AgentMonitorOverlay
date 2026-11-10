@@ -355,9 +355,11 @@ export async function startHost(options: StartHostOptions): Promise<RunningHost>
     mcp = { url: `${http.url}/mcp`, token: mcpToken };
     if (options.teamLink) {
       service.teamLink.start(options.teamLink);
+      service.cooperation.initializePrivacy();
       service.teamRelay.start();
     }
     if (options.remote) service.remote.start(options.remote);
+    if (options.teamLink) await service.cooperation.startDefault();
     // 值守 (2026-10-31): its clock runs in every Host; without items it does nothing.
     service.duty.start();
     const info: HostInfo = { url: http.url, port: http.port, pid: process.pid, startedAt: new Date().toISOString() };
@@ -397,7 +399,9 @@ export async function startHost(options: StartHostOptions): Promise<RunningHost>
         stopped = true;
         clearInterval(pruning);
         service.duty.stop();
+        await service.buildJob.stop();
         service.teamRelay.stop();
+        await service.cooperation.stop();
         service.remote.stop();
         service.teamLink.stop();
         await finalHttp.close();

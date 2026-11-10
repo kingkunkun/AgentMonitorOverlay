@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ipcMain, nativeImage, nativeTheme, Notification, protocol, safeStorage, shell, Tray } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, nativeTheme, Notification, protocol, safeStorage, shell, Tray } from "electron";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -20,7 +20,7 @@ import {
   type ShellInfo,
   type UpdateInfo,
 } from "@amo-studio/relay";
-import { readAccount } from "@amo-studio/account";
+import { readAccount, readCooperation, updateCooperation, privateClientPath } from "@amo-studio/account";
 import { badgedImage, overlayImage, TrayMenu } from "@amo-studio/traymenu";
 import { Accounts } from "./accounts.js";
 import { Attention, writeAttention } from "./attention.js";
@@ -56,6 +56,9 @@ const CONTENT_URL = `${SCHEME}://content/index.html`;
 const bundledDir = join(here, "..", "client");
 const bundledContent: InstalledContent | null = existsSync(join(bundledDir, "index.html")) ? { version: "work-bundled", dir: bundledDir } : null;
 const LOADER_URL = `${SCHEME}://shell/loader.html`;
+const DISABLED_URL = `${SCHEME}://shell/disabled.html`;
+let policyEnabled = readCooperation().relayEnabled;
+const DISABLED_HTML = `<!doctype html><meta charset="utf-8"><title>Work中转</title><body style="font:16px system-ui;padding:48px;background:#171b20;color:#eee"><h1>Work中转已关闭</h1><p>已停止此窗口的团队消息连接。关闭窗口与关闭中转功能是两回事。</p><button id="enable">开启中转</button><p id="error"></p><script>document.getElementById('enable').onclick=()=>window.relayLoader.enable().catch(e=>document.getElementById('error').textContent=e.message)</script>`;
 
 app.setPath("userData", join(home, "electron"));
 if (process.platform === "win32") app.setAppUserModelId("AMO.Relay");
@@ -132,7 +135,7 @@ const MIME: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js
 function serveScheme(): void {
   protocol.handle(SCHEME, (req) => {
     const url = new URL(req.url);
-    if (url.host === "shell") return new Response(LOADER_HTML, { headers: { "content-type": "text/html; charset=utf-8" } });
+    if (url.host === "shell") return new Response(url.pathname === "/disabled.html" ? DISABLED_HTML : LOADER_HTML, { headers: { "content-type": "text/html; charset=utf-8" } });
     if (url.host === "content" && content) {
       const file = normalize(join(content.dir, decodeURIComponent(url.pathname)));
       if (file.startsWith(content.dir + sep) && existsSync(file)) return new Response(readFileSync(file), { headers: { "content-type": MIME[extname(file)] ?? "application/octet-stream", "cache-control": "no-store" } });
@@ -239,8 +242,10 @@ const message = (err: unknown) => {
 
 /** Start (or start over, for another address): connect, check, download, then the content. */
 async function boot(askAddress = false): Promise<void> {
+  if (!readCooperation().relayEnabled) { server = null; await win!.loadURL(DISABLED_URL); return; }
   await openLoader();
-  let address = askAddress ? null : (readServer() ?? argServer() ?? (await readAccount().catch(() => null))?.server ?? null);
+  const platformAddress = (await readAccount().catch(() => null))?.server;
+  let address = askAddress ? null : ((bundledContent ? platformAddress : null) ?? readServer() ?? argServer() ?? platformAddress ?? null);
   let askError: string | null = null;
   // What they typed last: kept in the field after a failed try.
   let tried: string | null = null;
@@ -349,6 +354,8 @@ const nodeExe = () => stableExe(process.execPath, buildMode);
 
 /** The content's amo-relay.mjs to a stable place (MCP configs point there), with a launcher for the command line. */
 function installCli(): void {
+  // WorkStudio's task-scoped team tools are the only AI integration; no unrestricted external CLI/MCP identity.
+  if (bundledContent) return;
   if (!content) return;
   const from = join(content.dir, "amo-relay.mjs");
   if (!existsSync(from)) return;
@@ -391,6 +398,19 @@ async function unplainSettings(): Promise<void> {
 }
 
 function wire(): void {
+  ipcMain.handle("relay:confirm-upload", async (_e, files: Array<{ name: string; size: number; path: string }>, destination: string) => {
+    if (!readCooperation().relayEnabled) return false;
+    if (!Array.isArray(files) || files.length > 30 || files.some((f) => privateClientPath(f.path))) throw new Error("不能外发原生客户端的私有数据");
+    const result = await dialog.showMessageBox(win!, { type: "question", title: "确认本次文件外发", message: "允许把这些文件发送到中转服务器吗？", detail: `${server ?? ""}\n目标：${String(destination).slice(0, 200)}\n${files.map((f) => `${f.name}（${f.size} 字节）`).join("\n")}\n此确认独立于模型的全部允许。`, buttons: ["取消", "仅允许本次"], defaultId: 0, cancelId: 0 });
+    return result.response === 1 && readCooperation().relayEnabled && !files.some((f) => privateClientPath(f.path));
+  });
+  ipcMain.handle("relay:set-enabled", async (_e, enabled: unknown) => {
+    if (typeof enabled !== "boolean") throw new Error("开关参数无效");
+    if (enabled && !(await readAccount())) throw new Error("请先在 WorkStudio 合作模式中登录账号");
+    updateCooperation({ relayEnabled: enabled });
+    policyEnabled = enabled;
+    await boot();
+  });
   ipcMain.on("relay:loader-ready", () => (loaderReady?.(), (loaderReady = null)));
   ipcMain.on("relay:loader-server", (_e, value: string) => loaderAnswer?.({ kind: "server", value }));
   ipcMain.on("relay:loader-retry", () => loaderAnswer?.({ kind: "retry" }));
@@ -407,6 +427,7 @@ function wire(): void {
   // The team login AMO 平台 keeps (%APPDATA%\AMO\account.json, the key DPAPI-encrypted; AGENTS.md rule 7, 2026-10-29):
   // the content signs in with it instead of a login of its own. Read each time asked, so a change in the platform shows.
   ipcMain.handle("relay:platform-account", async () => {
+    if (!readCooperation().relayEnabled) return null;
     const a = await readAccount().catch(() => null);
     return a ? { server: a.server, name: a.name, key: a.key } : null;
   });
@@ -414,10 +435,11 @@ function wire(): void {
   ipcMain.handle("relay:save-account", (_e, a: { server: string; name: string; password: string | null }) => accounts.save(a));
   ipcMain.handle("relay:forget-account", (_e, s: string, name: string) => accounts.forget(s, name));
   ipcMain.handle("relay:signed-in", async (_e, identity: { server: string; name: string; key: string } | null) => {
+    if (bundledContent) return; // Never generate an external AI credential/CLI pointer for the integrated client.
     if (identity) await writeIdentity(identity);
     else rmSync(settingsPath(home), { force: true });
   });
-  ipcMain.handle("relay:mcp", () => hookup());
+  ipcMain.handle("relay:mcp", () => { if (bundledContent) throw new Error("隐私规则：请从 WorkStudio 任务中使用中转，不提供外部原生客户端接入"); return hookup(); });
   // Tests never touch the person's clipboard (2026-10-30): what would be copied is kept here for them to read.
   ipcMain.handle("relay:copy", (_e, text: string) => (testMode ? void (copied = text) : clipboard.writeText(text)));
   ipcMain.on("relay:notify", (_e, n: { title: string; body: string; threadId: string }) => {
@@ -742,6 +764,9 @@ function removeRunning(): void {
 }
 
 function start(): void {
+  const policyWatch = setInterval(() => { const next = readCooperation().relayEnabled; if (next !== policyEnabled) { policyEnabled = next; if (win) void boot(); } }, 500);
+  policyWatch.unref();
+  app.on("will-quit", () => clearInterval(policyWatch));
   writeRunning();
   app.on("will-quit", removeRunning);
   app.on("second-instance", (_e, argv, _cwd, data) => {

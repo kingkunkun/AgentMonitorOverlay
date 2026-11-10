@@ -77,6 +77,8 @@ export async function launchStudio(
       AMO_STUDIO_DSH_DESKTOP: "",
       ...(options.portable ? { AMO_STUDIO_PORTABLE_DIR: options.portable.dir } : { AMO_STUDIO_DATA_DIR: dataDir }),
       AMO_STUDIO_PORT: "0",
+      // Each test's personal server must not contend with the user's or another test's listener.
+      AMO_STUDIO_PHONE_PORT: "0",
       // The AMO platform's shared files (account.json, device.json…) of the test, never this machine's own: a login there
       // would connect the test's Host to the real team server (远程, 2026-10-29).
       AMO_HOME: join(root, "amo-home"),

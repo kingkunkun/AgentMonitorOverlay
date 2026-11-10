@@ -3,6 +3,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { OpenInApps, OpenInResult, Session, Task, Workspace } from "@amo-studio/protocol";
+import { BOOKMARKS_ENABLED } from "@amo-studio/protocol";
 import { DEMO_FILE, DEMO_FILE_TEXT } from "@amo-studio/testkit";
 import { launchStudio, screenshot, type Studio, confirmBookmarkNote } from "../support/studio.js";
 
@@ -127,10 +128,12 @@ test("names of existing files in a reply open the viewer, the quick look, VS Cod
   const reveal = await nextOpenIn(viewer, () => viewer.getByTestId("viewer-reveal").click());
   expect(reveal.asked).toMatchObject({ path: join(dir, DEMO_FILE), app: "explorer" });
   expect(reveal.result).toMatchObject({ app: "explorer", dryRun: true });
-  await viewer.getByTestId("mark-file").click();
-  await confirmBookmarkNote(viewer, "demo 的入口");
-  await expect(viewer.getByTestId("toast")).toContainText("书签添加成功");
-  await expect(viewer.getByTestId("mark-file")).toHaveText("已加书签");
+  if (BOOKMARKS_ENABLED) {
+    await viewer.getByTestId("mark-file").click();
+    await confirmBookmarkNote(viewer, "demo 的入口");
+    await expect(viewer.getByTestId("toast")).toContainText("书签添加成功");
+    await expect(viewer.getByTestId("mark-file")).toHaveText("已加书签");
+  } else await expect(viewer.getByTestId("mark-file")).toHaveCount(0);
 
   // The README link (#L2) goes to the same window: the source with line 2 marked, then rendered.
   await links.last().click();
@@ -177,7 +180,7 @@ test("names of existing files in a reply open the viewer, the quick look, VS Cod
   // line 2; then rendered.
   await links.last().click({ button: "right" });
   const menu = page.getByTestId("file-menu");
-  const items: Array<[string, string]> = [["在查看器中打开", "O"], ["在侧栏预览", "P"], ["查看未提交的改动", "D"], ...(vscode ? [["用 VS Code 打开", "V"] as [string, string]] : []), ["在资源管理器中显示", "E"], ["复制路径", "C"], ["加书签", "B"]];
+  const items: Array<[string, string]> = [["在查看器中打开", "O"], ["在侧栏预览", "P"], ["查看未提交的改动", "D"], ...(vscode ? [["用 VS Code 打开", "V"] as [string, string]] : []), ["在资源管理器中显示", "E"], ["复制路径", "C"], ...(BOOKMARKS_ENABLED ? [["加书签", "B"] as [string, string]] : [])];
   await expect(menu.getByRole("menuitem")).toHaveText(items.map(([label, key]) => label + key));
   await expect(menu.getByRole("group")).toHaveCount(3);
   await screenshot(app, "stage-13", "S13-A-file-menu", page);
@@ -190,10 +193,12 @@ test("names of existing files in a reply open the viewer, the quick look, VS Cod
   await preview.getByRole("button", { name: "渲染" }).click();
   await expect(preview.locator(".fp-md strong")).toHaveText("失败时重试");
   // 标记 from the quick look: marks the file at the line; then "已标记" (accent).
-  await preview.getByTestId("mark-file").click();
-  await confirmBookmarkNote(page);
-  await expect(preview.getByTestId("mark-file")).toHaveText("已加书签");
-  await expect(preview.getByTestId("mark-file")).toHaveAttribute("data-marked", "");
+  if (BOOKMARKS_ENABLED) {
+    await preview.getByTestId("mark-file").click();
+    await confirmBookmarkNote(page);
+    await expect(preview.getByTestId("mark-file")).toHaveText("已加书签");
+    await expect(preview.getByTestId("mark-file")).toHaveAttribute("data-marked", "");
+  } else await expect(preview.getByTestId("mark-file")).toHaveCount(0);
 
   // Esc closes it; the right column comes back.
   await page.keyboard.press("Escape");

@@ -2,7 +2,9 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import type { FileMark, Session, Task, Workspace } from "@amo-studio/protocol";
+import { BOOKMARKS_ENABLED } from "@amo-studio/protocol";
 import { launchStudio, screenshot, windowState, type Studio, confirmBookmarkNote } from "../support/studio.js";
+test.skip(!BOOKMARKS_ENABLED, "This fork disables bookmarks; disabled access is covered by cooperation.spec.ts and Host API tests.");
 
 // S12-D acceptance: the file marks window (标记文件 from the project's file selector, a pasted path, files dropped from
 // Explorer; notes saved as typed; 查看 in the viewer window; missing files; delete), and handing marks to a session — @ 标记的文件,

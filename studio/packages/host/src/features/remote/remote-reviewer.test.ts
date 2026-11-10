@@ -52,6 +52,9 @@ async function host(name: string, server: string, account: string, key: string) 
   const store = new Store(join(tempDir(`${name}-data`), "studio.db"));
   const servers = new FakeServers(PROFILES);
   const service = new HostService(store, new CodexRuntime({ store, servers, profiles: PROFILES }), PROFILES);
+  // This fixture simulates the person approving each requested transfer; production has no test-mode bypass.
+  const approve = setInterval(() => { for (const request of service.cooperation.state().transfers) service.cooperation.answer(request.id, true); }, 10);
+  cleanups.push(() => clearInterval(approve));
   const options = { env, protector: fake, watchMs: 30, backoff: new Backoff({ baseMs: 30, maxMs: 120 }), pingTimeoutMs: 2000 };
   service.remote.start(options);
   await service.remote.setEnabled(true);

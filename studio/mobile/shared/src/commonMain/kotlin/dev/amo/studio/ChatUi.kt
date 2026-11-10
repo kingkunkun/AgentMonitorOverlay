@@ -52,6 +52,11 @@ internal fun chatRows(items: List<JSONObject>): List<ChatRow> {
 private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") && e.json.str("state") == "pending"
 
 @Composable internal fun ChatScreen(state: StudioState, repo: StudioRepository, back: () -> Unit, newSession: () -> Unit, openTask: () -> Unit) {
+    var choices by remember { mutableStateOf<JSONObject?>(null) }
+    var selectedModel by remember { mutableStateOf("") }
+    var selectedEffort by remember { mutableStateOf("") }
+    var selectedPermission by remember { mutableStateOf("") }
+    var people by remember { mutableStateOf<JSONObject?>(null) }
     val session = state.selectedSession
     val identity = listOf(state.account?.server, state.account?.name, state.selectedPeer?.identity, state.selectedTask?.id, session?.id ?: "").joinToString("\n")
     val draftKey = remember(identity) { identity.encodeUtf8().sha256().hex() }
@@ -95,6 +100,9 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
                     DropdownMenuItem(text = { Text("新会话") }, enabled = writable || (state.connected && task?.peer?.online == true && !task.revoked), onClick = { menu = false; newSession() })
                     DropdownMenuItem(text = { Text("这个任务的全部会话") }, onClick = { menu = false; openTask() })
                     DropdownMenuItem(text = { Text("刷新") }, onClick = { menu = false; repo.refresh(force = true) })
+                    DropdownMenuItem(text = { Text("执行 iOS 打包") }, enabled = writable, onClick = { menu = false; repo.send("/打包") })
+                    DropdownMenuItem(text = { Text("@ 团队成员") }, enabled = writable, onClick = { menu = false; repo.teamPeople { people = it } })
+                    DropdownMenuItem(text = { Text("模型、思考与权限") }, enabled = writable, onClick = { menu = false; repo.sessionChoices { value -> choices = value; val current = value.optJSONObject("options"); selectedModel = current?.str("model") ?: ""; selectedEffort = current?.str("effort") ?: ""; selectedPermission = current?.str("permission") ?: "" } })
                 }
             }
         }
@@ -132,6 +140,28 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
             sentAfter = state.items.maxOfOrNull { it.optLong("seq", -1L) } ?: -1L; submitted = draft.trim(); saveDraft(submitted)
             prefs.edit(now = true) { put("pending-$draftKey", submitted); put("after-$draftKey", sentAfter) }; repo.send(submitted); stick = true
         }
+    }
+    choices?.optJSONObject("choices")?.let { available ->
+        val models = available.objects("models")
+        val model = models.find { it.str("id") == selectedModel } ?: models.firstOrNull()
+        val efforts = model?.optJSONArray("efforts")
+        val effortValues = if (efforts == null) emptyList() else (0 until efforts.length()).map { efforts.optString(it) }
+        AlertDialog(onDismissRequest = { choices = null }, title = { Text("电脑上的模型与权限") }, text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Choice("模型", listOf("" to "默认") + models.map { it.str("id") to it.str("label") }, selectedModel) { selectedModel = it; selectedEffort = "" }
+            Choice("思考强度", listOf("" to "默认") + effortValues.map { it to when (it) { "low" -> "低"; "medium" -> "中"; "high" -> "高"; "xhigh" -> "极高"; "max" -> "最高"; else -> it } }, selectedEffort) { selectedEffort = it }
+            Choice("权限", listOf("" to "默认") + available.objects("permissions").filter { it.str("unavailable").isBlank() }.map { it.str("id") to it.str("label") }, selectedPermission) { selectedPermission = it }
+            Text("任务仍在电脑执行。全部允许不能跳过电脑上的文件外发确认。", style = MaterialTheme.typography.bodySmall)
+        } }, confirmButton = { AmoTextButton(onClick = { repo.setSessionOptions(selectedModel, selectedEffort, selectedPermission); choices = null }) { Text("应用到电脑会话") } }, dismissButton = { AmoTextButton(onClick = { choices = null }) { Text("取消") } })
+    }
+    people?.let { members ->
+        AlertDialog(onDismissRequest = { people = null }, title = { Text("@ 团队成员") }, text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                members.objects("people").forEach { person ->
+                    AmoTextButton(onClick = { saveDraft("$draft @${person.str("name")} "); people = null }) { Text(person.str("name") + " · " + person.str("role")) }
+                }
+                Text("请在消息中说明要联系谁、问什么。电脑会使用 Work中转能力，外发仍需确认。")
+            }
+        }, confirmButton = { AmoTextButton(onClick = { people = null }) { Text("取消") } })
     }
     detail?.let { id -> state.items.find { it.str("id") == id }?.let { item -> DetailSheet(item, { detail = null }) { path, cwd -> detail = null; repo.openFile(path, cwd) } } ?: run { detail = null } }
 }

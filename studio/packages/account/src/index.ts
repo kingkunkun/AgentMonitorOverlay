@@ -8,3 +8,5 @@ export * from "./dpapi.js";
 export * from "./account.js";
 // This computer (device.json): readDevice(), ensureDevice(), setDeviceName(), for pairing devices (remote sessions)
 export * from "./device.js";
+export * from "./cooperation.js";
+export * from "./privacy.js";

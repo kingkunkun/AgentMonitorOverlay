@@ -1,4 +1,5 @@
 import { StrictMode } from "react";
+import { BOOKMARKS_ENABLED } from "@amo-studio/protocol";
 import { createRoot } from "react-dom/client";
 import { App } from "./App.js";
 import { FocusApp } from "./focus/FocusApp.js";
@@ -62,7 +63,7 @@ if (focus) document.documentElement.classList.add("focus-mode");
 // The 便签's windows (#scratchpad, #notes-settings, #notes-tray-menu) are notes.html's since 2026-10-23.
 
 // The file marks window (文件标记, S12-D), loaded with #marks?workspace=….
-const marks = location.hash.startsWith("#marks");
+const marks = BOOKMARKS_ENABLED && location.hash.startsWith("#marks");
 // The viewer window (查看器, stage 13), loaded with #viewer?path=….
 const viewer = location.hash.startsWith("#viewer");
 // 画布小窗 (2026-10-27), loaded with #canvas-mini?topic=….

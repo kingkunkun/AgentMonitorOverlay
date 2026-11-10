@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
-import { remoteFileKind, type FileDiff } from "@amo-studio/protocol";
+import { BOOKMARKS_ENABLED, remoteFileKind, type FileDiff } from "@amo-studio/protocol";
 import { copyText, HostApiError, type HostLink } from "../host/client.js";
 import { ActionMenu } from "../lib/ActionMenu.js";
 import { MarkdownFileLinks } from "../lib/markdown.js";
@@ -207,7 +207,7 @@ export function FileLinks({
             [{ label: "在资源管理器中显示", key: "E", run: () => void revealInExplorer(link, t.file).catch(fail) }],
             [
               { label: "复制路径", key: "C", run: () => void copyText(t.file.path) },
-              { label: "加书签", key: "B", run: () => void markOrShow(link, t.file, t.line, sessionId ?? undefined).catch(fail) },
+              BOOKMARKS_ENABLED && { label: "加书签", key: "B", run: () => void markOrShow(link, t.file, t.line, sessionId ?? undefined).catch(fail) },
             ],
           ]}
         />

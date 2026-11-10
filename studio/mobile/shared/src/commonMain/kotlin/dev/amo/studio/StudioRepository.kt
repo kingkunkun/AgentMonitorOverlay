@@ -494,6 +494,15 @@ class StudioRepository(private val platform: Platform) {
         if (state.value.selectedTask?.key == task.key && state.value.selectedSession?.id == session.id) fetchItems(session.id)
     }
     fun send(text: String) = sessionCommand("rt.send", JSONObject().put("text", text))
+    fun teamPeople(receive: (JSONObject) -> Unit) = mutate {
+        val task = active(); val session = state.value.selectedSession ?: error("请先选择会话")
+        receive(command(task.peer, "rt.people", JSONObject().put("sessionId", session.id)))
+    }
+    fun sessionChoices(receive: (JSONObject) -> Unit) = mutate {
+        val task = active(); val session = state.value.selectedSession ?: error("请先选择会话")
+        receive(command(task.peer, "rt.choices", JSONObject().put("sessionId", session.id)))
+    }
+    fun setSessionOptions(model: String, effort: String, permission: String) = sessionCommand("rt.options", JSONObject().put("options", JSONObject().put("model", model.ifBlank { JSONObject.NULL }).put("effort", effort.ifBlank { JSONObject.NULL }).put("permission", permission.ifBlank { JSONObject.NULL })))
     fun approve(item: JSONObject, decision: String) = sessionCommand("rt.approve", JSONObject().put("approvalId", item.str("approvalId", item.str("id"))).put("decision", decision))
     fun answer(item: JSONObject, reply: JSONObject) = sessionCommand("rt.answer", JSONObject().put("itemId", item.str("id")).put("reply", reply))
     fun interrupt() = sessionCommand("rt.interrupt")

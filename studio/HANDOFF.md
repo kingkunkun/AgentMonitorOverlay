@@ -10,8 +10,8 @@
 |---|---|
 | 开发目录 | `G:\PROJECT\AgentMonitorOverlay\studio`（桌面快捷方式「AMO Source」指这里的 `start-studio.cmd`） |
 | 分支 | `master` 是主线；旧版 AMO 在标签 `amo-legacy-final` |
-| kingkunkun fork | 本机 `D:\Codex\AgentMonitorOverlay`；origin 仅 `kingkunkun/AgentMonitorOverlay`，upstream 只拉取。2026-11-09 同步 upstream `455720b4`，WorkStudio 名称和依赖安全修复保留。安全边界与手机/中转说明见 `docs/security-review-2026-11-09.md`。本地已编译，正在运行的旧 Host 未重启；`.data` 保留。 |
-| Work中转（本机集成） | WorkStudio 顶栏打开配套窗口，集成包使用 `--amo-app=relay`。本机界面随包更新，账号和旧中转数据目录兼容。编译/入口说明 `docs/work-relay.md`；当前工作台外壳需重新打开才能加载新增 IPC。 |
+| kingkunkun fork | 本机 `D:\Codex\AgentMonitorOverlay`；origin 仅 `kingkunkun/AgentMonitorOverlay`，upstream 禁止推送。上游同步基线 `455720b4`，WorkStudio 名称与依赖修复保留。11-10 本地编译并正常重启，新 Host 保留原 43 任务/45 会话；`.data/backup-before-cooperation-20261110-155234` 为升级备份。当前远程/中转关闭，手机服务仅本机监听。新边界和连接说明见 `docs/cooperation-privacy-lan.md`。 |
+| Work中转 / 合作模式（本机集成） | 顶栏合作模式内置账号、远程/中转独立开关、LAN 手机服务，书签和原生历史导入关闭。数据保留，旧独立中转停用。边界和使用步骤见 `docs/cooperation-privacy-lan.md`；打包仅接 `SurvivorTD_IOS_Auto`，真实 Jenkins 待用户在本机配置 API Token 后验收，见 `docs/build-job.md`。 |
 | 常设 worktree | 都是 master 的 detached worktree：值守目录 `G:\PROJECT\AgentMonitorOverlay-duty`（值守修问题、`release land`）、打包目录 `G:\PROJECT\AgentMonitorOverlay-release`（自动打包跑 `release auto --if-due`）。别的 worktree 是各任务自己的（`git worktree list` 看） |
 | 用户在用的 Studio | 平台装的版本（`D:\TOOLS\AMO Platform\apps\studio\<版本>`），不是这个开发目录：在这里改代码、build 都不影响它；提交进 master 且写了「下一版」的会被自动打包发到测试通道，用户自己选装 |
 | 开发版 | `npm start`（先 build 再开窗口），数据在 `studio\.data`。Host 常驻在 47900 端口；改了 Host 代码要先 `npm run host:stop` 再 `npm start` |

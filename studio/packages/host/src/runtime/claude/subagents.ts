@@ -14,6 +14,8 @@ type CallUsage = { input_tokens?: number; output_tokens?: number; cache_read_inp
 // for Codex; it cannot take messages itself. An agent can be resumed with SendMessage, even by a later process.
 
 export class ClaudeSubagents {
+  private readonly pendingReads = new Set<ReturnType<typeof setTimeout>>();
+  stop(): void { for (const timer of this.pendingReads) clearTimeout(timer); this.pendingReads.clear(); }
   constructor(
     private readonly core: ClaudeCore,
     private readonly turns: ClaudeTurns,
@@ -121,7 +123,9 @@ export class ClaudeSubagents {
     const session = this.core.store.getSession(child);
     if (!session) return;
     this.fillFromLog(session);
-    setTimeout(() => this.fillFromLog(session), 2000).unref?.();
+    const timer = setTimeout(() => { this.pendingReads.delete(timer); this.fillFromLog(session); }, 2000);
+    this.pendingReads.add(timer);
+    timer.unref?.();
   }
 
   /**

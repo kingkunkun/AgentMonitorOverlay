@@ -236,6 +236,7 @@ export class RemoteCreates {
   /** rt.catalog: what the device may pick — A's topics, the allowed projects, the common folder, the allowed models. */
   catalog(from: DeviceRef): RemoteCatalog {
     this.requireOwner(from);
+    const own = this.ctx.host.cooperation.ownDevice(from.account);
     const tasks = this.store.listTasks().filter((t) => !t.archivedAt && !t.remote);
     const workspaces = this.store.listWorkspaces();
     const last = new Map<Id, string>();
@@ -247,7 +248,7 @@ export class RemoteCreates {
       touch(t.topicId, t.updatedAt);
     }
     const byLast = <T extends { lastUsed: string | null }>(list: T[]) => list.sort((a, b) => (b.lastUsed ?? "").localeCompare(a.lastUsed ?? ""));
-    const allowed = new Set(this.liveProjects());
+    const allowed = new Set(own ? workspaces.filter((w) => !w.archivedAt && !isCommon(w)).map((w) => w.id) : this.liveProjects());
     const projects = byLast(
       [...allowed].map((id) => ({ id, name: this.store.getWorkspace(id)!.name, lastUsed: last.get(id) ?? null })),
     );
@@ -257,7 +258,8 @@ export class RemoteCreates {
         .filter((t) => !t.archivedAt)
         .map((t) => ({ id: t.id, title: t.title, workspaceIds: topicWorkspaceIds(t, tasks, workspaces).filter((id) => allowed.has(id)), lastUsed: last.get(t.id) ?? null })),
     );
-    return { name: this.ctx.deviceName(), topics, projects, allowCommon: this.allowedProjects().common, models: this.models().map((id) => ({ id, label: this.grants.labelOf(id) })), confirm: this.confirms(from) };
+    const models = own ? this.ctx.host.profiles.filter((p) => !p.hidden && !p.unavailable && p.runtime !== "remote").map((p) => p.id) : this.models();
+    return { name: this.ctx.deviceName(), topics, projects, allowCommon: own || this.allowedProjects().common, models: models.map((id) => ({ id, label: this.grants.labelOf(id) })), confirm: this.confirms(from) };
   }
 
   /**
@@ -281,14 +283,16 @@ export class RemoteCreates {
   async create(from: DeviceRef, body: Record<string, unknown>): Promise<RemoteCreateAnswer> {
     this.requireOwner(from);
     const name = this.ctx.deviceName();
-    if (!remoteCreateOpen({ workspaceIds: this.liveProjects(), common: this.allowedProjects().common })) throw new HostError("bad_request", `${name} 还没勾远端允许的项目：在那台电脑的 远程 → 远程设置 里勾`);
+    const own = this.ctx.host.cooperation.ownDevice(from.account);
+    const projects = own ? this.store.listWorkspaces().filter((w) => !w.archivedAt).map((w) => w.id) : this.liveProjects();
+    if (!own && !remoteCreateOpen({ workspaceIds: this.liveProjects(), common: this.allowedProjects().common })) throw new HostError("bad_request", `${name} 还没勾远端允许的项目：在那台电脑的 远程 → 远程设置 里勾`);
     const text = textOf(body.text, "第一句话", TEXT_MAX, true);
     const title = textOf(body.title, "任务名", TITLE_MAX, false) || text.slice(0, 60);
     let workspaceId: Id | null = null;
     if (body.workspaceId === null || body.workspaceId === undefined || body.workspaceId === "") {
-      if (!this.allowedProjects().common) throw new HostError("bad_request", `${name} 不允许远程任务不选项目（公共文件夹）：选一个项目`);
+      if (!own && !this.allowedProjects().common) throw new HostError("bad_request", `${name} 不允许远程任务不选项目（公共文件夹）：选一个项目`);
     } else {
-      if (typeof body.workspaceId !== "string" || !this.liveProjects().includes(body.workspaceId)) throw new HostError("bad_request", `这个项目不在 ${name} 远端允许的项目里（可能刚被取消勾选）`);
+      if (typeof body.workspaceId !== "string" || !projects.includes(body.workspaceId)) throw new HostError("bad_request", `这个项目不在 ${name} 远端允许的项目里（可能刚被取消勾选）`);
       workspaceId = body.workspaceId;
     }
     let topicId: Id | null = null;
@@ -297,9 +301,10 @@ export class RemoteCreates {
       if (!topic || topic.archivedAt) throw new HostError("not_found", `${name} 上没有这个专题了（可能刚归档）`);
       topicId = topic.id;
     }
-    if (!this.grants.allowed().profiles.length) throw new HostError("bad_request", `${name} 还没勾远端允许的模型：在那台电脑的 远程 → 远程设置 里勾`);
+    if (!own && !this.grants.allowed().profiles.length) throw new HostError("bad_request", `${name} 还没勾远端允许的模型：在那台电脑的 远程 → 远程设置 里勾`);
     const profileId = typeof body.profileId === "string" ? body.profileId : "";
-    if (!this.models().includes(profileId)) throw new HostError("bad_request", `这个模型不在 ${name} 远端允许的模型里（或现在用不了）`);
+    const models = own ? this.ctx.host.profiles.filter((p) => !p.hidden && !p.unavailable && p.runtime !== "remote").map((p) => p.id) : this.models();
+    if (!models.includes(profileId)) throw new HostError("bad_request", `这个模型不在 ${name} 远端允许的模型里（或现在用不了）`);
     // Pictures and files B sent first (rt.upload) become this computer's attachments (a DSH session takes no pictures).
     const inbox = this.ctx.inbox();
     const claimed: Claimed = inbox.claim(from, body.uploads, { noImages: this.ctx.host.profiles.find((p) => p.id === profileId)?.runtime === "dsh" });

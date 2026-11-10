@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { BOOKMARKS_ENABLED } from "@amo-studio/protocol";
 import { baseName } from "../attach/refs.js";
 import { HostApiError, type HostLink } from "../host/client.js";
 import type { FileRef } from "../lib/openin.js";
@@ -18,7 +19,7 @@ type MarkButtonProps = { link: HostLink; file: FileRef; line?: number | null; se
 
 /** Bookmarks are WorkStudio's: the AMO Reviewer program on its own shows none (2026-10-23). */
 export function MarkButton(props: MarkButtonProps) {
-  return inAmo() ? <AmoMarkButton {...props} /> : null;
+  return BOOKMARKS_ENABLED && inAmo() ? <AmoMarkButton {...props} /> : null;
 }
 
 function AmoMarkButton({ link, file, line, sessionId, className = "btn-ghost small" }: MarkButtonProps) {
