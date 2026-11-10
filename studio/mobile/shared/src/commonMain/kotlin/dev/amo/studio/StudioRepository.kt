@@ -506,7 +506,12 @@ class StudioRepository(private val platform: Platform) {
         val task = active(); val session = state.value.selectedSession ?: error("请先选择会话")
         receive(command(task.peer, "rt.choices", JSONObject().put("sessionId", session.id)))
     }
-    fun setSessionOptions(model: String, effort: String, permission: String) = sessionCommand("rt.options", JSONObject().put("options", JSONObject().put("model", model.ifBlank { JSONObject.NULL }).put("effort", effort.ifBlank { JSONObject.NULL }).put("permission", permission.ifBlank { JSONObject.NULL })))
+    fun setSessionOptions(model: String, effort: String, permission: String, receive: ((JSONObject) -> Unit)? = null) = mutate {
+        val task = active(); val session = state.value.selectedSession ?: error("请先选择会话")
+        check(!session.archived) { "会话已归档" }
+        val result = command(task.peer, "rt.options", JSONObject().put("sessionId", session.id).put("options", JSONObject().put("model", model.ifBlank { JSONObject.NULL }).put("effort", effort.ifBlank { JSONObject.NULL }).put("permission", permission.ifBlank { JSONObject.NULL })))
+        receive?.invoke(result.optJSONObject("session")?.optJSONObject("options") ?: JSONObject())
+    }
     fun approve(item: JSONObject, decision: String) = sessionCommand("rt.approve", JSONObject().put("approvalId", item.str("approvalId", item.str("id"))).put("decision", decision))
     fun answer(item: JSONObject, reply: JSONObject) = sessionCommand("rt.answer", JSONObject().put("itemId", item.str("id")).put("reply", reply))
     fun interrupt() = sessionCommand("rt.interrupt")

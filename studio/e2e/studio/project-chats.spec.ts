@@ -39,7 +39,7 @@ test("projects retain boards and expand chats with pin, rename, archive, new cha
     await expect(page.getByRole("region", { name: "新聊天", exact: true })).toBeVisible();
     await expect(page.getByRole("textbox", { name: "任务名", exact: true })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "选择项目", exact: true })).toContainText(ws.name);
-    await expect(page.getByRole("button", { name: "选择模型", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "模型与思考强度", exact: true })).toBeVisible();
     await expect(page.locator(".foot-hints")).toHaveCount(0);
     await screenshot(app, "studio", "codex-new-chat", page);
     await page.getByRole("button", { name: "设置", exact: true }).click();

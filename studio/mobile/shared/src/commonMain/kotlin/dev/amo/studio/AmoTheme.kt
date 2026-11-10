@@ -71,7 +71,7 @@ fun AmoTheme(preference: String, content: @Composable () -> Unit) {
     val sans = variableFont(Res.font.noto_sans_sc)
     val serif = variableFont(Res.font.noto_serif_sc)
     val codeFont = variableFont(Res.font.jetbrains_mono)
-    val body = base.bodyLarge.copy(fontFamily = sans, fontSize = 14.sp, lineHeight = 22.sp)
+    val body = base.bodyLarge.copy(fontFamily = sans, fontSize = if (codex) 15.sp else 14.sp, lineHeight = if (codex) 26.sp else 22.sp)
     val title = base.titleLarge.copy(fontFamily = if (codex) sans else serif, fontSize = 19.sp, lineHeight = 29.sp)
     val typography = Typography(bodyLarge = body, bodyMedium = body, bodySmall = body.copy(fontSize = 13.sp, lineHeight = 21.sp), titleLarge = title, titleMedium = body.copy(fontSize = 16.sp, lineHeight = 25.sp, fontWeight = FontWeight.Medium), titleSmall = body.copy(fontSize = 14.sp, fontWeight = FontWeight.Medium), displayLarge = title.copy(fontSize = 24.sp, lineHeight = 36.sp), displayMedium = title.copy(fontSize = 24.sp, lineHeight = 36.sp), displaySmall = title, headlineLarge = title.copy(fontSize = 24.sp, lineHeight = 36.sp), headlineMedium = title.copy(fontSize = 24.sp, lineHeight = 36.sp), headlineSmall = title, labelLarge = body.copy(fontSize = 14.sp, fontWeight = FontWeight.Medium), labelMedium = body.copy(fontSize = 13.sp, fontWeight = FontWeight.Medium), labelSmall = body.copy(fontSize = 12.sp, fontWeight = FontWeight.Medium))
     CompositionLocalProvider(LocalAmoColors provides if (dark) darkAmo else if (codex) codexAmo else lightAmo, LocalAmoCodeFont provides codeFont) {

@@ -3,7 +3,8 @@ import type { ModelProfile, Session, SessionOptions, SessionPreset } from "@amo-
 import { call, HostApiError, type HostLink } from "../host/client.js";
 import { activeModel, optionsSummary, sameOptions, useProfileChoices } from "../lib/choices.js";
 import { rememberPick } from "../lib/recents.js";
-import { EffortBars, FastToggle, Mark, nextEffort, PermissionTiles, pickLabel } from "./pickers.js";
+import { nextEffort, pickLabel } from "./pickers.js";
+import { ComposerModelPicker } from "./ComposerModelPicker.js";
 import { DSH_FULL_ACCESS, SandboxHint } from "../settings/SandboxHint.js";
 import { SessionMcpTray, useSessionMcp } from "../mcp/SessionMcp.js";
 
@@ -12,7 +13,7 @@ import { SessionMcpTray, useSessionMcp } from "../mcp/SessionMcp.js";
 // composer; the effort bars are clicked directly. Models switch only within the session's own account (the context
 // stays); another account needs a new session. Codex takes a change from the next turn, Claude at once.
 
-type Tray = "model" | "permission" | "mcp" | null;
+type Tray = "model" | "permission" | "tools" | "mcp" | null;
 
 export function SessionOptionsBar({
   link,
@@ -84,7 +85,7 @@ export function SessionOptionsBar({
     rememberPick({ profileId: session.profileId, model: m?.isDefault ? null : id });
     void apply(next, `型号换成「${label}」`);
   };
-  const setEffort = (effort: string) => void apply({ ...session.options, effort }, "思考强度已改");
+  const setEffort = (effort: string | null) => void apply({ ...session.options, effort: effort ?? undefined }, "思考强度已改");
   const setFast = (on: boolean) => void apply(session.options, on ? "Fast 已开" : "Fast 已关", on);
   const setPermission = (id: string) => void apply({ ...session.options, permission: id }, `权限换成「${choices?.permissions.find((p) => p.id === id)?.label ?? id}」`);
 
@@ -112,112 +113,27 @@ export function SessionOptionsBar({
   const label = pickLabel(profile, model?.id ?? session.options.model ?? null, choices?.models);
   const permission = choices?.permissions.find((p) => p.id === (session.options.permission ?? choices.defaultPermission));
 
+  const fullAccess = /full|bypass|danger/i.test(permission?.id ?? "") || /全部允许|完全访问|完全允许/.test(permission?.label ?? "");
   return (
-    <div className="session-options" ref={box}>
-      {tray === "mcp" && (
-        <div className="tray" role="dialog" aria-label="MCP" data-testid="options-tray">
-          <SessionMcpTray link={link} session={session} state={mcp.state} onState={mcp.setState} disabled={disabled} />
-        </div>
-      )}
-      {tray && tray !== "mcp" && choices && (
-        <div className="tray" role="dialog" aria-label={tray === "model" ? "换型号" : "权限"} data-testid="options-tray">
-          <div className="tray-h">
-            {tray === "model" ? "换型号" : "权限"}
-            <span className="tray-note">{tray === "model" ? `只在 ${profile?.label ?? "同一家"} 里换，上下文不变，${when}` : when}</span>
-            <kbd>{tray === "model" ? "Alt M" : "Alt P"}</kbd>
-          </div>
-          {tray === "model" ? (
-            <>
-              <div className="tray-row" role="group" aria-label="型号">
-                {choices.models.map((m) => (
-                  <button key={m.id} type="button" className="mtile" aria-pressed={model?.id === m.id} disabled={busy} title={m.description} onClick={() => setModel(m.id, m.label)}>
-                    <Mark profile={profile} small />
-                    <span className="mtile-main">{m.label}</span>
-                  </button>
-                ))}
-              </div>
-              <span className="tray-note">要换到别家的模型，新开一个会话。</span>
-            </>
-          ) : (
-            <>
-              <PermissionTiles choices={choices} value={session.options.permission ?? null} onChange={setPermission} disabled={busy} />
-              <SandboxHint
-                link={link}
-                workspaceId={session.workspaceId}
-                active={session.runtime === "dsh" && (session.options.permission ?? choices.defaultPermission) === "workspace-write"}
-                onUseFull={() => setPermission(DSH_FULL_ACCESS)}
-              />
-            </>
-          )}
-        </div>
-      )}
-      <div className="status-line" data-testid="session-options" title={optionsSummary(choices, session.options)}>
-        <button
-          type="button"
-          className="seg-btn"
-          aria-expanded={tray === "model"}
-          disabled={disabled || !choices}
-          onClick={() => setTray((t) => (t === "model" ? null : "model"))}
-          onContextMenu={(e) => {
-            // Right click: the same models, as on the tiles elsewhere.
-            e.preventDefault();
-            setTray("model");
-          }}
-          data-testid="switch-model"
-        >
-          <Mark profile={profile} small />
-          <span>{label.main}</span>
-        </button>
-        {model && model.efforts.length > 0 && (
-          <EffortBars efforts={model.efforts} value={session.options.effort ?? null} fallback={model.defaultEffort} onChange={setEffort} disabled={disabled || busy} small />
-        )}
-        {(session.runtime === "codex" || session.runtime === "claude") && <FastToggle fast={model?.fast} value={session.options.fast} onChange={setFast} disabled={disabled || busy} small when={when} />}
-        <button
-          type="button"
-          className="seg-btn"
-          aria-expanded={tray === "permission"}
-          disabled={disabled || !choices}
-          onClick={() => setTray((t) => (t === "permission" ? null : "permission"))}
-          data-testid="switch-permission"
-        >
-          <span aria-hidden="true">⛨</span>
-          <span>{permission?.label ?? "默认权限"}</span>
-        </button>
-        {session.runtime !== "remote" && (
-          <button
-            type="button"
-            className="seg-btn"
-            aria-expanded={tray === "mcp"}
-            onClick={() => {
-              if (tray !== "mcp") mcp.refresh();
-              setTray((t) => (t === "mcp" ? null : "mcp"));
-            }}
-            title="这个会话用哪些 MCP（Studio 自带的 amo 一直都在）"
-            data-testid="switch-mcp"
-          >
-            <span>MCP{mcp.state ? ` ${mcpOn}` : ""}</span>
-          </button>
-        )}
-      </div>
-      {mine.map((p) => (
-        <button
-          key={p.id}
-          type="button"
-          className={`preset-chip${sameOptions(p.options, session.options) ? " active" : ""}`}
-          aria-pressed={sameOptions(p.options, session.options)}
-          disabled={disabled || busy}
-          title={optionsSummary(choices, p.options)}
-          onClick={() => void apply(p.options, `已换成预设「${p.name}」`)}
-          data-testid="preset-chip"
-        >
-          {p.name}
-        </button>
-      ))}
-      {note && (
-        <span className={note.error ? "form-error" : "applied"} role={note.error ? "alert" : "status"} data-testid="options-note">
-          {note.error ? note.text : `✓ ${note.text}`}
-        </span>
-      )}
+    <div className="session-options codex-session-options" ref={box} data-testid="session-options" title={optionsSummary(choices, session.options)}>
+      <button type="button" className="composer-permission" data-full-access={fullAccess || undefined} aria-label="权限" aria-expanded={tray === "permission"} data-testid="switch-permission" disabled={disabled || busy || !choices} onClick={() => setTray(tray === "permission" ? null : "permission")}><span aria-hidden="true">⛨</span>{fullAccess ? "完全访问" : permission?.label ?? "默认权限"}</button>
+      <button type="button" className="composer-tools-trigger" aria-label="更多工具" title="更多工具与预设" aria-expanded={tray === "tools"} data-testid="composer-tools" onClick={() => setTray(tray === "tools" ? null : "tools")}>+</button>
+      {tray === "permission" && choices && <div className="composer-popover composer-permission-menu" role="dialog" aria-label="权限" data-testid="options-tray">
+        <div className="composer-popover-heading">权限</div>
+        {choices.permissions.map((p) => <button type="button" className="composer-permission-option" key={p.id} disabled={busy || !!p.unavailable} aria-pressed={permission?.id === p.id} onClick={() => setPermission(p.id)} title={p.unavailable ?? p.description}><span><b>{p.label}</b><small>{p.unavailable ?? p.description}</small></span><span aria-hidden="true">{permission?.id === p.id ? "✓" : ""}</span></button>)}
+        <SandboxHint link={link} workspaceId={session.workspaceId} active={session.runtime === "dsh" && (session.options.permission ?? choices.defaultPermission) === "workspace-write"} onUseFull={() => setPermission(DSH_FULL_ACCESS)} />
+        <p className="composer-popover-note">文件外发仍须本机逐次确认。{when}。</p>
+      </div>}
+      {tray === "tools" && <div className="composer-popover composer-tools-menu" role="dialog" aria-label="更多工具">
+        {session.runtime !== "remote" && <button type="button" data-testid="switch-mcp" onClick={() => { mcp.refresh(); setTray("mcp"); }}>MCP{mcp.state ? ` · ${mcpOn} 个已启用` : ""}<span aria-hidden="true">›</span></button>}
+        {mine.length > 0 && <div className="composer-popover-heading">常用预设</div>}
+        {mine.map((p) => <button type="button" key={p.id} data-testid="preset-chip" aria-pressed={sameOptions(p.options, session.options)} disabled={disabled || busy} title={optionsSummary(choices, p.options)} onClick={() => void apply(p.options, `已换成预设「${p.name}」`)}>{p.name}<span aria-hidden="true">{sameOptions(p.options, session.options) ? "✓" : ""}</span></button>)}
+        {!mine.length && session.runtime === "remote" && <p className="composer-popover-note">此会话暂无其他工具选项。</p>}
+      </div>}
+      {tray === "mcp" && <div className="tray" role="dialog" aria-label="MCP" data-testid="options-tray"><SessionMcpTray link={link} session={session} state={mcp.state} onState={mcp.setState} disabled={disabled} /></div>}
+      <span className="composer-options-spacer" />
+      <ComposerModelPicker models={choices?.models ?? []} model={model} label={label.main} effort={session.options.effort} fast={session.options.fast} disabled={disabled || busy || !choices} open={tray === "model"} onOpen={(on) => setTray(on ? "model" : null)} onModel={setModel} onEffort={setEffort} onFast={setFast} footer={<p className="composer-popover-note">当前账号：{profile?.label ?? "默认"}。切换型号保留上下文，{when}；其他账号请新开会话。</p>} />
+      {note && <span className={note.error ? "form-error composer-options-note" : "applied composer-options-note"} role={note.error ? "alert" : "status"} data-testid="options-note">{note.error ? note.text : `✓ ${note.text}`}</span>}
     </div>
   );
 }

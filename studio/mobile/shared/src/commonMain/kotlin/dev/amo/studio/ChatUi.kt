@@ -53,6 +53,8 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
 
 @Composable internal fun ChatScreen(state: StudioState, repo: StudioRepository, back: () -> Unit, newSession: () -> Unit, openTask: () -> Unit) {
     var choices by remember { mutableStateOf<JSONObject?>(null) }
+    var optionPanel by remember { mutableStateOf<String?>(null) }
+    var modelList by remember { mutableStateOf(false) }
     var selectedModel by remember { mutableStateOf("") }
     var selectedEffort by remember { mutableStateOf("") }
     var selectedPermission by remember { mutableStateOf("") }
@@ -75,6 +77,14 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
     val task = state.selectedTask
     val writable = state.connected && !state.busy && task?.peer?.online == true && !task.revoked && session?.archived != true
     LaunchedEffect(session?.id, state.connected) { if (state.connected && session != null) repo.chatPresets { presets = it.objects("presets") } }
+    fun loadOptions(panel: String? = null) { if (panel != null) optionPanel = panel; repo.sessionChoices { value -> choices = value; val current = value.optJSONObject("options"); selectedModel = current?.str("model") ?: ""; selectedEffort = current?.str("effort") ?: ""; selectedPermission = current?.str("permission") ?: "" } }
+    LaunchedEffect(session?.id, state.connected) { if (state.connected && session != null) loadOptions() }
+    val availableOptions = choices?.optJSONObject("choices")
+    val optionModels = availableOptions?.objects("models").orEmpty()
+    val currentModel = optionModels.find { it.str("id") == selectedModel } ?: optionModels.find { it.optBoolean("isDefault") } ?: optionModels.firstOrNull()
+    val modelCaption = currentModel?.str("label") ?: state.profiles.find { it.first == session?.profileId }?.second ?: "模型"
+    val effortCaption = selectedEffort.ifBlank { currentModel?.str("defaultEffort") ?: "" }
+    val permissionCaption = availableOptions?.objects("permissions")?.find { it.str("id") == selectedPermission.ifBlank { availableOptions.str("defaultPermission") } }?.str("label") ?: "权限"
     val running = session?.state == "running"
     val rows = remember(state.items) { chatRows(state.items) }
     val reversed = remember(rows) { rows.asReversed() }
@@ -106,7 +116,7 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
                     DropdownMenuItem(text = { Text("执行 iOS 打包") }, enabled = writable, onClick = { menu = false; repo.send("/打包") })
                     DropdownMenuItem(text = { Text("# 提示词与打包任务") }, enabled = writable, onClick = { menu = false; presetMenu = true; repo.chatPresets { presets = it.objects("presets") } })
                     DropdownMenuItem(text = { Text("@ 团队成员") }, enabled = writable, onClick = { menu = false; repo.teamPeople { people = it } })
-                    DropdownMenuItem(text = { Text("模型、思考与权限") }, enabled = writable, onClick = { menu = false; repo.sessionChoices { value -> choices = value; val current = value.optJSONObject("options"); selectedModel = current?.str("model") ?: ""; selectedEffort = current?.str("effort") ?: ""; selectedPermission = current?.str("permission") ?: "" } })
+                    DropdownMenuItem(text = { Text("模型、思考与权限") }, enabled = writable, onClick = { menu = false; loadOptions("model") })
                 }
             }
         }
@@ -145,29 +155,38 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
                 AmoTextButton(onClick = { saveDraft("#${preset.str("phrase")}\n${preset.str("prompt")}"); presetMenu = false }) { Text("#" + preset.str("phrase")) }
             }
         }
-        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            AmoTextButton(enabled = writable, onClick = { presetMenu = !presetMenu; if (presetMenu) repo.chatPresets { presets = it.objects("presets") } }) { Text("# 提示词") }
-            AmoTextButton(enabled = writable, onClick = { repo.sessionChoices { value -> choices = value; val current = value.optJSONObject("options"); selectedModel = current?.str("model") ?: ""; selectedEffort = current?.str("effort") ?: ""; selectedPermission = current?.str("permission") ?: "" } }) { Text("模型与权限") }
-        }
         if (submitted.isNotEmpty()) Notice("这条消息还没确认送到；草稿留在手机上。先刷新核对最新对话。", Tone.Attention, "已核对", { verify = true }, tag = "chat-unconfirmed")
         if (verify) AlertDialog(onDismissRequest = { verify = false }, title = { Text("处理待确认消息") }, text = { Text("请先在最新对话或电脑上核对这条消息。解除等待后可以继续编辑并发送；若原消息实际已送达，重发会让模型再次执行。") }, confirmButton = { AmoTextButton(onClick = { clearPending(); verify = false }) { Text("已确认未送达，继续编辑") } }, dismissButton = { AmoTextButton(onClick = { verify = false }) { Text("继续等待") } })
-        Composer(draft, ::saveDraft, running, writable, canSend = writable && draft.isNotBlank() && submitted.isEmpty(), stop = repo::interrupt) {
+        Composer(draft, ::saveDraft, running, writable, canSend = writable && draft.isNotBlank() && submitted.isEmpty(), stop = repo::interrupt,
+            leading = {
+                ComposerMenuButton("# 提示词", writable, "chat-presets") { presetMenu = !presetMenu; if (presetMenu) repo.chatPresets { presets = it.objects("presets") } }
+                ComposerMenuButton(if (permissionCaption in listOf("全部允许", "完全允许")) "完全访问" else permissionCaption, writable, "chat-permission", attention = permissionCaption in listOf("全部允许", "完全允许", "完全访问")) { loadOptions("permission") }
+            }, trailing = { ComposerMenuButton(modelCaption + if (effortCaption.isBlank()) " ⌄" else " " + mobileEffortLabel(effortCaption) + " ⌄", writable, "chat-model", compact = true) { loadOptions("model") } }) {
             sentAfter = state.items.maxOfOrNull { it.optLong("seq", -1L) } ?: -1L; submitted = draft.trim(); saveDraft(submitted)
             prefs.edit(now = true) { put("pending-$draftKey", submitted); put("after-$draftKey", sentAfter) }; repo.send(submitted); stick = true
         }
     }
-    choices?.optJSONObject("choices")?.let { available ->
-        val models = available.objects("models")
-        val model = models.find { it.str("id") == selectedModel } ?: models.firstOrNull()
-        val efforts = model?.optJSONArray("efforts")
+    fun cancelOptions() { val saved = choices?.optJSONObject("options"); selectedModel = saved?.str("model") ?: ""; selectedEffort = saved?.str("effort") ?: ""; selectedPermission = saved?.str("permission") ?: ""; optionPanel = null }
+    optionPanel?.let { panel -> availableOptions?.let { available ->
+        val efforts = currentModel?.optJSONArray("efforts")
         val effortValues = if (efforts == null) emptyList() else (0 until efforts.length()).map { efforts.optString(it) }
-        AlertDialog(onDismissRequest = { choices = null }, title = { Text("电脑上的模型与权限") }, text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Choice("模型", listOf("" to "默认") + models.map { it.str("id") to it.str("label") }, selectedModel) { selectedModel = it; selectedEffort = "" }
-            Choice("思考强度", listOf("" to "默认") + effortValues.map { it to when (it) { "low" -> "低"; "medium" -> "中"; "high" -> "高"; "xhigh" -> "极高"; "max" -> "最高"; else -> it } }, selectedEffort) { selectedEffort = it }
-            Choice("权限", listOf("" to "默认") + available.objects("permissions").filter { it.str("unavailable").isBlank() }.map { it.str("id") to it.str("label") }, selectedPermission) { selectedPermission = it }
-            Text("任务仍在电脑执行。全部允许不能跳过电脑上的文件外发确认。", style = MaterialTheme.typography.bodySmall)
-        } }, confirmButton = { AmoTextButton(onClick = { repo.setSessionOptions(selectedModel, selectedEffort, selectedPermission); choices = null }) { Text("应用到电脑会话") } }, dismissButton = { AmoTextButton(onClick = { choices = null }) { Text("取消") } })
-    }
+        val index = effortValues.indexOf(selectedEffort.ifBlank { currentModel?.str("defaultEffort") ?: "" }).coerceAtLeast(0)
+        AlertDialog(onDismissRequest = { cancelOptions() }, title = { Text(if (panel == "permission") "权限" else "模型与思考强度") }, text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (panel == "permission") {
+                Choice("权限", listOf("" to "默认") + available.objects("permissions").filter { it.str("unavailable").isBlank() }.map { it.str("id") to it.str("label") }, selectedPermission) { selectedPermission = it }
+                Text("任务仍在电脑执行。完全访问不能跳过电脑上的文件外发确认。", style = MaterialTheme.typography.bodySmall)
+            } else {
+                Text(if (effortValues.isEmpty()) "模型" else mobileEffortLabel(effortValues[index]), color = androidx.compose.ui.graphics.Color(0xff4385ff), modifier = Modifier.align(Alignment.CenterHorizontally))
+                Box(Modifier.align(Alignment.CenterHorizontally)) {
+                    AmoTextButton(onClick = { modelList = true }) { Text(modelCaption + " ›") }
+                    DropdownMenu(modelList, { modelList = false }) { optionModels.forEach { m -> DropdownMenuItem(text = { Text(m.str("label") + if (m.str("id") == currentModel?.str("id")) " ✓" else "") }, onClick = { selectedModel = m.str("id"); selectedEffort = ""; modelList = false }) } }
+                }
+                if (effortValues.size > 1) Slider(value = index.toFloat(), onValueChange = { selectedEffort = effortValues[it.toInt().coerceIn(effortValues.indices)] }, valueRange = 0f..(effortValues.size - 1).toFloat(), steps = (effortValues.size - 2).coerceAtLeast(0))
+                else if (effortValues.isEmpty()) Text("此模型不提供思考强度选项。", style = MaterialTheme.typography.bodySmall)
+                AmoTextButton(onClick = { selectedEffort = "" }) { Text("恢复默认强度") }
+            }
+        } }, confirmButton = { AmoTextButton(onClick = { repo.setSessionOptions(selectedModel, selectedEffort, selectedPermission) { applied -> choices?.put("options", applied); selectedModel = applied.str("model"); selectedEffort = applied.str("effort"); selectedPermission = applied.str("permission"); optionPanel = null } }) { Text("应用") } }, dismissButton = { AmoTextButton(onClick = { cancelOptions() }) { Text("取消") } })
+    } }
     people?.let { members ->
         AlertDialog(onDismissRequest = { people = null }, title = { Text("@ 团队成员") }, text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
@@ -181,18 +200,23 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
     detail?.let { id -> state.items.find { it.str("id") == id }?.let { item -> DetailSheet(item, { detail = null }) { path, cwd -> detail = null; repo.openFile(path, cwd) } } ?: run { detail = null } }
 }
 
-@Composable private fun Composer(draft: String, change: (String) -> Unit, running: Boolean, writable: Boolean, canSend: Boolean, stop: () -> Unit, send: () -> Unit) {
+private fun mobileEffortLabel(value: String) = when (value) { "none" -> "不思考"; "minimal" -> "极低"; "low" -> "低"; "medium" -> "中"; "high" -> "高"; "xhigh" -> "超高"; "max" -> "最高"; "ultra" -> "极致"; else -> value }
+
+@Composable private fun ComposerMenuButton(label: String, enabled: Boolean, tag: String, attention: Boolean = false, compact: Boolean = false, onClick: () -> Unit) {
+    Text(label, style = MaterialTheme.typography.labelSmall, color = if (attention) androidx.compose.ui.graphics.Color(0xffde6b36) else LocalAmoColors.current.dim, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = if (compact) 145.dp else 100.dp).clip(RoundedCornerShape(8.dp)).clickable(enabled = enabled, onClick = onClick).padding(horizontal = 5.dp, vertical = 10.dp).testTag(tag))
+}
+
+@Composable private fun Composer(draft: String, change: (String) -> Unit, running: Boolean, writable: Boolean, canSend: Boolean, stop: () -> Unit, leading: @Composable RowScope.() -> Unit, trailing: @Composable RowScope.() -> Unit, send: () -> Unit) {
     val c = LocalAmoColors.current
-    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)) {
-        HorizontalDivider(color = c.line)
-        Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp).clip(RoundedCornerShape(20.dp)).background(c.input).border(1.dp, c.line, RoundedCornerShape(20.dp)), verticalAlignment = Alignment.Bottom) {
-            Box(Modifier.weight(1f).padding(start = 16.dp, top = 12.dp, bottom = 12.dp)) {
-                BasicTextField(draft, change, minLines = 1, maxLines = 6, textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface), cursorBrush = SolidColor(MaterialTheme.colorScheme.primary), modifier = Modifier.fillMaxWidth().testTag("chat-input"),
-                    decorationBox = { inner -> if (draft.isEmpty()) Text(if (writable) "给模型发消息…" else "现在发不了消息", color = c.dim, style = MaterialTheme.typography.bodyLarge); inner() })
+    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).padding(horizontal = 10.dp, vertical = 8.dp)) {
+        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(c.input).border(1.dp, c.line, RoundedCornerShape(24.dp)).padding(horizontal = 8.dp)) {
+            Box(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 14.dp, bottom = 10.dp)) {
+                BasicTextField(draft, change, minLines = 2, maxLines = 6, textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface), cursorBrush = SolidColor(MaterialTheme.colorScheme.primary), modifier = Modifier.fillMaxWidth().testTag("chat-input"), decorationBox = { inner -> if (draft.isEmpty()) Text(if (writable) "和 WorkStudio 一起工作" else "现在发不了消息", color = c.dim, style = MaterialTheme.typography.bodyLarge); inner() })
             }
-            if (running) IconAction(AmoIcons.Stop, "停止", "chat-interrupt", enabled = writable, tint = c.error, onClick = stop)
-            if (!running || draft.isNotBlank()) Box(Modifier.padding(4.dp).size(40.dp).clip(CircleShape).background(if (canSend) MaterialTheme.colorScheme.primary else c.line), contentAlignment = Alignment.Center) {
-                IconAction(AmoIcons.Send, "发送", "chat-send", enabled = canSend, tint = if (canSend) MaterialTheme.colorScheme.onPrimary else c.dim, onClick = send)
+            Row(Modifier.fillMaxWidth().padding(bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                leading(); Spacer(Modifier.weight(1f)); trailing()
+                if (running) Box(Modifier.size(32.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary), contentAlignment = Alignment.Center) { IconAction(AmoIcons.Stop, "停止", "chat-interrupt", enabled = writable, tint = MaterialTheme.colorScheme.onPrimary, onClick = stop) }
+                if (!running || draft.isNotBlank()) Box(Modifier.padding(start = 3.dp).size(32.dp).clip(CircleShape).background(if (canSend) MaterialTheme.colorScheme.primary else c.line), contentAlignment = Alignment.Center) { IconAction(AmoIcons.Send, "发送", "chat-send", enabled = canSend, tint = if (canSend) MaterialTheme.colorScheme.onPrimary else c.dim, onClick = send) }
             }
         }
     }

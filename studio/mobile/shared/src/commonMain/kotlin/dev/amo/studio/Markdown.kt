@@ -181,7 +181,7 @@ private fun inline(b: AnnotatedString.Builder, s: String, link: Color, code: Col
 @Composable internal fun MarkdownText(markdown: String, open: (String) -> Unit) { val blocks = remember(markdown) { parseMarkdown(markdown) }; MarkdownBlocks(blocks, open) }
 
 @Composable internal fun MarkdownBlocks(blocks: List<Md>, open: (String) -> Unit, depth: Int = 0, color: Color = MaterialTheme.colorScheme.onSurface) {
-    Column(verticalArrangement = Arrangement.spacedBy(if (depth > 0) 4.dp else 8.dp), modifier = Modifier.fillMaxWidth()) {
+    Column(verticalArrangement = Arrangement.spacedBy(if (depth > 0) 6.dp else 12.dp), modifier = Modifier.fillMaxWidth()) {
         for (block in blocks) MarkdownBlock(block, open, depth, color)
     }
 }
@@ -210,7 +210,7 @@ private fun inline(b: AnnotatedString.Builder, s: String, link: Color, code: Col
             Box(Modifier.width(3.dp).fillMaxHeight().background(c.line))
             Box(Modifier.padding(start = 10.dp)) { MarkdownBlocks(block.blocks, open, depth + 1, c.dim) }
         }
-        is MdList -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        is MdList -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             block.items.forEachIndexed { index, item ->
                 Row {
                     val marker = if (block.ordered) "${block.start + index}." else listOf("•", "◦", "▪")[depth.coerceAtMost(2)]

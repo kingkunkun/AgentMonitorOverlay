@@ -8,7 +8,8 @@ import { samePick } from "../lib/recents.js";
 import { pickFolder, shortModel } from "../lib/profiles.js";
 import { StartingCover } from "../lib/StartingCover.js";
 import { useSettings } from "../settings/useSettings.js";
-import { EffortBars, FastToggle, nextEffort, PermissionSegments } from "../chat/pickers.js";
+import { nextEffort, pickLabel } from "../chat/pickers.js";
+import { ComposerModelPicker } from "../chat/ComposerModelPicker.js";
 import { DSH_FULL_ACCESS, SandboxHint } from "../settings/SandboxHint.js";
 import { draftText, submitDraft, useTaskDraft } from "./draft.js";
 import { ModelRow, tilePicks } from "./ModelRow.js";
@@ -75,6 +76,7 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
   const rows = useDraftChoices({ draft, update, workspaces, topics, tasks });
   const projects = rows.projects;
   const [drawer, setDrawer] = useState(false);
+  const [modelPopup, setModelPopup] = useState(false);
   const [projectPicker, setProjectPicker] = useState(false);
   const [busy, setBusy] = useState(false);
   // 正在启动: the page is covered while the first session starts (filing in 待办 is quick).
@@ -346,21 +348,12 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
                   e.currentTarget.value = "";
                 }}
               />
-              <ModelRow compact link={link} profiles={profiles} pick={draft.pick} onPick={(pick) => { update({ pick }); setDrawer(false); }} drawer={drawer} onToggleDrawer={() => setDrawer((v) => !v)} />
-            </div>
-            <div className="cbar">
-              {model && model.efforts.length > 0 && (
-                <select className="compact-choice" aria-label="思考强度" value={draft.options.effort ?? ""} onChange={(e) => update({ options: { ...draft.options, effort: e.target.value || undefined } })}><option value="">默认思考</option>{model.efforts.map((e) => <option value={e} key={e}>{({ low: "低", medium: "中", high: "高", xhigh: "极高", max: "最高" } as Record<string, string>)[e] ?? e}</option>)}</select>
-              )}
-              <FastToggle fast={model?.fast} value={draft.options.fast} onChange={(fast) => update({ options: { ...draft.options, fast } })} />
-              {choices ? (
-                <select className="compact-choice" aria-label="权限" value={draft.options.permission ?? ""} onChange={(e) => update({ options: { ...draft.options, permission: e.target.value || undefined } })}><option value="">默认权限</option>{choices.permissions.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}</select>
-              ) : (
-                <span className="drawer-note">正在读取这个模型的选项…</span>
-              )}
-              <span className="spacer" />
+              {choices && <select className="composer-permission draft-permission" aria-label="权限" value={draft.options.permission ?? ""} onChange={(e) => update({ options: { ...draft.options, permission: e.target.value || undefined } })}><option value="">默认权限</option>{choices.permissions.map((p) => <option key={p.id} value={p.id} disabled={!!p.unavailable}>{p.label}</option>)}</select>}
+              <span className="composer-options-spacer" />
+              <ComposerModelPicker models={choices?.models ?? []} model={model} label={pickLabel(profiles.find((p) => p.id === draft.pick.profileId), model?.id ?? draft.pick.model, choices?.models).main} effort={draft.options.effort} fast={draft.options.fast} disabled={busy || !choices} open={modelPopup} onOpen={setModelPopup} onModel={(id) => { const m = choices?.models.find((m) => m.id === id); update({ pick: { ...draft.pick, model: m?.isDefault ? null : id }, options: { ...draft.options, effort: draft.options.effort && m?.efforts.includes(draft.options.effort) ? draft.options.effort : undefined } }); setModelPopup(false); }} onEffort={(effort) => update({ options: { ...draft.options, effort: effort ?? undefined } })} onFast={(fast) => update({ options: { ...draft.options, fast } })} footer={<button type="button" className="composer-other-accounts" onClick={() => { setModelPopup(false); setDrawer(true); }}>更多账号与模型 ›</button>} />
               <button type="button" className="btn-primary draft-send" aria-label="发送并开始新聊天" title="发送" onClick={() => void submit(false)} disabled={busy || !draft.pick.profileId || !draft.text.trim() && attach.empty} data-testid="draft-start">{busy ? "…" : "↑"}</button>
             </div>
+            {drawer && <div className="draft-account-picker"><button type="button" className="link-btn" onClick={() => setDrawer(false)}>收起账号列表</button><ModelRow link={link} profiles={profiles} pick={draft.pick} onPick={(pick) => { update({ pick }); setDrawer(false); }} drawer /></div>}
             {/* DeepSeek · DSH with 工作区可写 in a project not set up for its sandbox (2026-10-23). */}
             <SandboxHint
               link={link}

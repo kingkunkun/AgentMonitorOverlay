@@ -23,7 +23,7 @@ export function composerPlaceholder(s: { readOnly: boolean; claudeSub: boolean; 
             : s.queues
               ? "回复生成中，发出的内容会在下一次工具调用后或本轮结束后被读到"
               : "回复生成中，输入的内容会作为插话发出"
-          : "继续推进这个会话，回车发送，Shift+回车换行，输入 / 看命令";
+          : "和 WorkStudio 一起工作";
 }
 
 /** The 批注N tags of the annotations the next message refers to. */
