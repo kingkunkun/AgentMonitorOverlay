@@ -6,7 +6,7 @@ import { baseName, dirName } from "./refs.js";
 // 提示词模板. Pure logic;
 // the hook and the list live beside it.
 
-export type MentionKind = "task" | "session" | "project" | "mark" | "file" | "find" | "subsession" | "commit" | "template";
+export type MentionKind = "task" | "session" | "project" | "mark" | "file" | "find" | "subsession" | "commit" | "template" | "preset";
 
 export interface MentionOption {
   kind: MentionKind;

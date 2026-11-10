@@ -7,6 +7,7 @@ import { RemoteIcon } from "./BackButton.js";
 import { WindowControls } from "./WindowControls.js";
 import { CooperationMenu } from "./CooperationMenu.js";
 import { BuildMenu } from "./BuildMenu.js";
+import { HashPresetButton } from "../attach/HashPresets.js";
 import type { HostLink } from "../host/client.js";
 
 /** Focus window on/off, mirrored from the Electron shell (absent in a plain browser). */
@@ -81,6 +82,7 @@ export function TopBar({
         </div>
       )}
       <div className="spacer" />
+      {cooperationLink && <HashPresetButton link={cooperationLink} />}
       {cooperationLink && <BuildMenu link={cooperationLink} />}
       {needs > 0 && (
         <button type="button" className="needs" onClick={() => onView({ kind: "board" })} data-testid="needs-you">
@@ -210,8 +212,8 @@ export function ViewBar({
       </nav>
       <div className="spacer" />
       {search}
-      <button type="button" className="btn-primary" onClick={onNew} disabled={disabled} title="新建任务（Ctrl N 在任何页面打开快速启动条）">
-        + 新任务
+      <button type="button" className="btn-primary" onClick={onNew} disabled={disabled} title="新聊天（Ctrl N 打开快速开始）">
+        + 新聊天
       </button>
     </div>
   );

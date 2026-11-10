@@ -26,7 +26,7 @@ const LAYOUTS: { split: boolean; label: string; hint: string }[] = [
 
 const short = (sha: string | null) => (sha ? sha.slice(0, 7) : "");
 
-const NEXT_THEME: Record<ThemePref, ThemePref> = { light: "dark", dark: "system", system: "light" };
+const NEXT_THEME: Record<ThemePref, "light" | "dark" | "system"> = { codex: "light", light: "dark", dark: "system", system: "light" };
 
 /**
  * 主题 of the AMO Reviewer program alone (2026-10-29, the user: every tool both; it has no settings page): one button

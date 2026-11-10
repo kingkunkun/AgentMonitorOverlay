@@ -22,6 +22,7 @@ export function ModelRow({
   drawer,
   onToggleDrawer,
   small = false,
+  compact = false,
 }: {
   link: HostLink;
   profiles: readonly ModelProfile[];
@@ -30,6 +31,7 @@ export function ModelRow({
   drawer: boolean;
   onToggleDrawer?: () => void;
   small?: boolean;
+  compact?: boolean;
 }) {
   const tiles = tilePicks(profiles, pick);
   const [menu, setMenu] = useState<{ x: number; y: number; profileId: string } | null>(null);
@@ -43,7 +45,8 @@ export function ModelRow({
   return (
     <>
       <div className="model-row" role="group" aria-label="模型">
-        {tiles.map((t, i) => (
+        {compact && <button type="button" className="compact-choice" aria-label="选择模型" aria-expanded={drawer} onClick={onToggleDrawer}><Mark profile={profile(pick.profileId)} small />{pickLabel(profile(pick.profileId), pick.model, choices.get(pick.profileId)?.models).main} <span>⌄</span></button>}
+        {(compact ? [] : tiles).map((t, i) => (
           <ModelTile
             key={`${t.profileId}/${t.model ?? ""}`}
             profile={profile(t.profileId)}
@@ -58,7 +61,7 @@ export function ModelRow({
             }}
           />
         ))}
-        {onToggleDrawer && (
+        {!compact && onToggleDrawer && (
           <button type="button" className="more-models" aria-expanded={drawer} onClick={onToggleDrawer} data-testid="all-models">
             {drawer ? "收起" : "全部型号"}
           </button>

@@ -8,7 +8,6 @@ import type { DeviceLink } from "./link.js";
 import { attachedPaths, itemForPeer, readRemoteFile, resolveAsked, real, type FileRoots } from "./files.js";
 import { claimedText, type UploadInbox } from "./uploads.js";
 import { answerView, ViewAnswers } from "./views.js";
-import { isBuildCommand } from "../../core/build-job.js";
 
 // 远程, step 2 on A (plans/done/remote-session.md, 2026-10-29): the tasks this computer granted to paired devices, what such
 // a device may ask of them, and what A tells it unasked as they change. The grant is the whole task: every session in
@@ -351,6 +350,18 @@ export class RemoteGrants {
     const sessions = this.ctx.host.sessions;
     try {
       switch (kind) {
+        case "rt.task-archive": {
+          const taskId = id(b.taskId, "taskId");
+          this.grantFor(from, taskId);
+          if (from.account !== this.ctx.ownAccount()) throw new HostError("read_only", "只有自己的账号设备能归档整条聊天");
+          await this.ctx.host.tasks.archiveTask(taskId);
+          return ok({ ok: true });
+        }
+        case "rt.presets": {
+          this.sessionFor(from, id(b.sessionId, "sessionId"), false);
+          if (from.account !== this.ctx.ownAccount()) throw new HostError("read_only", "只有自己的已配对账号能读取本机提示词设置");
+          return ok({ presets: this.ctx.host.chatPresets.state().presets });
+        }
         case "rt.people": {
           this.sessionFor(from, id(b.sessionId, "sessionId"), false);
           return ok({ people: await this.ctx.host.cooperation.teamMembers() });
@@ -374,7 +385,8 @@ export class RemoteGrants {
         }
         case REMOTE_KINDS.send: {
           const s = this.sessionFor(from, id(b.sessionId, "sessionId"), true);
-          if (isBuildCommand(b.text)) {
+          if (this.ctx.host.buildJob.matches(b.text)) {
+            if (Array.isArray(b.uploads) && b.uploads.length) throw new HostError("bad_request", "打包预设不能附带文件，请分开发送");
             if (from.account !== this.ctx.ownAccount()) throw new HostError("read_only", "只有自己的已配对账号能触发打包");
             return ok(await this.ctx.host.buildJob.command(s.id, b.text as string));
           }
@@ -460,6 +472,7 @@ export class RemoteGrants {
           const profileId = id(b.profileId, "profileId");
           if (!this.allowedFor(taskId, from).includes(profileId)) throw new HostError("bad_request", `${this.labelOf(profileId)} 不在 ${this.ctx.deviceName()} 允许远程使用的模型里`);
           const plain = typeof b.text === "string" && b.text.trim() ? boundedText(b.text, "text", 100_000) : "";
+          if (this.ctx.host.buildJob.matches(plain) && from.account !== this.ctx.ownAccount()) throw new HostError("read_only", "只有自己的已配对账号能触发打包预设");
           const permission = this.permissionFor(profileId);
           const options: SessionOptions | undefined = permission ? { permission } : undefined;
           const claimed = this.ctx.inbox().claim(from, b.uploads, { noImages: this.ctx.host.profiles.find((p) => p.id === profileId)?.runtime === "dsh" });

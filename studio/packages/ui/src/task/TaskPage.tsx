@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { BOOKMARKS_ENABLED } from "@amo-studio/protocol";
+import { useTopicsVisible } from "../lib/topicsVisible.js";
 import { isCommon, projectWorkspaces, remoteHeldTasks, type Annotation, type ApprovalDecision, type ChecklistItem, type ModelProfile, type Session, type SessionOptions, type SubsessionSetup, type Task, type TaskColumn, type TodoView, type Topic, type Workspace } from "@amo-studio/protocol";
 import { call, HostApiError, type HostLink, type Passage } from "../host/client.js";
 import { useSessionItems } from "../host/useSessionItems.js";
@@ -82,6 +84,7 @@ type Toast = { text: string; command?: string; error?: boolean } | null;
 
 /** Task page: session tree | conversation with composer. Annotations and the scratchpad join in stage 2. */
 export function TaskPage({ link, task, sessions, tasks = [task], workspaces, topics = [], profiles, checklist = [], initialSessionId, passage, restoreScroll, justCreated = false, backLabel = "看板", onBack }: TaskPageProps) {
+  const topicsOn = useTopicsVisible();
   const own = sessions.filter((s) => s.taskId === task.id);
   // The first live session; in an archived task (or one whose sessions are all archived), the latest archived one.
   const firstSession = () => own.find((s) => !s.archivedAt) ?? [...own].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
@@ -130,6 +133,7 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
   const alsoMine = useStoredIds(ALSO_MINE_KEY);
   // 追踪 on the session bar (2026-11-03, 问题 #15): Focus's own 置顶 list, followed across windows.
   const focusPins = useStoredIds(PINNED_KEY);
+  const chatPins = useStoredIds("amo.chatPins");
   const [granting, setGranting] = useState(false);
   // Git Review: only for a project under git; the branch shows in the line under the title.
   const gitRepo = useIsGitRepo(link, task.workspaceId) && !copy;
@@ -392,6 +396,7 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
           />
         </div>
         <div className="task-head-actions">
+          {!task.archivedAt && <button type="button" className="btn-ghost small" aria-pressed={chatPins.has(task.id)} onClick={() => chatPins.toggle(task.id)} data-testid="task-pin">{chatPins.has(task.id) ? "取消置顶" : "置顶聊天"}</button>}
           {!task.archivedAt && !(copy && copy.state === "revoked") && (
             <button
               type="button"
@@ -429,7 +434,7 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
               Review
             </button>
           )}
-          {!copy && (
+          {BOOKMARKS_ENABLED && !copy && (
           <button type="button" className="btn-ghost small with-icon" title="书签：这个专题记下的文件和对话片段（Ctrl+Shift+M）" onClick={() => openMarks({ topicId: task.topicId ?? "none", workspaceId: task.workspaceId, taskId: task.id })} data-testid="task-marks">
             <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
               <path d="M4.5 2.5h7v11l-3.5-2.6-3.5 2.6z" />
@@ -575,7 +580,7 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
               {task.relayAuto ? "✓ " : ""}主控传话不用确认
             </button>
           )}
-          {task.topicId && !copy && <OnCanvasToggle key={task.topicId} link={link} taskId={task.id} topicId={task.topicId} disabled={!!task.archivedAt} onError={(text) => setToast({ text, error: true })} />}
+          {topicsOn && task.topicId && !copy && <OnCanvasToggle key={task.topicId} link={link} taskId={task.id} topicId={task.topicId} disabled={!!task.archivedAt} onError={(text) => setToast({ text, error: true })} />}
           {task.archivedAt && <span className="menu-note">任务已归档</span>}
         </PopMenu>
       )}

@@ -8,7 +8,7 @@ test("cooperation controls are independent, imports and bookmarks stay hidden, a
     const { page, app } = studio;
     await expect(page.getByTestId("topbar-marks")).toHaveCount(0);
     await page.getByTestId("build-open").click();
-    const buildDialog = page.getByRole("dialog", { name: "iOS 打包", exact: true });
+    const buildDialog = page.getByRole("dialog", { name: "Jenkins 打包", exact: true });
     await expect(buildDialog).toContainText("SurvivorTD_IOS_Auto");
     await expect(buildDialog.getByTestId("build-run")).toBeDisabled();
     await screenshot(app, "studio", "build-job", page);

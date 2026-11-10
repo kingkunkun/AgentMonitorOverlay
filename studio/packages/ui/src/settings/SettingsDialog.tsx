@@ -22,11 +22,14 @@ import { defaultFolder, setDefaultFolder } from "../lib/profiles.js";
 import { BotArt, MascotArt, ReaderArt } from "../focus/PixelBot.js";
 import { PET_SKINS, usePetSkin, writePetSkin, type PetSkin } from "../focus/petSkin.js";
 import { pickDirectory } from "../folders/FolderPicker.js";
+import { HashPresetSettings } from "../attach/HashPresets.js";
+import { useTopicsVisible, setTopicsVisible } from "../lib/topicsVisible.js";
 
 /** The pages of 设置, one per area, in the left column. */
 const PAGES = [
   { id: "ui", label: "界面" },
   { id: "models", label: "模型" },
+  { id: "presets", label: "# 提示词" },
   { id: "subsession", label: "子会话" },
   { id: "quota", label: "额度" },
   { id: "stats", label: "统计" },
@@ -52,6 +55,7 @@ let lastPage: SettingsPage = "ui";
 export function SettingsDialog({ link, state, settings, page: startPage, onClose, onOpenRemote }: { link: HostLink; /** The window's live snapshot (值守's forms offer its tasks, projects and models). */ state: StateSnapshot; settings: StudioSettings | null; /** Opens on this page. */ page?: SettingsPage; onClose(): void; /** 远程 left 设置 for a page of its own (2026-10-29): the line on 界面 opens it. */ onOpenRemote?: () => void }) {
   const [page, setPage] = useState<SettingsPage>(startPage ?? lastPage);
   const [theme, setTheme] = useState<ThemePref>(themePref);
+  const topicsOn = useTopicsVisible();
   const view = useTranscriptView();
   const jumpOnSend = useScrollOnSend();
   const chat = useChatSettings(link);
@@ -152,6 +156,7 @@ export function SettingsDialog({ link, state, settings, page: startPage, onClose
                   </div>
                 </div>
                 <span className="settings-hint">只影响这台电脑上的 Studio；Focus 悬浮窗会一起切换。</span>
+                <div className="settings-row"><label><input type="checkbox" checked={topicsOn} onChange={(e) => setTopicsVisible(e.target.checked)} /> 显示专题与画布</label><span className="settings-hint">默认隐藏，已有专题和任务数据保留。</span></div>
                 <PetSkinRow />
                 {window.amo?.uiScale && <UiScaleRow />}
                 <div className="settings-row">
@@ -232,6 +237,7 @@ export function SettingsDialog({ link, state, settings, page: startPage, onClose
             )}
 
             {page === "models" && <ModelsPage link={link} settings={settings} />}
+            {page === "presets" && <HashPresetSettings link={link} />}
             {page === "subsession" && <SubsessionPage link={link} settings={settings} />}
             {page === "quota" && <QuotaPage link={link} settings={settings} />}
             {page === "stats" && <StatsPage link={link} />}

@@ -36,7 +36,8 @@ AMO 是一组给「有 AI 参与的项目」用的 Windows 桌面工具。代码
 - 书签功能关闭，保留已有数据库数据。禁止导入原生 Claude / Codex / ChatGPT / DOT 历史；原生已有对话的导入标记也不能通过任务授权转发。
 - Work中转使用本机随包编译界面；独立中转与外部客户端 CLI/MCP 入口停用，数据保留。远程、中转独立开关，一键关闭合作模式同时断开、退出账号、停止手机服务。
 - 本机文件外发由人逐次确认，不因模型全部允许而免除。应用层规则不能视为操作系统沙箱，不得宣称能阻止不受限模型子进程的任意文件/网络访问。
-- 只可推送 `kingkunkun/AgentMonitorOverlay`。`kadhygh/AgentMonitorOverlay` 仅拉取。固定打包 Job 仅 `http://172.16.8.85:8080/job/SurvivorTD_IOS_Auto/`；聊天指令不接收任意 URL、参数或 shell。
+- 只可推送 `kingkunkun/AgentMonitorOverlay`。`kadhygh/AgentMonitorOverlay` 仅拉取。固定打包 Job 仅 `http://172.16.8.85:8080/job/SurvivorTD_IOS_Auto/` 和同服务器的 `SurvivorTD_Android_Auto/`；聊天指令不接收任意 URL、参数或 shell。用户发送绑定的 # 提示词后可触发构建，失败日志脱敏、限长后在原会话交给所选模型分析，不能自动重复提交。
+- 默认 Codex 主题，项目下展开聊天列表；专题与画布默认隐藏，可在设置 → 界面恢复，不能删除已有数据。聊天样式同步修改 mobile/shared 的 Android/iOS 共用界面；本机 Windows 只能验证 Android 构建，不能宣称已验证 IPA。
 
 - **改一个功能前先查导航索引**（在 `studio/` 下）：`node scripts/nav.mjs --query 关键词`（无参数列目录，`--id 主题` 看全文）。它给出功能在哪、常见改动要改哪几处、代码锚点、下一步读哪份文档；查到后至少读一份它指的代码或文档再动手，不要停在索引这一层。查不到不等于没有这个功能：去搜代码（`git grep`），确认是索引的缺口就在 `studio/docs/nav/` 补一个主题。锚点失效（`scripts/nav.test.mjs` 会报）就改指到现在的代码或删掉。分层的做法见 `studio/plans/doc-architecture.md`。
 - 用中文和用户交流。界面文字也是中文，用户看得到的写法要具体、直白。

@@ -105,7 +105,11 @@ private fun taskTone(t: RemoteTask): Tone {
 @Composable private fun Home(state: StudioState, repo: StudioRepository, settings: () -> Unit, create: () -> Unit, open: (RemoteTask, RemoteSession?) -> Unit) {
     val computers = state.peers.filter { it.role == "guest" }
     var filter by rememberSaveable { mutableStateOf("") }
-    val shown = state.tasks.filter { filter.isEmpty() || it.peer.identity == filter }.sortedByDescending { it.activeAt }
+    var menuTask by remember { mutableStateOf<String?>(null) }
+    var rename by remember { mutableStateOf<RemoteTask?>(null) }
+    var renameText by remember { mutableStateOf("") }
+    var archiving by remember { mutableStateOf<RemoteTask?>(null) }
+    val shown = state.tasks.filter { filter.isEmpty() || it.peer.identity == filter }.sortedWith(compareByDescending<RemoteTask> { it.key in state.pinnedTasks }.thenByDescending { it.activeAt })
     val waiting = shown.filterNot { it.revoked }.flatMap { t -> t.sessions.filter { !it.archived && needsYou(it.state) }.map { t to it } }.sortedByDescending { it.second.updatedAt }
     val subtitle = when {
         state.connecting -> "正在连接…"
@@ -129,8 +133,9 @@ private fun taskTone(t: RemoteTask): Tone {
                     item("waiting-head") { SectionHeader("等你处理 · ${waiting.size}") }
                     items(waiting, key = { "w-" + it.first.key + "/" + it.second.id }) { (t, s) -> ListRow(s.title.ifBlank { "未命名会话" }, "${sessionStatusLabel(s.state)} · ${t.title}", Tone.Attention, shortTime(s.updatedAt), tag = "attention-row", highlight = true) { open(t, s) } }
                 }
-                item("tasks-head") { SectionHeader(if (shown.isEmpty()) "任务" else "任务 · ${shown.size}") }
-                items(shown, key = { it.key }) { t ->
+                for ((projectName, chats) in shown.groupBy { it.project ?: "未指定项目" }) {
+                item("project-$projectName") { SectionHeader(projectName) }
+                items(chats, key = { it.key }) { t ->
                     val live = t.sessions.filterNot { it.archived }
                     val parts = buildList {
                         when { t.revoked -> add("授权已撤回"); !t.peer.online -> add("电脑离线") }
@@ -141,12 +146,33 @@ private fun taskTone(t: RemoteTask): Tone {
                         t.project?.let { add(it) }
                         if (t.description.isNotBlank()) add(t.description.lineSequence().first())
                     }
-                    ListRow(t.title.ifBlank { "未命名任务" }, parts.joinToString(" · "), taskTone(t), shortTime(t.activeAt), tag = "task-row") { open(t, null) }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.weight(1f)) { ListRow((if (t.key in state.pinnedTasks) "⌖ " else "") + t.title.ifBlank { "新聊天" }, parts.joinToString(" · "), taskTone(t), shortTime(t.activeAt), tag = "task-row") { open(t, null) } }
+                        Box {
+                            IconAction(AmoIcons.More, "聊天操作", "task-menu") { menuTask = t.key }
+                            DropdownMenu(menuTask == t.key, { menuTask = null }) {
+                                DropdownMenuItem(text = { Text(if (t.key in state.pinnedTasks) "取消置顶聊天" else "置顶聊天") }, onClick = { repo.pinTask(t); menuTask = null })
+                                DropdownMenuItem(text = { Text("重命名聊天") }, enabled = state.connected && t.peer.online && !t.revoked, onClick = { rename = t; renameText = t.title; menuTask = null })
+                                DropdownMenuItem(text = { Text("归档聊天") }, enabled = state.connected && t.peer.online && !t.revoked && t.peer.account == state.account?.name, onClick = { archiving = t; menuTask = null })
+                            }
+                        }
+                    }
+                }
                 }
                 if (shown.isEmpty() && computers.isNotEmpty()) item("empty") { Empty(if (state.connected) "还没有授权给手机的任务。可以点右下角的「+」在电脑上新建一个，或者在电脑的任务页把任务授权给这台手机。" else "连上之后会列出授权给手机的任务。") }
             }
-            Box(Modifier.align(Alignment.BottomEnd).padding(20.dp)) { Fab("新建任务", "task-create", state.connected && state.selectedPeer?.online == true && state.selectedPeer.role == "guest", create) }
+            Box(Modifier.align(Alignment.BottomEnd).padding(20.dp)) { Fab("新聊天", "task-create", state.connected && state.selectedPeer?.online == true && state.selectedPeer.role == "guest", create) }
         }
+    }
+    rename?.let { task ->
+        AlertDialog(onDismissRequest = { rename = null }, title = { Text("重命名聊天") }, text = { OutlinedTextField(renameText, { renameText = it }, label = { Text("聊天名称") }, singleLine = true) },
+            confirmButton = { AmoTextButton(enabled = renameText.isNotBlank(), onClick = { repo.renameTask(task, renameText); rename = null }) { Text("保存") } },
+            dismissButton = { AmoTextButton(onClick = { rename = null }) { Text("取消") } })
+    }
+    archiving?.let { task ->
+        AlertDialog(onDismissRequest = { archiving = null }, title = { Text("归档聊天？") }, text = { Text("聊天记录保留，可在电脑设置中恢复。正在执行的会话会停止。") },
+            confirmButton = { AmoTextButton(onClick = { repo.archiveTask(task); archiving = null }) { Text("归档聊天") } },
+            dismissButton = { AmoTextButton(onClick = { archiving = null }) { Text("取消") } })
     }
 }
 
@@ -184,7 +210,7 @@ private fun taskTone(t: RemoteTask): Tone {
     fun model(s: RemoteSession) = state.profiles.find { it.first == s.profileId }?.second
     val subtitle = listOfNotNull(task.peer.name + if (task.peer.online) "" else "（离线）", task.project, "${live.size} 个会话", if (task.revoked) "授权已撤回" else null).joinToString(" · ")
     Column(Modifier.fillMaxSize()) {
-        TopBar(task.title.ifBlank { "未命名任务" }, subtitle, back = back) { IconAction(AmoIcons.Refresh, "刷新", enabled = state.connected) { repo.refresh(force = true) } }
+        TopBar(task.title.ifBlank { "新聊天" }, subtitle, back = back) { IconAction(AmoIcons.Refresh, "刷新", enabled = state.connected) { repo.refresh(force = true) } }
         Box(Modifier.weight(1f)) {
             LazyColumn(Modifier.fillMaxSize().testTag("sessions"), contentPadding = PaddingValues(bottom = 96.dp)) {
                 if (task.description.isNotBlank()) item("description") {
@@ -243,12 +269,10 @@ private fun taskTone(t: RemoteTask): Tone {
     val computers = state.peers.filter { it.role == "guest" && it.online }
     ModalBottomSheet(onDismissRequest = close, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), shape = RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp), containerColor = MaterialTheme.colorScheme.surface) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).imePadding().padding(horizontal = 20.dp).padding(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Text(if (task) "新建任务" else "新会话 · ${state.selectedTask?.title ?: ""}", style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(if (task) "新聊天" else "新会话 · ${state.selectedTask?.title ?: ""}", style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (task) {
                 if (computers.size > 1) Choice("电脑", computers.map { it.identity to it.name }, state.selectedPeer?.identity ?: "") { id -> computers.find { it.identity == id }?.let(repo::selectPeer) }
-                Field(title, { title = it }, "任务名称（可不填）", "create-title")
                 Choice("项目", (if (common) listOf("" to "公共目录") else emptyList()) + projects, project) { project = it }
-                Choice("主题", listOf("" to "无主题") + state.catalog?.objects("topics").orEmpty().map { it.str("id") to it.str("title") }, topic) { topic = it }
             }
             Choice("模型", models, profile) { profile = it }
             OutlinedTextField(text, { text = it }, label = { Text("给模型的第一条消息") }, minLines = 3, maxLines = 8, shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth().testTag("create-text"))
@@ -256,7 +280,7 @@ private fun taskTone(t: RemoteTask): Tone {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End), verticalAlignment = Alignment.CenterVertically) {
                 Text(if (task) "建好后马上开始第一个会话" else "在这个任务下开一个新会话", style = MaterialTheme.typography.bodySmall, color = LocalAmoColors.current.dim, modifier = Modifier.weight(1f))
                 PrimaryButton(if (state.busy) "正在提交…" else "开始", "create-submit", state.connected && !state.busy && profile.isNotEmpty() && text.isNotBlank() && (!task || common || project.isNotBlank())) {
-                    if (task) repo.createTask(title.trim(), text, project.ifBlank { null }, topic.ifBlank { null }, profile) else repo.startSession(profile, text)
+                    if (task) repo.createTask("", text, project.ifBlank { null }, null, profile) else repo.startSession(profile, text)
                 }
             }
         }
@@ -272,7 +296,7 @@ private fun taskTone(t: RemoteTask): Tone {
         TopBar("设置", back = back)
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 32.dp)) {
             SectionHeader("外观")
-            listOf("light" to "浅色", "dark" to "深色", "system" to "跟随系统").forEach { (id, label) ->
+            listOf("codex" to "Codex（默认）", "light" to "浅色", "dark" to "深色", "system" to "跟随系统").forEach { (id, label) ->
                 Row(Modifier.fillMaxWidth().clickable { repo.setTheme(id) }.heightIn(min = 48.dp).padding(horizontal = 8.dp).testTag("theme-$id"), verticalAlignment = Alignment.CenterVertically) { RadioButton(selected = state.theme == id, onClick = { repo.setTheme(id) }); Text(label) }
             }
             SectionHeader("打开应用时")

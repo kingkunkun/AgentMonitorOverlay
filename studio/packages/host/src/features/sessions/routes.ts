@@ -2,7 +2,6 @@ import type { HostService } from "../../service.js";
 import { route, type Route, str, obj } from "../../http/route.js";
 import { HostError } from "../../core/shared.js";
 import { checkSetups } from "./setups.js";
-import { isBuildCommand } from "../../core/build-job.js";
 
 /** The HTTP routes of this feature (see protocol/src/api.ts for each route's request and response). */
 export function sessionsRoutes(service: HostService): Route[] {
@@ -18,7 +17,10 @@ export function sessionsRoutes(service: HostService): Route[] {
       const annotations = b.annotations ?? [];
       if (!Array.isArray(annotations) || annotations.some((a) => typeof a !== "string")) throw new HostError("bad_request", "annotations must be a list of ids");
       if (b.now !== undefined && typeof b.now !== "boolean") throw new HostError("bad_request", "now must be true or false");
-      if (isBuildCommand(b.text) && !attachments.length && !annotations.length) return service.buildJob.command(params.id!, b.text as string);
+      if (service.buildJob.matches(b.text)) {
+        if (attachments.length || annotations.length) throw new HostError("bad_request", "打包预设不能同时附带本机文件或批注，请分开发送");
+        return service.buildJob.command(params.id!, b.text as string);
+      }
       // 子会话设定 named in the message (2026-11-05): kept for this session's session_start before it reads the message.
       const setups = checkSetups(b.subsessions);
       if (setups.length) service.sessions.rememberSetups(params.id!, setups);

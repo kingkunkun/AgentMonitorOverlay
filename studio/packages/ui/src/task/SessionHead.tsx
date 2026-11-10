@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Session } from "@amo-studio/protocol";
+import { BOOKMARKS_ENABLED, type Session } from "@amo-studio/protocol";
 import { HostApiError, type HostLink } from "../host/client.js";
 import { openMarks } from "../marks/open.js";
 import { CopyId } from "../lib/CopyId.js";
@@ -190,7 +190,7 @@ ${dir}` : ""}` : `在公共目录里运行${dir ? `：${dir}` : ""}`} data-testi
             </button>
           )}
           {(!!dir || terminal) && <div className="menu-sep" role="separator" />}
-          <button
+          {BOOKMARKS_ENABLED && <button
             type="button"
             role="menuitem"
             title="书签：这个专题记下的文件和对话片段，可以拖进输入框"
@@ -198,7 +198,7 @@ ${dir}` : ""}` : `在公共目录里运行${dir ? `：${dir}` : ""}`} data-testi
             data-testid="session-marks"
           >
             书签
-          </button>
+          </button>}
           {onBindTodo && (
             <button type="button" role="menuitem" title="选一条便签里的待办绑定到这个会话：在待办里点它就回到这里" onClick={pick(onBindTodo)} data-testid="session-bind-todo">
               绑定到待办…

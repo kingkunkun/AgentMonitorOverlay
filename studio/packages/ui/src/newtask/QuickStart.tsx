@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ModelProfile, Session, Task, Topic, Workspace } from "@amo-studio/protocol";
+import { useTopicsVisible } from "../lib/topicsVisible.js";
+import { HashPresetButton } from "../attach/HashPresets.js";
 import { HostApiError, type HostLink } from "../host/client.js";
 import { activeModel, useProfileChoices } from "../lib/choices.js";
 import { samePick } from "../lib/recents.js";
@@ -41,6 +43,7 @@ export function QuickStart({
 }) {
   const { draft, update, reset } = useTaskDraft(profiles);
   const rows = useDraftChoices({ draft, update, workspaces, topics, tasks });
+  const topicsOn = useTopicsVisible();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [picking, setPicking] = useState<"topic" | "project" | null>(null);
@@ -91,7 +94,7 @@ export function QuickStart({
 
   return (
     <div className="quick-scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="quick" role="dialog" aria-label="快速新任务">
+      <div className="quick" role="dialog" aria-label="快速新聊天">
         <div className="quick-in">
           <span className="quick-spark" aria-hidden="true">
             ✳
@@ -99,7 +102,7 @@ export function QuickStart({
           <input
             ref={input}
             value={draft.text}
-            aria-label="快速新任务"
+            aria-label="快速新聊天"
             placeholder="一句话开始新任务，@ 引用项目或任务"
             onChange={(e) => {
               update({ text: e.target.value });
@@ -129,11 +132,12 @@ export function QuickStart({
           />
         </div>
         <div className="quick-picks">
-          <button type="button" className="quick-pick" aria-label={`专题：${topic?.title ?? "不选"}`} onClick={() => setPicking("topic")} data-testid="quick-topic">
+          {topicsOn && <button type="button" className="quick-pick" aria-label={`专题：${topic?.title ?? "不选"}`} onClick={() => setPicking("topic")} data-testid="quick-topic">
             <span className="quick-pick-lab">专题</span>
             <span className={topic ? "quick-pick-value" : "quick-pick-value none"}>{topic?.title ?? "不选"}</span>
             <span aria-hidden="true">▾</span>
-          </button>
+          </button>}
+          <HashPresetButton link={link} onPick={(text) => update({ text: `${text}${draft.text.trim() ? `\n\n${draft.text}` : ""}` })} />
           <button type="button" className="quick-pick" aria-label={`项目：${project?.name ?? "不选"}`} onClick={() => setPicking("project")} data-testid="quick-project">
             <span className="quick-pick-lab">项目</span>
             <span className={project ? "quick-pick-value" : "quick-pick-value none"}>{project?.name ?? "不选"}</span>

@@ -2,6 +2,8 @@ import { useEffect, useState, useRef } from "react";
 import { OPEN_SETTINGS_EVENT } from "./mcp/shared.js";
 import type { Scope } from "./board/Board.js";
 import { ScopeNav } from "./board/ScopeNav.js";
+import { useTopicsVisible, topicsVisible } from "./lib/topicsVisible.js";
+import { beginNewChatDraft } from "./newtask/draft.js";
 import { useHostState } from "./host/useHostState.js";
 import { QuickStart } from "./newtask/QuickStart.js";
 import { needsPerson, taskSessions, taskStatus } from "./lib/status.js";
@@ -45,7 +47,9 @@ const NO_LINK = { url: "", token: "" };
 export function App() {
   const host = useHostState();
   // Where the workbench was left, again after a restart or reload (2026-10-15; shell/lastPlace).
-  const [scope, setScope] = useState<Scope>(() => readPlace().scope);
+  const topicsOn = useTopicsVisible();
+  const [scope, setScope] = useState<Scope>(() => { const saved = readPlace().scope; return !topicsVisible() && saved.kind === "topic" ? { kind: "all" } : saved; });
+  useEffect(() => { if (!topicsOn && scope.kind === "topic") setScope({ kind: "all" }); }, [scope, topicsOn]);
   const [view, setShownView] = useState<View>(() => readPlace().view);
   useEffect(() => savePlace(view, scope), [view, scope]);
   // 后退 / 前进 (2026-10-19): every place shown is a step, except the one a step back or forward just restored.
@@ -245,7 +249,7 @@ export function App() {
   setQuickModels(settings?.quickModels);
   // 测试功能 (2026-11-01): their tabs and pages are there only while turned on; until the settings arrive, none are.
   const experimental = settings?.experimentalFeatures ?? [];
-  const views = VIEWS.filter((d) => featureOn(disabled, d.feature) && experimentalOn(experimental, d.experimental));
+  const views = VIEWS.filter((d) => (topicsOn || d.kind !== "canvas" && d.kind !== "panorama") && featureOn(disabled, d.feature) && experimentalOn(experimental, d.experimental));
   const planning = featureOn(disabled, "planning");
   const decisionsByTask = new Map<string, number>();
   for (const d of openDecisions) if (d.taskId) decisionsByTask.set(d.taskId, (decisionsByTask.get(d.taskId) ?? 0) + 1);
@@ -310,6 +314,9 @@ export function App() {
             setView({ kind: "board" });
           }}
           onSettings={() => setSettingsOpen({ at: Date.now() })}
+          currentChat={shown.kind === "task" ? shown.taskId : undefined}
+          onOpenChat={(id) => { const t = state.tasks.find((t) => t.id === id); if (t) setScope({ kind: "workspace", id: t.workspaceId }); setView({ kind: "task", taskId: id }); }}
+          onNewChat={(id) => { const projectId = id ?? (scope.kind === "workspace" ? scope.id : null); beginNewChatDraft(state.profiles, projectId); if (projectId) setScope({ kind: "workspace", id: projectId }); setView({ kind: "new" }); }}
           // 全景 (11-04): from the left column, not a tab; a task opened from it counts as in it.
           panorama={views.some((d) => d.kind === "panorama") ? { current: shown.kind === "panorama" || ("back" in shown && shown.back?.kind === "panorama"), open: () => setView({ kind: "panorama" }) } : undefined}
         />
@@ -319,7 +326,7 @@ export function App() {
             view={shown}
             scope={scope}
             onView={setView}
-            onNew={() => setView(canvasTopic ? { kind: "new", topicId: canvasTopic.id, back: { kind: "canvas" } } : { kind: "new" })}
+            onNew={() => { beginNewChatDraft(state.profiles, scope.kind === "workspace" ? scope.id : null); setView(canvasTopic ? { kind: "new", topicId: canvasTopic.id, back: { kind: "canvas" } } : { kind: "new" }); }}
             search={<SearchBox state={state} onOpen={openHit} />}
           />
           {/* A page that fails to render says so; the title bar, the left column and the sessions carry on. */}

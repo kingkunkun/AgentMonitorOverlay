@@ -308,8 +308,11 @@ export class TasksFeature extends Feature<"canvases" | "config" | "mcp" | "remot
     const images = this.firstImages(input);
     // A first message with images goes as an ordinary message once the session exists (the runtimes start with text only).
     const resumeFrom = this.resumeFrom(input);
-    const session = await this.wrap(() => this.runtime.startSession({ ...owner, profileId: input.profileId, workspace, ...(input.text && !images.length ? { text: input.text } : {}), options, ...(resumeFrom ? { resumeFrom } : {}) }));
-    if (images.length) await this.f.sessions.sendMessage(session.id, input.text ?? "", images);
+    const automated = this.host.buildJob.matches(input.text);
+    if (automated && images.length) throw new HostError("bad_request", "打包预设不能附带本机文件，请分开发送");
+    const session = await this.wrap(() => this.runtime.startSession({ ...owner, profileId: input.profileId, workspace, ...(input.text && !images.length && !automated ? { text: input.text } : {}), options, ...(resumeFrom ? { resumeFrom } : {}) }));
+    if (automated) await this.host.buildJob.command(session.id, input.text!);
+    else if (images.length) await this.f.sessions.sendMessage(session.id, input.text ?? "", images);
     // The owner's updatedAt moves with its sessions so the board can sort by activity.
     if (owner.taskId) this.publish({ type: "task.upserted", task: this.store.updateTask(owner.taskId, {}) });
     else if (owner.topicId) this.publish({ type: "topic.upserted", topic: this.store.updateTopic(owner.topicId, {}) });

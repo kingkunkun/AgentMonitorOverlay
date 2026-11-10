@@ -10,6 +10,7 @@ export function readIds(key: string): string[] {
 }
 
 const writeIds = (key: string, ids: readonly string[]): void => writeStoredJson(key, ids);
+const EVENT = "amo:stored-ids";
 
 /** A list of ids kept under `key`: whether one is in it, and putting it in or taking it out (first-come order). */
 export function useStoredIds(key: string): { ids: readonly string[]; has(id: string): boolean; toggle(id: string): void; keepOnly(live: ReadonlySet<string>): void } {
@@ -19,7 +20,9 @@ export function useStoredIds(key: string): { ids: readonly string[]; has(id: str
       if (e.key === key || e.key === null) setIds(readIds(key));
     };
     window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    const onLocal = (e: Event) => { if ((e as CustomEvent<string>).detail === key) setIds(readIds(key)); };
+    window.addEventListener(EVENT, onLocal);
+    return () => { window.removeEventListener("storage", onStorage); window.removeEventListener(EVENT, onLocal); };
   }, [key]);
   const update = useCallback(
     (f: (cur: string[]) => string[]) =>
@@ -27,6 +30,7 @@ export function useStoredIds(key: string): { ids: readonly string[]; has(id: str
         const next = f(cur);
         if (next.length === cur.length && next.every((x, i) => x === cur[i])) return cur;
         writeIds(key, next);
+        queueMicrotask(() => window.dispatchEvent(new CustomEvent(EVENT, { detail: key })));
         return next;
       }),
     [key],

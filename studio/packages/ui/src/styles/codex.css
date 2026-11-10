@@ -1,0 +1,32 @@
+:root[data-appearance="codex"] {
+  --font-ui: "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  --font-display: var(--font-ui);
+  --bg: #faf9f7; --bg-header: #faf9f7; --bg-nav: #f3f1ef;
+  --panel: #fffefd; --panel-raised: #f5f3f1; --chip: #eeece9;
+  --selected: #eae6ec; --border: #e5e1dd; --border-strong: #b6afaa;
+  --text: #292725; --text-dim: #716c68; --text-faint: #8b8581;
+  --primary: #363230; --primary-hover: #171615; --on-primary: #fff;
+  --selection: #e1dce8; --tint: #f0ecf4; --tint-strong: #e8e2ed;
+  --menu-bg: #fffefd; --menu-hover: #f0edeb; --code-bg: #f4f2ef;
+  --divider: #e8e3df; --focus-border: #d7d1cc; --panel-float: #fffefd;
+  --r-s: 6px; --r-m: 8px; --r-l: 12px; --r-btn: 8px; --ls-label: 0;
+}
+:root[data-appearance="codex"] .brand-name { font-size: 15px; font-weight: 650; }
+:root[data-appearance="codex"] .scope-nav { border-right-color: transparent; }
+:root[data-appearance="codex"] .nav-row { font-weight: 450; border-radius: 8px; }
+:root[data-appearance="codex"] .nav-head { letter-spacing: 0; }
+:root[data-appearance="codex"] .composer-card, :root[data-appearance="codex"] .draft-composer { border-radius: 18px; box-shadow: 0 3px 18px #29272506; }
+:root[data-appearance="codex"] .draft-ask { font-size: 28px; font-weight: 600; letter-spacing: -.025em; }
+:root[data-appearance="codex"] .draft-where { border: 0; padding: 0; }
+:root[data-appearance="codex"] .draft-lede { color: var(--text-faint); }
+.hash-presets-settings input { width: 100%; box-sizing: border-box; }
+.hash-presets-settings textarea, .hash-presets-settings input { padding: 9px; border: 1px solid var(--border); background: var(--panel); color: var(--text); border-radius: 8px; }
+.hash-presets-settings label { font-size: 13px; line-height: 1.8; }
+.compact-choice { display: inline-flex; align-items: center; gap: 7px; padding: 6px 10px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--text-dim); font: inherit; font-size: 13px; cursor: pointer; max-width: 100%; }
+.compact-choice:hover, .compact-choice[aria-expanded="true"] { background: var(--chip); color: var(--text); }
+.draft-project-control { display: flex; align-items: center; gap: 8px; justify-content: center; padding: 8px 0 16px; }
+.draft-composer { position: relative; }
+.draft-composer .cbar { border-top: 0; }
+.draft-composer .model-row { flex: none; }
+.draft-composer .model-drawer { position: absolute; left: 12px; bottom: 50px; z-index: 45; max-height: 320px; width: calc(100% - 24px); overflow-y: auto; padding: 12px; background: var(--menu-bg); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 8px 28px var(--shadow-soft); }
+.draft-send { border-radius: 50%; width: 34px; height: 34px; min-height: 34px; padding: 0; font-size: 22px; margin-left: auto; }

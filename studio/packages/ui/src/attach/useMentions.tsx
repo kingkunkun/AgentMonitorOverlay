@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useState, type KeyboardEvent } from "react";
-import { absolutePath, type ProjectFile, type Session, type Task, type Workspace } from "@amo-studio/protocol";
+import { absolutePath, presetMessage, type ProjectFile, type Session, type Task, type Workspace } from "@amo-studio/protocol";
+import { useChatPresets } from "./HashPresets.js";
 import { call, type HostLink } from "../host/client.js";
 import { mentionAt, withoutMention } from "../newtask/draft.js";
 import { pinnedFirst, usePins } from "../lib/pins.js";
@@ -59,8 +60,10 @@ export function useComposerMentions(input: {
   const [files, setFiles] = useState<{ workspaceId: string; root: string; files: ProjectFile[] } | null>(null);
   const pins = usePins();
   const mention = caret === null ? null : mentionAt(text, caret);
-  const active = mention?.sign === "@" ? mention : null;
-  const query = active?.query ?? null;
+  const active = mention;
+  const query = active?.sign === "@" ? active.query : null;
+  const hashQuery = active?.sign === "#" ? active.query : null;
+  const presets = useChatPresets(link);
   const draftMode = input.workspaceId !== undefined;
   const workspaceId = draftMode ? (input.workspaceId ?? null) : (current?.workspaceId ?? null);
   // The project's marks, asked for once @ is first typed and kept current after that.
@@ -103,6 +106,7 @@ export function useComposerMentions(input: {
   const projects = input.projects;
   const projectsAlways = !!input.projectsAlways;
   const groups = useMemo<MentionGroup[]>(() => {
+    if (hashQuery !== null) return [{ kind: "preset", heading: "# 提示词 · 选择后填入，发送才执行", options: presets.filter((p) => !hashQuery || p.phrase.toLowerCase().includes(hashQuery.toLowerCase())).map((p) => ({ kind: "preset", id: p.id, name: p.phrase, hint: p.job ? `自动${p.job === "ios" ? " iOS" : "安卓"}打包 · 结果回当前对话` : "默认聊天任务" })) }];
     if (query === null) return [];
     const pinnedTask = (t: Task) => (!!t.topicId && pins.has("topic", t.topicId)) || pins.has("project", t.workspaceId);
     return mentionGroups({
@@ -119,13 +123,18 @@ export function useComposerMentions(input: {
       ...(projects && (query || projectsAlways) ? { projects: pinnedFirst(projects, pins.project, (w) => w.id) } : {}),
       ...(draftMode ? { sessionsUnderTasks: true, find: !!workspaceId } : {}),
     });
-  }, [query, tasks, pins, sessions, current, shownFiles, marks, workspaceId, subsession, commit, template, projects, projectsAlways, draftMode]);
+  }, [query, hashQuery, presets, tasks, pins, sessions, current, shownFiles, marks, workspaceId, subsession, commit, template, projects, projectsAlways, draftMode]);
   const flat = groups.flatMap((g) => g.options);
   const hl = Math.min(highlight, Math.max(flat.length - 1, 0));
 
   const choose = (option: MentionOption) => {
     if (!active) return;
     setHighlight(0);
+    if (option.kind === "preset") {
+      const preset = presets.find((p) => p.id === option.id);
+      if (preset) { const rest = (text.slice(0, active.start) + text.slice(active.end)).trim(); setText(`${presetMessage(preset)}${rest ? `\n\n${rest}` : ""}`); setCaret(null); }
+      return;
+    }
     if (option.kind === "file" || option.kind === "find" || option.kind === "mark" || option.kind === "subsession" || option.kind === "commit" || option.kind === "template") {
       setText(withoutMention(text, active));
       setCaret(null);

@@ -50,6 +50,7 @@ import { WindowBoundary } from "./lib/ErrorBoundary.js";
 import { Toaster } from "./lib/toast.js";
 import { PlanApp } from "./plan/PlanApp.js";
 import { BookmarkNotePrompt } from "./marks/NotePrompt.js";
+import "./styles/codex.css";
 import { startResizeTrace, traceFocusInput } from "./lib/resizeTrace.js";
 
 // One bundle, two windows: the workbench, and the Focus window (loaded with #focus).

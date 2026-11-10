@@ -63,7 +63,7 @@ export function GroupItems({ groups, what, onClose }: { groups: MenuGroups; what
  * Right-click menu of a project in the left column: Git Review (only when the folder is a git repository), and
  * 编辑项目, 加入分组 / 移出分组 and 归档项目 when the caller offers them.
  */
-export function ProjectReviewMenu({ link, at, onClose, onArchive, onEdit, groups }: { link: HostLink; at: ProjectMenuAt; onClose(): void; onArchive?: () => void; onEdit?: () => void; groups?: MenuGroups }) {
+export function ProjectReviewMenu({ link, at, onClose, onArchive, onEdit, groups, sidebarActions }: { link: HostLink; at: ProjectMenuAt; onClose(): void; onArchive?: () => void; onEdit?: () => void; groups?: MenuGroups; sidebarActions?: { pinned: boolean; onPin(): void; onNew(): void; onOpenFolder(): void; onArchiveChats(): void; onRemove(): void } }) {
   const [status, setStatus] = useState<GitStatus | null>(null);
   useEffect(() => {
     let live = true;
@@ -78,6 +78,7 @@ export function ProjectReviewMenu({ link, at, onClose, onArchive, onEdit, groups
   const notGit = status !== null && !status.repo;
   return (
     <ContextMenu at={at} label="项目" onClose={onClose}>
+      {sidebarActions && <><button role="menuitem" onClick={() => { sidebarActions.onPin(); onClose(); }}>{sidebarActions.pinned ? "取消置顶项目" : "置顶项目"}</button><button role="menuitem" onClick={() => { sidebarActions.onNew(); onClose(); }}>新聊天</button></>}
       <button
         type="button"
         role="menuitem"
@@ -105,7 +106,8 @@ export function ProjectReviewMenu({ link, at, onClose, onArchive, onEdit, groups
         </button>
       )}
       {groups && <GroupItems groups={groups} what="项目" onClose={onClose} />}
-      {onArchive && (
+      {sidebarActions && <><button role="menuitem" onClick={() => { sidebarActions.onOpenFolder(); onClose(); }}>在资源管理器中打开</button><button role="menuitem" onClick={() => { sidebarActions.onArchiveChats(); onClose(); }}>归档聊天…</button><hr className="menu-rule" /><button role="menuitem" className="menu-danger" onClick={() => { sidebarActions.onRemove(); onClose(); }}>移除项目…</button></>}
+      {onArchive && !sidebarActions && (
         <button
           type="button"
           role="menuitem"

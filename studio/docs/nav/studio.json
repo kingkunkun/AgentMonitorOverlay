@@ -2,18 +2,57 @@
   "schemaVersion": 1,
   "topics": [
     {
+      "id": "studio.codexChat",
+      "label": "Codex 风格主题、项目聊天列表与新聊天",
+      "aliases": [
+        "Codex主题",
+        "聊天置顶",
+        "项目聊天",
+        "新聊天",
+        "专题隐藏",
+        "画布隐藏"
+      ],
+      "category": "ui",
+      "purpose": "桌面与 Android/iOS 共用界面的紧凑新聊天；项目下保留看板并展开聊天，置顶、改名和归档；默认 Codex 主题，专题画布从设置恢复。",
+      "anchors": [
+        {
+          "label": "项目下聊天",
+          "path": "studio/packages/ui/src/board/ProjectChats.tsx",
+          "anchor": "export function ProjectChats"
+        },
+        {
+          "label": "专题可见性",
+          "path": "studio/packages/ui/src/lib/topicsVisible.ts",
+          "anchor": "export function useTopicsVisible"
+        },
+        {
+          "label": "Codex 配色",
+          "path": "studio/packages/ui/src/styles/codex.css",
+          "anchor": "data-appearance=\"codex\""
+        }
+      ],
+      "next": [
+        "studio/docs/chat-presets.md"
+      ],
+      "related": [
+        "studio.cooperation",
+        "tool.mobile"
+      ]
+    },
+    {
       "id": "studio.cooperation",
       "label": "合作模式、隐私开关、局域网手机服务与固定 Jenkins 打包",
-      "aliases": ["合作模式", "关闭远程", "关闭中转", "手机服务", "原生历史", "隐私", "外发确认", "Jenkins", "打包", "SurvivorTD_IOS_Auto"],
+      "aliases": ["合作模式", "关闭远程", "关闭中转", "手机服务", "原生历史", "隐私", "外发确认", "Jenkins", "打包", "SurvivorTD_IOS_Auto", "SurvivorTD_Android_Auto", "# 提示词", "预设"],
       "category": "host",
-      "purpose": "kingkunkun fork 用户定的合作模式：账号、远程和中转独立开关，一键断开，LAN 手机服务，同账号任务同步；应用内外发批准与原生历史隔离。固定 Jenkins Job 通过按钮或同账号手机 /打包 触发，不把密钥交给模型。",
+      "purpose": "kingkunkun fork 用户定的合作模式：账号、远程和中转独立开关，一键断开，LAN 手机服务，同账号任务同步；应用内外发批准与原生历史隔离。固定 iOS/安卓 Jenkins Job 通过按钮、# 提示词或同账号手机触发；失败日志脱敏限长后在原聊天分析，不把密钥交给模型。",
       "anchors": [
         { "label": "合作模式与隐私", "path": "studio/packages/host/src/core/cooperation.ts", "anchor": "export class Cooperation" },
         { "label": "合作模式界面", "path": "studio/packages/ui/src/shell/CooperationMenu.tsx", "anchor": "export function CooperationMenu" },
         { "label": "固定打包接口", "path": "studio/packages/host/src/core/build-job.ts", "anchor": "export class BuildJob" },
+        { "label": "本地提示词设置", "path": "studio/packages/host/src/core/chat-presets.ts", "anchor": "export class ChatPresets" },
         { "label": "隐私与书签开关协议", "path": "studio/packages/protocol/src/cooperation.ts", "anchor": "BOOKMARKS_ENABLED" }
       ],
-      "next": ["studio/docs/cooperation-privacy-lan.md", "studio/docs/build-job.md"],
+      "next": ["studio/docs/cooperation-privacy-lan.md", "studio/docs/build-job.md", "studio/docs/chat-presets.md"],
       "related": ["studio.remote", "tool.mobile", "tool.account"]
     },
     {

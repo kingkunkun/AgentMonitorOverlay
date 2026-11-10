@@ -4,9 +4,11 @@ import { route, type Route, obj, str } from "../../http/route.js";
 /** The HTTP routes of this feature (see protocol/src/api.ts for each route's request and response). */
 export function configRoutes(service: HostService): Route[] {
   return [
+    route("GET /api/chat-presets", () => service.chatPresets.state()),
+    route("PUT /api/chat-presets", ({ body }) => service.chatPresets.save(obj(body).presets)),
     route("GET /api/build-job", () => service.buildJob.state()),
     route("PUT /api/build-job", ({ body }) => { const b = obj(body); if (typeof b.enabled !== "boolean" || typeof b.username !== "string") throw new Error("打包配置参数无效"); return service.buildJob.configure({ username: b.username, ...(typeof b.token === "string" ? { token: b.token } : {}), enabled: b.enabled, clear: b.clear === true }); }),
-    route("POST /api/build-job/run", () => service.buildJob.run()),
+    route("POST /api/build-job/run", ({ body }) => { const job = obj(body ?? {}).job; if (job !== undefined && job !== "ios" && job !== "android") throw new Error("未授权的打包 Job"); return service.buildJob.run(undefined, "/打包", job); }),
     route("POST /api/build-job/check", () => service.buildJob.check()),
     route("GET /api/cooperation", () => service.cooperation.state()),
     route("PUT /api/cooperation/own-devices", ({ body }) => { const b = obj(body); if (typeof b.enabled !== "boolean") throw new Error("开关参数无效"); return service.cooperation.syncOwn(b.enabled); }),

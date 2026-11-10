@@ -69,7 +69,7 @@ class StudioRepository(private val platform: Platform) {
     private val background = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val client: HttpClient = platform.httpClient()
     private val device = prefs.string("device") ?: ("d_" + Uuid.random().toHexString().take(24)).also { prefs.put("device", it) }
-    private val mutable = MutableStateFlow(StudioState(deviceName = platform.deviceName, theme = prefs.string("theme") ?: "light", resumeLast = prefs.boolean("resume-last", true)))
+    private val mutable = MutableStateFlow(StudioState(deviceName = platform.deviceName, theme = prefs.string("theme-v2") ?: "codex", pinnedTasks = prefs.string("chat-pins").orEmpty().split('\n').filter { it.isNotBlank() }.toSet(), resumeLast = prefs.boolean("resume-last", true)))
     val state: StateFlow<StudioState> = mutable.asStateFlow()
     private var socket: DefaultClientWebSocketSession? = null
     private var socketJob: Job? = null
@@ -136,7 +136,7 @@ class StudioRepository(private val platform: Platform) {
             val encrypted = platform.encrypt(account.key)
             disconnect(); snapshots.clear(); histories.clear(); saveJob?.cancel()
             prefs.put("account", JSONObject().put("server", base).put("name", account.name).put("token", encrypted).toString())
-            update { StudioState(account = account, deviceName = it.deviceName, theme = it.theme, resumeLast = it.resumeLast) }; restoreCache(account); connect()
+            update { StudioState(account = account, deviceName = it.deviceName, theme = it.theme, pinnedTasks = it.pinnedTasks, resumeLast = it.resumeLast) }; restoreCache(account); connect()
         } finally { update { it.copy(busy = false) } }
     }
 
@@ -183,8 +183,11 @@ class StudioRepository(private val platform: Platform) {
         runCatching { updater.openInstaller(file) }.onFailure { e -> setUpdate { it.copy(note = "打不开安装界面：${e.message}") } }
     }
 
-    fun logout() { flushNow(); disconnect(); snapshots.clear(); histories.clear(); cache = null; prefs.remove("account", "last"); update { StudioState(deviceName = it.deviceName, theme = it.theme, resumeLast = it.resumeLast) } }
-    fun setTheme(theme: String) { if (theme !in listOf("light", "dark", "system")) return; prefs.put("theme", theme); update { it.copy(theme = theme) } }
+    fun logout() { flushNow(); disconnect(); snapshots.clear(); histories.clear(); cache = null; prefs.remove("account", "last"); update { StudioState(deviceName = it.deviceName, theme = it.theme, pinnedTasks = it.pinnedTasks, resumeLast = it.resumeLast) } }
+    fun setTheme(theme: String) { if (theme !in listOf("codex", "light", "dark", "system")) return; prefs.put("theme-v2", theme); update { it.copy(theme = theme) } }
+    fun pinTask(task: RemoteTask) { val pins = state.value.pinnedTasks.let { if (task.key in it) it - task.key else it + task.key }; prefs.put("chat-pins", pins.joinToString("\n")); update { it.copy(pinnedTasks = pins) } }
+    fun renameTask(task: RemoteTask, title: String) = mutate { check(title.isNotBlank()) { "聊天名称不能为空" }; command(task.peer, "rt.rename", JSONObject().put("taskId", task.id).put("title", title.trim())); fetchTask(task.peer, task.id) }
+    fun archiveTask(task: RemoteTask) = mutate { command(task.peer, "rt.task-archive", JSONObject().put("taskId", task.id)); snapshots.remove(task.key); update { it.copy(tasks = it.tasks.filterNot { t -> t.key == task.key }, selectedTask = it.selectedTask?.takeIf { t -> t.key != task.key }) }; markTasks() }
     fun setResumeLast(on: Boolean) { prefs.put("resume-last", on); update { it.copy(resumeLast = on) } }
     fun clearMessage() = message(null)
     fun retry() { attempt = 0; connect() }
@@ -494,6 +497,7 @@ class StudioRepository(private val platform: Platform) {
         if (state.value.selectedTask?.key == task.key && state.value.selectedSession?.id == session.id) fetchItems(session.id)
     }
     fun send(text: String) = sessionCommand("rt.send", JSONObject().put("text", text))
+    fun chatPresets(receive: (JSONObject) -> Unit) = mutate { val task = active(); val session = state.value.selectedSession ?: error("请先选择会话"); receive(command(task.peer, "rt.presets", JSONObject().put("sessionId", session.id))) }
     fun teamPeople(receive: (JSONObject) -> Unit) = mutate {
         val task = active(); val session = state.value.selectedSession ?: error("请先选择会话")
         receive(command(task.peer, "rt.people", JSONObject().put("sessionId", session.id)))

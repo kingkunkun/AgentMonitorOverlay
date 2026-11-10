@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { TASK_COLUMNS, taskProject, type RemoteState, type Session, type Task, type TaskColumn, type Topic, type Workspace } from "@amo-studio/protocol";
+import { useTopicsVisible } from "../lib/topicsVisible.js";
 import type { HostLink } from "../host/client.js";
 import { copyStatus, grantsOf, useRemote, type CopyStatus } from "../remote/remote.js";
 import { takenText, teamTaken, teamWaits, useSeenTaken, useTeamThreads } from "../teamrelay/TeamRelay.js";
@@ -70,7 +71,8 @@ export function Board({ tasks, sessions, workspaces, topics, scope, onOpen, onMo
   };
   // 按专题分组: wherever the board holds more than one topic's tasks (not in a topic's own board).
   const groupOn = useGroupByTopic();
-  const canGroup = scope.kind !== "topic";
+  const topicsOn = useTopicsVisible();
+  const canGroup = topicsOn && scope.kind !== "topic";
   const grouped = canGroup && groupOn;
 
   const card = (task: Task) => (

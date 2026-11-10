@@ -1,0 +1,55 @@
+import { expect, test } from "@playwright/test";
+import type { StateSnapshot, Task, Workspace } from "@amo-studio/protocol";
+import { launchStudio, screenshot } from "../support/studio.js";
+
+test("projects retain boards and expand chats with pin, rename, archive, new chat and optional topics", async () => {
+  const studio = await launchStudio();
+  try {
+    const { app, page } = studio;
+    expect(await page.locator("html").getAttribute("data-appearance")).toBe("codex");
+    const ws = await studio.api<Workspace>("POST", "/api/workspaces", { path: studio.workspace("project-alpha") });
+    const a = await studio.api<{ task: Task }>("POST", "/api/tasks", { title: "检查构建", workspaceId: ws.id });
+    const b = await studio.api<{ task: Task }>("POST", "/api/tasks", { title: "分析编译错误", workspaceId: ws.id });
+    const project = page.getByTestId(`scope-ws-${ws.name}`);
+    await project.click();
+    await expect(project).toHaveAttribute("aria-expanded", "true");
+    await expect(page.getByTestId("task-card")).toHaveCount(2);
+    const chats = page.locator(".nav-project-chats");
+    await expect(chats.getByTestId("nav-chat")).toHaveCount(2);
+    await chats.getByRole("button", { name: "检查构建", exact: true }).click();
+    await expect(page.getByTestId("task-title")).toContainText("检查构建");
+    await project.click();
+    await expect(project).toHaveAttribute("aria-expanded", "true");
+    await expect(page.getByTestId("task-card")).toHaveCount(2);
+    await chats.getByRole("button", { name: "分析编译错误", exact: true }).click({ button: "right" });
+    await page.getByRole("menu", { name: "聊天", exact: true }).getByRole("menuitem", { name: "置顶聊天", exact: true }).click();
+    await expect(page.locator(".nav-pinned-chats").getByTestId("nav-chat")).toContainText("分析编译错误");
+    await chats.getByRole("button", { name: /分析编译错误/, exact: false }).first().click({ button: "right" });
+    await page.getByRole("menuitem", { name: "重命名聊天", exact: true }).click();
+    await page.getByRole("textbox", { name: "聊天名称", exact: true }).fill("定位 Android 构建错误");
+    await page.getByRole("button", { name: "保存名称", exact: true }).click();
+    await expect(chats.getByTestId("nav-chat").filter({ hasText: "定位 Android 构建错误" })).toBeVisible();
+    await screenshot(app, "studio", "codex-project-chats", page);
+    await chats.getByTestId("nav-chat").filter({ hasText: "定位 Android 构建错误" }).click({ button: "right" });
+    await page.getByRole("menuitem", { name: "归档聊天", exact: true }).click();
+    await page.getByTestId("confirm-action").click();
+    await expect(chats.getByTestId("nav-chat")).toHaveCount(1);
+    expect((await studio.api<StateSnapshot>("GET", "/api/state")).tasks.find((t) => t.id === b.task.id)?.archivedAt).toBeTruthy();
+    await page.getByRole("button", { name: `在 ${ws.name} 新聊天`, exact: true }).click();
+    await expect(page.getByRole("region", { name: "新聊天", exact: true })).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "任务名", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "选择项目", exact: true })).toContainText(ws.name);
+    await expect(page.getByRole("button", { name: "选择模型", exact: true })).toBeVisible();
+    await expect(page.locator(".foot-hints")).toHaveCount(0);
+    await screenshot(app, "studio", "codex-new-chat", page);
+    await page.getByRole("button", { name: "设置", exact: true }).click();
+    const settings = page.getByRole("dialog", { name: "设置", exact: true });
+    await expect(settings.getByRole("radio", { name: "Codex（默认）", exact: true })).toHaveAttribute("aria-checked", "true");
+    await settings.getByRole("checkbox", { name: "显示专题与画布", exact: true }).check();
+    await expect(page.getByRole("navigation", { name: "范围" }).getByRole("region", { name: "专题" })).toBeVisible();
+    await settings.getByRole("checkbox", { name: "显示专题与画布", exact: true }).uncheck();
+    await screenshot(app, "studio", "codex-theme-settings", page);
+    await settings.getByRole("button", { name: "关闭设置", exact: true }).click();
+    expect((await studio.api<StateSnapshot>("GET", "/api/state")).tasks.find((t) => t.id === a.task.id)?.archivedAt).toBeNull();
+  } finally { await studio.close(); }
+});

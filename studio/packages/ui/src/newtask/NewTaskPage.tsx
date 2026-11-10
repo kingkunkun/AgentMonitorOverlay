@@ -12,11 +12,12 @@ import { EffortBars, FastToggle, nextEffort, PermissionSegments } from "../chat/
 import { DSH_FULL_ACCESS, SandboxHint } from "../settings/SandboxHint.js";
 import { draftText, submitDraft, useTaskDraft } from "./draft.js";
 import { ModelRow, tilePicks } from "./ModelRow.js";
-import { ChoiceRow } from "./ChoiceRow.js";
+import { ChoicePicker } from "./ChoiceRow.js";
 import { useDraftChoices } from "./useDraftChoices.js";
 import { MentionList, useComposerMentions } from "../attach/useMentions.js";
 import { FileSelector } from "../attach/FileSelector.js";
 import { PromptTemplateDialog } from "../attach/PromptTemplateDialog.js";
+import { HashPresetButton } from "../attach/HashPresets.js";
 import { SubSessionDialog } from "../attach/SubSessionDialog.js";
 import { subSessionSetups } from "../attach/mentions.js";
 import { useAttachments } from "../attach/useAttachments.js";
@@ -74,7 +75,7 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
   const rows = useDraftChoices({ draft, update, workspaces, topics, tasks });
   const projects = rows.projects;
   const [drawer, setDrawer] = useState(false);
-  const [morePerms, setMorePerms] = useState(false);
+  const [projectPicker, setProjectPicker] = useState(false);
   const [busy, setBusy] = useState(false);
   // 正在启动: the page is covered while the first session starts (filing in 待办 is quick).
   const [starting, setStarting] = useState<string | null>(null);
@@ -154,7 +155,7 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
       const images = attach.images.flatMap((i) => (i.id ? [i.id] : []));
       const setups = draft.refs ? subSessionSetups(draft.text, new Map(Object.entries(draft.refs))) : [];
       const { refs: _refs, ...rest } = draft;
-      const created = await submitDraft(link, { ...rest, text, ...(resume && !rest.title.trim() ? { title: resume.title } : {}) }, file, onCanvas, images, resume?.id, setups);
+      const created = await submitDraft(link, { ...rest, title: "", lead: false, text, ...(resume && !rest.title.trim() ? { title: resume.title } : {}) }, file, onCanvas, images, resume?.id, setups);
       setResume(null);
       attach.reset();
       reset({ projectId: draft.projectId, topicId: draft.topicId });
@@ -209,17 +210,17 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
   }, [profiles, draft, model, update, remoteMode]);
 
   return (
-    <section className="draft-page" aria-label="新任务">
+    <section className="draft-page" aria-label="新聊天">
       <div className="page-head">
         <BackButton label={backLabel} onClick={onBack} />
-        <span className="page-crumb">/ 新任务</span>
+        <span className="page-crumb">/ 新聊天</span>
         <span className="spacer" />
         <span className="page-crumb">草稿自动保存，离开也不会丢</span>
       </div>
       <div className="draft-wrap">
         <div className="draft">
           <div className="draft-ask-row">
-            <h1 className="draft-ask">要推进什么？</h1>
+            <h1 className="draft-ask">今天想做些什么？</h1>
             {false && !remoteMode && subscription && (
               <button type="button" className="btn-ghost small draft-resume-btn" onClick={() => setPickingResume(true)} title="把终端或 Claude 桌面版里开的 Claude 会话接过来，在这里接着做" data-testid="draft-resume-open">
                 接续已有会话…
@@ -253,42 +254,10 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
             />
           ) : (
           <>
-          <div className="draft-where">
-            <label className="pick-row">
-              <span className="pick-lab">名称</span>
-              <input
-                className="draft-title"
-                value={draft.title}
-                onChange={(e) => update({ title: e.target.value })}
-                placeholder="可不填，用第一句话当名字；之后随时可以改"
-                aria-label="任务名"
-                maxLength={100}
-              />
-            </label>
-            {/* 2026-10-29: the topic first, then the project, its preferred ones first (plans/done/remote-page-and-new-task.md 4.2). */}
-            <ChoiceRow label="专题" noun="专题" choices={rows.topicChoices} selected={draft.topicId} onPick={rows.pickTopic} />
-            <ChoiceRow label="项目" noun="项目" choices={rows.projectChoices} selected={draft.projectId} onPick={rows.pickProject}>
-              {window.amo?.pickDirectory && (
-                <button type="button" className="chip add" onClick={() => void addProject()}>
-                  + 添加项目
-                </button>
-              )}
-            </ChoiceRow>
-            {topic && (
-              <label className="pick-row draft-oncanvas" title="在专题的画布上显示这个任务的卡片；之后在任务页随时可以改">
-                <span className="pick-lab" />
-                <input type="checkbox" checked={onCanvas} disabled={fromCanvas} onChange={(e) => setShowOnCanvas(e.target.checked)} data-testid="draft-on-canvas" />
-                显示在画布上
-                {fromCanvas && <span className="drawer-note">从画布新建，总在画布上</span>}
-              </label>
-            )}
-            <label className="pick-row draft-oncanvas" title="主控负责协调它的专题（不在专题里时是它的项目）：拆任务、排画布、写专题文档；具体的活由各任务的会话做。之后在任务页随时可以改">
-              <span className="pick-lab" />
-              <input type="checkbox" checked={!!draft.lead} onChange={(e) => update({ lead: e.target.checked })} data-testid="draft-lead" />
-              设为主控
-              <span className="drawer-note">协调{topic ? "这个专题" : "这个项目"}的任务</span>
-            </label>
-          </div>
+          <div className="draft-where"><div className="draft-project-control">
+            <button type="button" className="compact-choice" aria-label="选择项目" aria-haspopup="dialog" onClick={() => setProjectPicker(true)}>⌑ {projects.find((w) => w.id === draft.projectId)?.name ?? "选择项目"} <span>⌄</span></button>
+            <button type="button" className="btn-ghost small" disabled={busy} onClick={() => void addProject()}>+ 添加项目</button>
+          </div></div>
 
           {resume && (
             <div className="draft-resume" data-testid="draft-resume">
@@ -345,7 +314,7 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
               value={draft.text}
               rows={3}
               aria-label="第一句话"
-              placeholder={resume ? "接过来后先说的话，可以不写。打 @ 引用项目、任务或文件。" : "比如：导入器遇到网络错误直接崩，给 fetch 加上失败重试，最多 3 次。打 @ 引用项目、任务或文件。"}
+              placeholder="向 WorkStudio 提问，输入 # 使用预设任务，@ 引用项目或文件"
               onChange={(e) => {
                 update({ text: e.target.value });
                 mentions.track(e.target);
@@ -362,6 +331,7 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
             />
             <MentionList mentions={mentions} />
             <div className="cbar">
+              <HashPresetButton link={link} onPick={(text) => update({ text: `${text}${draft.text.trim() ? `\n\n${draft.text}` : ""}` })} />
               <button type="button" className="round-btn attach" aria-label="添加图片或文件" title="添加图片或文件（也可以粘贴或拖进来）" onClick={() => picker.current?.click()}>
                 <IconPaperclip />
               </button>
@@ -376,31 +346,20 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
                   e.currentTarget.value = "";
                 }}
               />
-              <ModelRow link={link} profiles={profiles} pick={draft.pick} onPick={(pick) => update({ pick })} drawer={drawer} onToggleDrawer={() => setDrawer((v) => !v)} />
+              <ModelRow compact link={link} profiles={profiles} pick={draft.pick} onPick={(pick) => { update({ pick }); setDrawer(false); }} drawer={drawer} onToggleDrawer={() => setDrawer((v) => !v)} />
             </div>
             <div className="cbar">
               {model && model.efforts.length > 0 && (
-                <EffortBars efforts={model.efforts} value={draft.options.effort ?? null} fallback={model.defaultEffort} onChange={(effort) => update({ options: { ...draft.options, effort } })} />
+                <select className="compact-choice" aria-label="思考强度" value={draft.options.effort ?? ""} onChange={(e) => update({ options: { ...draft.options, effort: e.target.value || undefined } })}><option value="">默认思考</option>{model.efforts.map((e) => <option value={e} key={e}>{({ low: "低", medium: "中", high: "高", xhigh: "极高", max: "最高" } as Record<string, string>)[e] ?? e}</option>)}</select>
               )}
               <FastToggle fast={model?.fast} value={draft.options.fast} onChange={(fast) => update({ options: { ...draft.options, fast } })} />
               {choices ? (
-                <PermissionSegments
-                  choices={choices}
-                  value={draft.options.permission ?? null}
-                  onChange={(permission) => update({ options: { ...draft.options, permission } })}
-                  expanded={morePerms}
-                  onExpand={() => setMorePerms(true)}
-                />
+                <select className="compact-choice" aria-label="权限" value={draft.options.permission ?? ""} onChange={(e) => update({ options: { ...draft.options, permission: e.target.value || undefined } })}><option value="">默认权限</option>{choices.permissions.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}</select>
               ) : (
                 <span className="drawer-note">正在读取这个模型的选项…</span>
               )}
               <span className="spacer" />
-              <button type="button" className="btn-ghost" onClick={() => void submit(true)} disabled={busy || !!resume} title={resume ? "接续的会话不能放进待办" : "只建任务，放进待办，不开会话"}>
-                放进待办 <kbd>Ctrl ↵</kbd>
-              </button>
-              <button type="button" className="btn-primary" onClick={() => void submit(false)} disabled={busy || !draft.pick.profileId} data-testid="draft-start">
-                {busy ? (resume ? "正在接续…" : "正在开始…") : resume ? "接续" : "开始"} <kbd>↵</kbd>
-              </button>
+              <button type="button" className="btn-primary draft-send" aria-label="发送并开始新聊天" title="发送" onClick={() => void submit(false)} disabled={busy || !draft.pick.profileId || !draft.text.trim() && attach.empty} data-testid="draft-start">{busy ? "…" : "↑"}</button>
             </div>
             {/* DeepSeek · DSH with 工作区可写 in a project not set up for its sandbox (2026-10-23). */}
             <SandboxHint
@@ -428,20 +387,6 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
             )}
           </div>
 
-          <div className="foot-hints">
-            <span>
-              <kbd>@</kbd>引用项目、任务、文件
-            </span>
-            <span>
-              <kbd>Alt 1–4</kbd>换常用模型
-            </span>
-            <span>
-              <kbd>Alt E</kbd>思考强度加一档
-            </span>
-            <span className="foot-where" data-testid="scope-hint">
-              {where}
-            </span>
-          </div>
           {error && (
             <span className="form-error" role="alert">
               {error}
@@ -451,6 +396,7 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
           )}
         </div>
       </div>
+      {projectPicker && <ChoicePicker noun="项目" choices={rows.projectChoices} selected={draft.projectId} noneLabel="不指定项目" onPick={(id) => { rows.pickProject(id); setProjectPicker(false); }} onClose={() => setProjectPicker(false)} />}
       {finding && draft.projectId && (
         <FileSelector
           link={link}

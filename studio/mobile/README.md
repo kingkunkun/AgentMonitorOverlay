@@ -6,9 +6,9 @@
 
 为了出 iOS 版（`../plans/ios.md`），工程从 `studio/android` 改名为 `studio/mobile`，改成 Kotlin Multiplatform：
 
-- `shared/`：协议、数据层和全部 Compose 界面（KMP 模块，Compose Multiplatform 1.11.1；Android 上用的仍是 androidx compose 1.11.x / material3 1.4.0）。现在代码还都在 `src/androidMain`，之后一步步挪进 `commonMain`，再加 iOS。
+- `shared/`：协议、数据层和 Compose 界面（KMP 模块，Compose Multiplatform 1.11.1）。聊天主题、项目列表、新聊天和 # 预设都在 `src/commonMain`，由 Android/iOS 共用；平台适配分别在 `androidMain`、`iosMain`。
 - `app/`：Android 外壳，只有 `MainActivity`、Manifest、图标和样式；applicationId、版本号、APK 路径和以前一样。
-- `iosApp/`（以后）：Xcode 工程，在 Mac 上编。
+- `iosApp/`：iOS 外壳，在 Mac 上编译、签名；Windows 的 Android 构建不代表 IPA 已验证。
 
 ## 构建
 

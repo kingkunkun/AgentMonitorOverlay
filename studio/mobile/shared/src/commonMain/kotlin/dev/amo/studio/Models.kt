@@ -64,7 +64,8 @@ data class StudioState(
     val profiles: List<Pair<String, String>> = emptyList(),
     val file: ViewedFile? = null,
     val fileLoading: String? = null,
-    val theme: String = "light",
+    val theme: String = "codex",
+    val pinnedTasks: Set<String> = emptySet(),
     val update: AppUpdate = AppUpdate(),
     /** Open the last conversation when the app starts (设置). */
     val resumeLast: Boolean = true,

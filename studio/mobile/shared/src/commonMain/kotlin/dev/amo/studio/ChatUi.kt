@@ -57,6 +57,8 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
     var selectedEffort by remember { mutableStateOf("") }
     var selectedPermission by remember { mutableStateOf("") }
     var people by remember { mutableStateOf<JSONObject?>(null) }
+    var presets by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
+    var presetMenu by remember { mutableStateOf(false) }
     val session = state.selectedSession
     val identity = listOf(state.account?.server, state.account?.name, state.selectedPeer?.identity, state.selectedTask?.id, session?.id ?: "").joinToString("\n")
     val draftKey = remember(identity) { identity.encodeUtf8().sha256().hex() }
@@ -72,6 +74,7 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
     fun clearPending() { submitted = ""; prefs.remove("pending-$draftKey", "after-$draftKey") }
     val task = state.selectedTask
     val writable = state.connected && !state.busy && task?.peer?.online == true && !task.revoked && session?.archived != true
+    LaunchedEffect(session?.id, state.connected) { if (state.connected && session != null) repo.chatPresets { presets = it.objects("presets") } }
     val running = session?.state == "running"
     val rows = remember(state.items) { chatRows(state.items) }
     val reversed = remember(rows) { rows.asReversed() }
@@ -101,6 +104,7 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
                     DropdownMenuItem(text = { Text("这个任务的全部会话") }, onClick = { menu = false; openTask() })
                     DropdownMenuItem(text = { Text("刷新") }, onClick = { menu = false; repo.refresh(force = true) })
                     DropdownMenuItem(text = { Text("执行 iOS 打包") }, enabled = writable, onClick = { menu = false; repo.send("/打包") })
+                    DropdownMenuItem(text = { Text("# 提示词与打包任务") }, enabled = writable, onClick = { menu = false; presetMenu = true; repo.chatPresets { presets = it.objects("presets") } })
                     DropdownMenuItem(text = { Text("@ 团队成员") }, enabled = writable, onClick = { menu = false; repo.teamPeople { people = it } })
                     DropdownMenuItem(text = { Text("模型、思考与权限") }, enabled = writable, onClick = { menu = false; repo.sessionChoices { value -> choices = value; val current = value.optJSONObject("options"); selectedModel = current?.str("model") ?: ""; selectedEffort = current?.str("effort") ?: ""; selectedPermission = current?.str("permission") ?: "" } })
                 }
@@ -133,6 +137,17 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
         if (pinned >= 0 && !pinnedVisible) {
             val e = (reversed[pinned] as ItemRow).entry
             Notice(if (e.type == "approval") "等你审批：${e.json.str("summary").ifBlank { e.json.str("detail") }.take(80)}" else "模型在等你回答", Tone.Attention, "查看", { scope.launch { list.animateScrollToItem(pinned) } }, tag = "chat-pinned")
+        }
+        val hashQuery = if (draft.startsWith("#") && !draft.contains('\n')) draft.removePrefix("#") else null
+        if (presetMenu || hashQuery != null) Column(Modifier.fillMaxWidth().heightIn(max = 220.dp).verticalScroll(rememberScrollState()).padding(horizontal = 12.dp)) {
+            if (presets.isEmpty()) Text("请连接已更新的电脑，读取 # 提示词。", style = MaterialTheme.typography.bodySmall)
+            presets.filter { hashQuery.isNullOrBlank() || it.str("phrase").contains(hashQuery, ignoreCase = true) }.forEach { preset ->
+                AmoTextButton(onClick = { saveDraft("#${preset.str("phrase")}\n${preset.str("prompt")}"); presetMenu = false }) { Text("#" + preset.str("phrase")) }
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            AmoTextButton(enabled = writable, onClick = { presetMenu = !presetMenu; if (presetMenu) repo.chatPresets { presets = it.objects("presets") } }) { Text("# 提示词") }
+            AmoTextButton(enabled = writable, onClick = { repo.sessionChoices { value -> choices = value; val current = value.optJSONObject("options"); selectedModel = current?.str("model") ?: ""; selectedEffort = current?.str("effort") ?: ""; selectedPermission = current?.str("permission") ?: "" } }) { Text("模型与权限") }
         }
         if (submitted.isNotEmpty()) Notice("这条消息还没确认送到；草稿留在手机上。先刷新核对最新对话。", Tone.Attention, "已核对", { verify = true }, tag = "chat-unconfirmed")
         if (verify) AlertDialog(onDismissRequest = { verify = false }, title = { Text("处理待确认消息") }, text = { Text("请先在最新对话或电脑上核对这条消息。解除等待后可以继续编辑并发送；若原消息实际已送达，重发会让模型再次执行。") }, confirmButton = { AmoTextButton(onClick = { clearPending(); verify = false }) { Text("已确认未送达，继续编辑") } }, dismissButton = { AmoTextButton(onClick = { verify = false }) { Text("继续等待") } })

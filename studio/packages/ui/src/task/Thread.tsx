@@ -22,6 +22,7 @@ import { FileSelector } from "../attach/FileSelector.js";
 import { SubSessionDialog } from "../attach/SubSessionDialog.js";
 import { QuickCommitDialog } from "../attach/QuickCommitDialog.js";
 import { PromptTemplateDialog, remoteTaskTemplates } from "../attach/PromptTemplateDialog.js";
+import { HashPresetButton } from "../attach/HashPresets.js";
 import { markFileMessage } from "../marks/open.js";
 import { QuestionCard } from "../chat/questions/QuestionCard.js";
 import { DecisionPrompt, SessionDecisions } from "../collab/DecisionPanel.js";
@@ -715,6 +716,7 @@ ${d}` : back));
               <span className="sr-only">输入消息</span>
               <MentionBackdrop text={draft} names={mentions.names} scrollTop={inputScroll} />
               <textarea
+                aria-label="输入消息"
                 value={draft}
                 onScroll={(e) => setInputScroll(e.currentTarget.scrollTop)}
                 onChange={(e) => {
@@ -749,6 +751,7 @@ ${d}` : back));
             <MentionList mentions={mentions} />
             <SlashMenu slash={slash} />
             <div className="chat-bar">
+              <HashPresetButton link={link} onPick={(text) => setDraft(`${text}${draft.trim() ? `\n\n${draft}` : ""}`)} />
               <button
                 type="button"
                 className="round-btn attach"

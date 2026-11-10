@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { EXPERIMENTAL_FEATURES, type ExperimentalFeature } from "@amo-studio/protocol";
+import { useTopicsVisible } from "../lib/topicsVisible.js";
 import { call, HostApiError, type HostLink } from "../host/client.js";
 
 // 设置 → 测试功能 (2026-11-01, the user: 设置里加个测试功能页，这个功能加个开关): features still being tried out, each
@@ -7,6 +8,7 @@ import { call, HostApiError, type HostLink } from "../host/client.js";
 // ones turned on (功能's is the ones turned off).
 
 export function ExperimentalSection({ link, on }: { link: HostLink; on: readonly ExperimentalFeature[] }) {
+  const topicsOn = useTopicsVisible();
   // Shown at once; the Host's settings event confirms it (or the error puts it back).
   const [shown, setShown] = useState<readonly ExperimentalFeature[]>(on);
   const [busy, setBusy] = useState(false);
@@ -34,7 +36,7 @@ export function ExperimentalSection({ link, on }: { link: HostLink; on: readonly
     <section className="settings-section" aria-label="测试功能">
       <span className="settings-heading">测试功能</span>
       <span className="settings-hint">还在试的新功能，默认都关着。打开后入口才出现；用着别扭、出错可以随时关掉，关掉不影响任务和会话的数据。</span>
-      {EXPERIMENTAL_FEATURES.map((f) => (
+      {EXPERIMENTAL_FEATURES.filter((f) => topicsOn || f.id !== "panorama").map((f) => (
         <label key={f.id} className="settings-row feature-row">
           <input type="checkbox" checked={shown.includes(f.id)} disabled={busy} onChange={(e) => void toggle(f.id, e.target.checked)} data-testid={`experimental-${f.id}`} />
           <span className="feature-text">

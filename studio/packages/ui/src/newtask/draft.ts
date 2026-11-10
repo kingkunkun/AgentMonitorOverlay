@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ModelProfile, Session, SessionOptions, SubsessionSetup, Task } from "@amo-studio/protocol";
+import { topicsVisible } from "../lib/topicsVisible.js";
 import { call, type HostLink } from "../host/client.js";
 import { defaultProfile, rememberProfile, rememberWorkspace, repick } from "../lib/profiles.js";
 import { rememberPick, type ModelPick } from "../lib/recents.js";
@@ -44,7 +45,7 @@ function load(profiles: readonly ModelProfile[]): TaskDraft {
       title: typeof d.title === "string" ? d.title : "",
       text: typeof d.text === "string" ? d.text : "",
       projectId: typeof d.projectId === "string" ? d.projectId : null,
-      topicId: typeof d.topicId === "string" ? d.topicId : null,
+      topicId: topicsVisible() && typeof d.topicId === "string" ? d.topicId : null,
       pick,
       options: d.options && typeof d.options === "object" ? d.options : {},
       ...(d.lead === true ? { lead: true } : {}),
@@ -84,6 +85,13 @@ export function draftText(draft: Pick<TaskDraft, "text" | "refs">): string {
 }
 
 const save = (d: TaskDraft): void => writeStoredJson(KEY, d);
+/** Explicit New chat starts a blank conversation in the selected project, keeping the last model choices. */
+export function beginNewChatDraft(profiles: readonly ModelProfile[], projectId: string | null): void {
+  const previous = load(profiles);
+  if (previous.text.trim()) writeStoredJson("amo.previousTaskDraft", previous);
+  save({ ...emptyDraft(profiles), projectId, pick: previous.pick, options: previous.options });
+  window.dispatchEvent(new StorageEvent("storage", { key: KEY }));
+}
 
 /** The shared draft. `update` merges; switching the model drops an effort or permission the new one may not take. */
 export function useTaskDraft(profiles: readonly ModelProfile[]) {
@@ -110,7 +118,7 @@ export function useTaskDraft(profiles: readonly ModelProfile[]) {
   }, [profiles, draft.pick.profileId]);
   const update = useCallback((patch: Partial<TaskDraft>) => {
     setDraft((cur) => {
-      const next = { ...cur, ...patch };
+      const next = { ...cur, ...patch, ...(!topicsVisible() ? { topicId: null } : {}) };
       if (patch.pick && patch.pick.profileId !== cur.pick.profileId) next.options = {};
       save(next);
       return next;
@@ -118,7 +126,7 @@ export function useTaskDraft(profiles: readonly ModelProfile[]) {
   }, []);
   const reset = useCallback(
     (keep: Partial<TaskDraft> = {}) => {
-      const next = { ...emptyDraft(profiles), pick: latest.current.pick, ...keep };
+      const next = { ...emptyDraft(profiles), pick: latest.current.pick, ...keep, ...(!topicsVisible() ? { topicId: null } : {}) };
       save(next);
       setDraft(next);
     },

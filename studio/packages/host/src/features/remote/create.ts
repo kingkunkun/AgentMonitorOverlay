@@ -51,6 +51,7 @@ export interface GrantedTaskInput {
  */
 export async function startGrantedTask(ctx: RemoteContext, grants: RemoteGrants, to: DeviceRef, input: GrantedTaskInput, granted?: (task: Task) => void): Promise<{ task: Task; session: Session | null; error?: string }> {
   const host = ctx.host;
+  if (host.buildJob.matches(input.text) && to.account !== ctx.ownAccount()) throw new HostError("read_only", "只有自己的已配对账号能触发打包预设");
   const { task } = await host.tasks.createTask({ title: input.title, workspaceId: input.workspaceId, topicId: input.topicId, column: "doing" });
   if (input.description) host.tasks.updateTask(task.id, { description: input.description });
   grants.grant(task.id, to);

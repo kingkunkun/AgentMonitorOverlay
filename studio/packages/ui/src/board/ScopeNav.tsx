@@ -1,5 +1,8 @@
 import { useState, type DragEvent, type MouseEvent, type ReactNode } from "react";
 import { projectWorkspaces, type Session, type Task, type Topic, type Workspace } from "@amo-studio/protocol";
+import { useTopicsVisible } from "../lib/topicsVisible.js";
+import { ProjectChats } from "./ProjectChats.js";
+import { revealInExplorer } from "../lib/openin.js";
 import { call, HostApiError, type HostLink } from "../host/client.js";
 import { togglePin, usePins, type PinKind } from "../lib/pins.js";
 import { ContextMenu } from "../lib/ContextMenu.js";
@@ -51,6 +54,9 @@ interface ScopeNavProps {
   /** Opens the settings (the button under the Host status). */
   onSettings?: () => void;
   onScope(scope: Scope): void;
+  onOpenChat?(id: string): void;
+  onNewChat?(workspaceId?: string): void;
+  currentChat?: string;
   /**
    * 全景 (测试功能, 11-04, the user's call): its own entry under 全部任务 — later the list of panoramas, one for now. Left
    * out while it is turned off. While it is in front no scope row is current.
@@ -71,7 +77,7 @@ function readFolded(): Record<PinKind, boolean> {
  * pinned (they come first, here and wherever they are picked) and each section folds down to its pinned entries. The
  * lists scroll between the fixed top and the Host / usage footer.
  */
-export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope, live, onScope, onSettings, panorama }: ScopeNavProps) {
+export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope, live, onScope, onSettings, panorama, onOpenChat, onNewChat, currentChat }: ScopeNavProps) {
   const [adding, setAdding] = useState(false);
   const [newTopic, setNewTopic] = useState<string | null>(null);
   const [path, setPath] = useState("");
@@ -96,6 +102,11 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
   const editingWs = editing ? workspaces.find((w) => w.id === editing) : undefined;
   const editingTopic = editingTopicId ? topics.find((t) => t.id === editingTopicId) : undefined;
   const pins = usePins();
+  const topicsOn = useTopicsVisible();
+  const expandedProjects = useStoredIds("amo.expandedChatProjects");
+  const hiddenProjects = useStoredIds("amo.hiddenChatProjects");
+  const [removingProject, setRemovingProject] = useState<string | null>(null);
+  const [archiveChats, setArchiveChats] = useState<string | null>(null);
   const topicOrder = useNavOrder("topic");
   const projectOrder = useNavOrder("project");
   const sectionOrder = useNavOrder("sections");
@@ -176,7 +187,7 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
           endDrag();
         }}
       >
-        <button type="button" className="nav-row" aria-current={!panorama?.current && isCurrent(scope, target)} onClick={() => onScope(target)} onContextMenu={onMenu} data-testid={testId}
+        <button type="button" className="nav-row" aria-current={!panorama?.current && isCurrent(scope, target)} aria-expanded={kind === "project" && id ? expandedProjects.has(id) : undefined} onClick={() => { if (kind === "project" && id) { if (!expandedProjects.has(id) || !currentChat && scope.kind === "workspace" && scope.id === id) expandedProjects.toggle(id); } onScope(target); }} onContextMenu={onMenu} data-testid={testId}
           draggable={!!kind && !!id}
           title={kind ? [title, "拖动排序；Alt ↑ / ↓ 调整顺序（置顶项在前）"].filter(Boolean).join("\n") : title}
           onDragStart={(e) => { if (kind && id) startDrag(e, { type: "item", kind, id }); }}
@@ -199,7 +210,8 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
           {badge}
           <span className="count">{count}</span>
         </button>
-        {kind && id && (
+        {kind === "project" && id && <div className="nav-project-actions"><button className="nav-icon-action" aria-label={`项目操作：${name}`} title="项目操作" onClick={(e) => { e.preventDefault(); const r = e.currentTarget.getBoundingClientRect(); setMenu({ workspaceId: id, x: r.left, y: r.bottom }); }}>···</button><button className="nav-icon-action" aria-label={`在 ${name} 新聊天`} title="新聊天" onClick={() => onNewChat?.(id)}>✎</button></div>}
+        {kind && kind !== "project" && id && (
           <button
             type="button"
             className="pin-btn"
@@ -214,6 +226,7 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
             </svg>
           </button>
         )}
+        {kind === "project" && id && expandedProjects.has(id) && <ProjectChats link={link} tasks={liveTasks.filter((t) => t.workspaceId === id)} current={currentChat} onOpen={onOpenChat} />}
       </div>
     );
   };
@@ -225,7 +238,7 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
     return ordered.filter((x) => pins.has(kind, id(x)) || (scope.kind === (kind === "topic" ? "topic" : "workspace") && scope.id === id(x)));
   };
   const liveTopics = topics.filter((t) => !t.archivedAt);
-  const projects = projectWorkspaces(workspaces);
+  const projects = projectWorkspaces(workspaces).filter((w) => !hiddenProjects.has(w.id));
   const topicRows = shown("topic", liveTopics, (t) => t.id);
   const projectRows = shown("project", projects, (w) => w.id);
   const groupedProjects = groupEntries(projectRows, groupsOf.project);
@@ -378,7 +391,11 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
     setBusy(true);
     setError("");
     try {
-      const ws = await call(link, "POST /api/workspaces", {}, { path: dir.trim() });
+      const normalize = (p: string) => p.replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
+      const known = workspaces.find((w) => normalize(w.path) === normalize(dir.trim()));
+      const ws = known && hiddenProjects.has(known.id) ? known : await call(link, "POST /api/workspaces", {}, { path: dir.trim() });
+      if (hiddenProjects.has(ws.id)) hiddenProjects.toggle(ws.id);
+      if (!expandedProjects.has(ws.id)) expandedProjects.toggle(ws.id);
       setPath("");
       setAdding(false);
       onScope({ kind: "workspace", id: ws.id });
@@ -416,6 +433,7 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
     <>
     <nav className="scope-nav" aria-label="范围">
       <div className="nav-top">
+        <button type="button" className="nav-row nav-new-chat" onClick={() => onNewChat?.()} data-testid="nav-new-chat">✎ <span>新聊天</span></button>
         {row(null, null, { kind: "all" }, "全部任务", liveTasks.length, "scope-all")}
         {panorama && (
           <div className="nav-item">
@@ -427,7 +445,8 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
       </div>
 
       <div className="nav-scroll">
-        {sectionRows.map((kind) => kind === "topic" ? (
+        <ProjectChats link={link} tasks={liveTasks} current={currentChat} onOpen={onOpenChat} pinnedOnly />
+        {sectionRows.filter((kind) => topicsOn || kind !== "topic").map((kind) => kind === "topic" ? (
         <section key="topic" className="nav-section-box" aria-label="专题" {...sectionDrop("topic")}>
           {head("topic", "专题", liveTopics.length, () => setNewTopic(""), "新专题")}
           {folded.topic || groupsOf.topic.length === 0 ? (
@@ -585,6 +604,7 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
           onClose={() => setMenu(null)}
           onEdit={() => setEditing(menu.workspaceId)}
           groups={menuGroups("project", menu.workspaceId)}
+          sidebarActions={{ pinned: pins.has("project", menu.workspaceId), onPin: () => togglePin("project", menu.workspaceId), onNew: () => onNewChat?.(menu.workspaceId), onOpenFolder: () => { const w = workspaces.find((w) => w.id === menu.workspaceId); if (w) void revealInExplorer(link, { path: w.path }).catch((e) => showToast({ text: String(e), error: true })); }, onArchiveChats: () => setArchiveChats(menu.workspaceId), onRemove: () => setRemovingProject(menu.workspaceId) }}
           onArchive={() => {
             const w = workspaces.find((x) => x.id === menu.workspaceId);
             if (w) setArchiving({ kind: "workspace", id: w.id, name: w.name });
@@ -592,6 +612,8 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
         />
       )}
       {editingWs && <EditProjectDialog link={link} workspace={editingWs} onClose={() => setEditing(null)} />}
+      {removingProject && <ConfirmDialog title="从侧栏移除项目？" action="移除项目" onCancel={() => setRemovingProject(null)} onConfirm={() => { hiddenProjects.toggle(removingProject); if (scope.kind === "workspace" && scope.id === removingProject) onScope({ kind: "all" }); setRemovingProject(null); }}><p>仅隐藏左侧入口，项目文件和聊天记录保留。再次添加同一路径可以恢复显示。</p></ConfirmDialog>}
+      {archiveChats && <ConfirmDialog title="归档此项目的全部聊天？" action="归档聊天" busy={archiveBusy} onCancel={() => setArchiveChats(null)} onConfirm={() => { setArchiveBusy(true); void (async () => { try { for (const t of liveTasks.filter((t) => t.workspaceId === archiveChats)) await call(link, "POST /api/tasks/:id/archive", { id: t.id }); setArchiveChats(null); } catch (e) { showToast({ text: String(e), error: true }); } finally { setArchiveBusy(false); } })(); }}><p>保留项目入口和所有聊天记录，正在执行的会话会停止。可在设置的数据管理中恢复。</p></ConfirmDialog>}
       {topicMenu && (
         <TopicMenu
           at={topicMenu}

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { isCommon, TASK_COLUMNS, type Task, type TaskColumn, type Topic, type Workspace } from "@amo-studio/protocol";
+import { useTopicsVisible } from "../lib/topicsVisible.js";
 import { call, type HostLink } from "../host/client.js";
 import { COLUMN_NAMES } from "../lib/status.js";
 import { CopyId } from "../lib/CopyId.js";
@@ -228,6 +229,7 @@ export function TaskMeta({
   onTopic(): void;
 }) {
   const duty = dutyOfTask(useDuty(), task.id);
+  const topicsOn = useTopicsVisible();
   const parts: ReactNode[] = [
     <button key="status" type="button" className="meta-item status" disabled={disabled} title="改状态" aria-label={`状态：${COLUMN_NAMES[task.column]}`} onClick={(e) => onStatus(below(e.currentTarget))} data-testid="task-status">
       <span className="meta-dot" style={{ background: STATUS_DOT[task.column] }} />
@@ -269,7 +271,7 @@ export function TaskMeta({
         {branch}
       </span>,
     );
-  if (!task.remote) parts.push(
+  if (topicsOn && !task.remote) parts.push(
     <button key="topic" type="button" className="meta-item" disabled={disabled} aria-label={topic ? `专题：${topic.title}` : "专题：无"} title={topic ? [`专题：${topic.title}`, topic.description, "点击换专题；左栏右键专题可以改名字和说明"].filter(Boolean).join("\n") : "不在专题里；点击放进专题"} onClick={onTopic} data-testid="task-topic">
       {Icon.topic}
       {topic ? topic.title : "—"}
