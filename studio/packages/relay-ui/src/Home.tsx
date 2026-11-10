@@ -190,7 +190,7 @@ export function Home({ session, onLogout, resumeOpen = null, updatedTo = null }:
     const hookup = shell ? await shell.mcp().catch(() => null) : null;
     if (hookup?.cli) {
       // An older desktop client cannot write the file: point the agent at the command that prints the usage.
-      await copyText(`请先运行 "${hookup.cli}" prompt（PowerShell 里写 & "${hookup.cli}" prompt），按它打印的说明用 AMO 中转（推进中卡住、或方案要人把关时，发会话找人确认）。`);
+      await copyText(`请先运行 "${hookup.cli}" prompt（PowerShell 里写 & "${hookup.cli}" prompt），按它打印的说明用 Work中转（推进中卡住、或方案要人把关时，发会话找人确认）。`);
       return toast("已复制一行指令，贴给 agent，它会自己去看用法");
     }
     await copyText(usagePrompt({ me, role: session.me.role, members, cli: hookup?.cli, flow: settings.flow, tasks: full }));
@@ -359,7 +359,7 @@ export function Home({ session, onLogout, resumeOpen = null, updatedTo = null }:
       <header className={`topbar ${ownTitleBar ? "own" : ""} ${macLights ? "mac" : ""}`}>
         <div className="brand">
           <img className="brand-mark" src={iconUrl} alt="" />
-          <span className="brand-name">AMO 中转</span>
+          <span className="brand-name">Work中转</span>
           <span className="brand-sep">{session.me.service}</span>
         </div>
         <nav className="view-tabs">

@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { _electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
 import { programLaunch } from "../support/packed.js";
 
-// AMO 中转's desktop client (plans/done/relay.md, relay-tasks.md) against a real service in this process: first start (loader →
+// Work中转's desktop client (plans/done/relay.md, relay-tasks.md) against a real service in this process: first start (loader →
 // content download → login), register two people, a session sent by an AI through the command line the client
 // installs, answered one by one in the other client and handed back (the AI fetches it, the person takes it over and
 // closes it), team tasks (files on it, a note in the viewer sent with a reply, an HTML file without its scripts; a session under one, 接手任务 from it, 流转 back, seen, archived, shared settings), a direct chat and a topic next to it (archived on one side), updates (installed by the loader at start; applied by itself
@@ -730,7 +730,7 @@ test("what waits shows outside the window: the taskbar flashes with the count, t
   writeFileSync(req, JSON.stringify({ to: "程序老吴", title: "掉落表要不要分服", body: "想分服配，可以吗？" }));
   const threadId = /threadId: (\S+)/.exec(await exec("cmd.exe", ["/c", join(a.home, "amo-relay.cmd"), "ask", "--json", req]))![1]!;
   await expect(b.page.locator(".strip.attn")).toContainText("1 件等你处理");
-  await expect.poll(() => shown(b.app)).toMatchObject({ count: 1, overlay: 1, flashing: true, blinking: true, tooltip: "AMO 中转 · 1 条待处理 / 未读" });
+  await expect.poll(() => shown(b.app)).toMatchObject({ count: 1, overlay: 1, flashing: true, blinking: true, tooltip: "Work中转 · 1 条待处理 / 未读" });
   const pid = await b.app.evaluate(() => process.pid);
   await expect.poll(attention).toEqual({ count: 1, blink: true, pid, at: expect.any(String) as unknown as string });
   // Looked at: no more flashing or blinking, the count stays (the platform's icon stops blinking, keeps the count).
@@ -864,18 +864,18 @@ test("installed by AMO 平台: no 更新桌面程序 (the platform updates the s
     await expect(dev.page.getByText("桌面程序可更新").first()).toBeVisible({ timeout: 15_000 });
     await expect(fromPlatform.page.getByText("桌面程序可更新")).toHaveCount(0);
     const refused = await fromPlatform.page.evaluate(() => (window as unknown as { relayShell: { updateShell(): Promise<void> } }).relayShell.updateShell().then(() => "updated", (e: Error) => e.message));
-    expect(refused).toContain("这个 AMO 中转是 AMO 平台装的，桌面程序在 AMO 平台的「工具」里更新");
+    expect(refused).toContain("这个 Work中转是 AMO 平台装的，桌面程序在 AMO 平台的「工具」里更新");
     await shot(fromPlatform.app, "40-platform-no-shell-update");
 
     // Content that needs a newer shell: the platform's client is pointed at the platform, not at a download page.
     const parsed = JSON.parse(manifest) as { version: string; minShell: number };
     writeFileSync(manifestFile, JSON.stringify({ ...parsed, version: `${parsed.version}-next`, minShell: 99 }));
-    await expect(fromPlatform.page.getByText("要新的桌面程序，在 AMO 平台的「工具」里更新 AMO 中转").first()).toBeVisible({ timeout: 15_000 });
+    await expect(fromPlatform.page.getByText("要新的桌面程序，在 AMO 平台的「工具」里更新 Work中转").first()).toBeVisible({ timeout: 15_000 });
     await expect(dev.page.getByText("要换新的桌面程序").first()).toBeVisible({ timeout: 15_000 });
     await shot(fromPlatform.app, "41-platform-new-shell");
     // A first start then: the loader says the same, with no download page to open.
     const fresh = await launchFrom(join(app, "packages", "relay-app", "dist", "main.js"), "platform-fresh");
-    await expect(fresh.page.locator("#errText")).toHaveText("服务器上的客户端要新的桌面程序：在 AMO 平台的「工具」里更新 AMO 中转。", { timeout: 30_000 });
+    await expect(fresh.page.locator("#errText")).toHaveText("服务器上的客户端要新的桌面程序：在 AMO 平台的「工具」里更新 Work中转。", { timeout: 30_000 });
     await expect(fresh.page.locator("#download")).toBeHidden();
     // capturePage on this third window can fail (UnknownVizError); the page's own screenshot does not.
     await fresh.page.screenshot({ path: join(shots, "42-platform-loader-new-shell.png") });

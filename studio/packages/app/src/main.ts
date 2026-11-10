@@ -36,6 +36,10 @@ import { installFolderIpc } from "./folders.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const studioRoot = resolve(here, "..", "..", "..");
+// A locally compiled client, or a portable sibling; the platform's install still takes precedence.
+const localRelayExe = app.isPackaged ? join(dirname(process.execPath), "..", "AMO Relay", "AMO Relay.exe") : join(studioRoot, "release", "local-relay", "AMO Relay", "AMO Relay.exe");
+const bundledRelay = app.isPackaged && existsSync(join(studioRoot, "packages", "relay-app", "dist", "main.js"));
+const relayLaunch = { localExe: bundledRelay ? process.execPath : localRelayExe, ...(bundledRelay ? { localArgs: ["--amo-app=relay"] } : {}) };
 const testMode = process.env.AMO_STUDIO_TEST === "1";
 /** Window and taskbar icon (the exe's own icon is set when packaging). */
 const APP_ICON = join(here, "..", "assets", "icon.png");
@@ -499,8 +503,8 @@ if (!app.requestSingleInstanceLock() || quitAsked(process.argv)) {
     resizeFocus?.(phase);
   });
   // 在中转里打开 (2026-11-05, relay-link.ts): the AMO 中转 client shows a thread a session sent. Tests only record it.
-  ipcMain.handle("amo:relay-available", () => testMode || findRelayExe() !== null);
-  ipcMain.handle("amo:relay-open", (_event, threadId: unknown) => typeof threadId === "string" && openInRelay(threadId, { testMode }));
+  ipcMain.handle("amo:relay-available", () => testMode || findRelayExe(process.env, relayLaunch.localExe) !== null);
+  ipcMain.handle("amo:relay-open", (_event, threadId: unknown) => (threadId === undefined || typeof threadId === "string") && openInRelay(threadId, { testMode, ...relayLaunch }));
   // "在工作台打开" from Focus: the workbench shows that task and session (and comes forward, except in tests).
   ipcMain.handle("amo:open-in-workbench", (_event, target: unknown) => {
     const t = target as { taskId?: unknown; sessionId?: unknown; show?: unknown; passage?: unknown; topicId?: unknown; calloutId?: unknown; settings?: unknown } | null;

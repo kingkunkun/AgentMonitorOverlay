@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { findRelayExe } from "./relay-link.js";
+import { findRelayExe, openInRelay } from "./relay-link.js";
 
 // 在中转里打开 (2026-11-05): Studio finds the AMO 中转 client the way AMO 平台 knows it.
 
@@ -22,6 +22,8 @@ describe("findRelayExe", () => {
     const root = temp();
     const env = { AMO_HOME: join(root, "amo"), AMO_RELAY_HOME: join(root, "relay-home") };
     expect(findRelayExe(env)).toBeNull();
+    const local = touch(join(root, "local", "AMO Relay.exe"));
+    expect(findRelayExe(env, local)).toBe(local);
 
     const running = touch(join(root, "unpacked", "AMO Relay.exe"));
     mkdirSync(env.AMO_RELAY_HOME, { recursive: true });
@@ -32,10 +34,18 @@ describe("findRelayExe", () => {
     mkdirSync(env.AMO_HOME, { recursive: true });
     writeFileSync(join(env.AMO_HOME, "programs.json"), JSON.stringify({ tools: { relay: { version: "0.9.9", dir: join(root, "apps", "relay", "0.9.9"), exe: "AMO Relay.exe" } } }));
     expect(findRelayExe(env)).toBe(installed);
+    expect(findRelayExe(env, local)).toBe(installed);
 
     // From the sources the client is electron.exe with its app as an argument: not something to start bare.
     rmSync(join(env.AMO_HOME, "programs.json"));
     writeFileSync(join(env.AMO_RELAY_HOME, "running.json"), JSON.stringify({ pid: 1, exe: touch(join(root, "dev", "electron.exe")) }));
     expect(findRelayExe(env)).toBeNull();
+  });
+  it("opens the client without a thread, rejects invalid targets, and reports a missing client", async () => {
+    const env = { AMO_HOME: temp(), AMO_RELAY_HOME: temp() };
+    expect(await openInRelay(undefined, { env })).toBe(false);
+    expect(await openInRelay("../invalid", { env, testMode: true })).toBe(false);
+    expect(await openInRelay(undefined, { env, testMode: true })).toBe(true);
+    expect(await openInRelay("thread-1", { env, testMode: true })).toBe(true);
   });
 });

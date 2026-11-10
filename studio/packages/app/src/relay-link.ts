@@ -10,7 +10,7 @@ import { basename, join, resolve } from "node:path";
 type Env = Record<string, string | undefined>;
 
 /** The client's exe, or null when this computer has none Studio can find. */
-export function findRelayExe(env: Env = process.env): string | null {
+export function findRelayExe(env: Env = process.env, localExe?: string): string | null {
   const amoHome = env.AMO_HOME ? resolve(env.AMO_HOME) : join(env.APPDATA ?? "", "AMO");
   try {
     const programs = JSON.parse(readFileSync(join(amoHome, "programs.json"), "utf8").replace(/^﻿/, "")) as { tools?: Record<string, { dir?: unknown; exe?: unknown }> };
@@ -30,19 +30,23 @@ export function findRelayExe(env: Env = process.env): string | null {
   } catch {
     // not running, or an older client that writes no exe
   }
-  return null;
+  return localExe && existsSync(localExe) ? localExe : null;
 }
 
 /** Starts (or wakes) the client on the thread; false when there is none. Tests only record it. */
-export function openInRelay(threadId: string, opts: { env?: Env; testMode?: boolean } = {}): boolean {
-  if (!/^[A-Za-z0-9_-]{1,80}$/.test(threadId)) return false;
-  const exe = findRelayExe(opts.env);
+export function openInRelay(threadId?: string, opts: { env?: Env; testMode?: boolean; localExe?: string; localArgs?: string[] } = {}): Promise<boolean> {
+  if (threadId !== undefined && !/^[A-Za-z0-9_-]{1,80}$/.test(threadId)) return Promise.resolve(false);
+  const exe = opts.localExe && existsSync(opts.localExe) ? opts.localExe : findRelayExe(opts.env);
   if (opts.testMode) {
-    const g = globalThis as { __amoRelayOpened?: Array<{ threadId: string; exe: string | null }> };
+    const g = globalThis as { __amoRelayOpened?: Array<{ threadId?: string; exe: string | null }> };
     (g.__amoRelayOpened ??= []).push({ threadId, exe });
-    return true;
+    return Promise.resolve(true);
   }
-  if (!exe) return false;
-  spawn(exe, ["--open-thread", threadId], { detached: true, stdio: "ignore" }).unref();
-  return true;
+  if (!exe) return Promise.resolve(false);
+  return new Promise((resolve, reject) => {
+    const args = [...(exe === opts.localExe ? opts.localArgs ?? [] : []), ...(threadId ? ["--open-thread", threadId] : [])];
+    const child = spawn(exe, args, { detached: true, stdio: "ignore", windowsHide: true });
+    child.once("error", reject);
+    child.once("spawn", () => { child.unref(); resolve(true); });
+  });
 }

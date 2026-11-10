@@ -83,7 +83,7 @@ export function Login({ onSignedIn }: { onSignedIn: (me: Identity) => void }) {
     try {
       const client = new RelayClient(server);
       const res = mode === "register" ? await client.register(name.trim(), password, { role: role.trim(), passphrase: invite || undefined }) : await client.login(name.trim(), password);
-      const me: Identity = { server: client.server, name: res.name, role: res.role, key: res.key, service: health?.name ?? "AMO 中转" };
+      const me: Identity = { server: client.server, name: res.name, role: res.role, key: res.key, service: health?.name ?? "Work中转" };
       if (shell) {
         await shell.saveAccount({ server: client.server, name: res.name, password: remember ? password : null });
         await shell.signedIn({ server: client.server, name: res.name, key: res.key });
@@ -111,7 +111,7 @@ export function Login({ onSignedIn }: { onSignedIn: (me: Identity) => void }) {
         <div className="brand">
           <img className="brand-mark" src={iconUrl} alt="" />
           <div>
-            <h1>{health?.name ?? "AMO 中转"}</h1>
+            <h1>{health?.name ?? "Work中转"}</h1>
             <p className="muted">和团队直接沟通，AI 也能把要确认的事发给对方</p>
           </div>
         </div>
@@ -233,14 +233,14 @@ export function PlatformLogin({ server, problem, onRetry }: { server: string; pr
         <div className="brand">
           <img className="brand-mark" src={iconUrl} alt="" />
           <div>
-            <h1>{status.health?.name ?? "AMO 中转"}</h1>
+            <h1>{status.health?.name ?? "Work中转"}</h1>
             <p className="muted">和团队直接沟通，AI 也能把要确认的事发给对方</p>
           </div>
         </div>
         {server && <ServerLine server={server} status={status} />}
         <div className="notice">
           <b>在 AMO 平台里登录</b>
-          <span className="tiny">AMO 中转用 AMO 平台的账号。打开 AMO 平台，在「账号」里登录或注册，登录后这里会自动连上。</span>
+          <span className="tiny">Work中转用 AMO 平台的账号。打开 AMO 平台，在「账号」里登录或注册，登录后这里会自动连上。</span>
         </div>
         {problem && <div className="notice error">{problem}</div>}
         <button type="button" className="primary" onClick={onRetry} data-testid="platform-login-retry">
@@ -296,7 +296,7 @@ function ServerLine({ server, status }: { server: string; status: ServerStatus }
 export function UpdateBanner({ updates, server, auto, compact = false }: { updates: Updates; server: string; auto: string | null; compact?: boolean }) {
   const { update, progress, error } = updates;
   if (!update) return null;
-  if (update.needShell && update.updatedBy === "platform") return <div className="notice update">新版本 {update.latest} 要新的桌面程序：在 AMO 平台的「工具」里更新 AMO 中转。</div>;
+  if (update.needShell && update.updatedBy === "platform") return <div className="notice update">新版本 {update.latest} 要新的桌面程序：在 AMO 平台的「工具」里更新 Work中转。</div>;
   if (update.needShell) {
     return (
       <div className="notice update">

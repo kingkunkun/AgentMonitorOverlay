@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
-// Which build this shell runs in (2026-10-28, the user: AMO 中转's desktop client installs and updates through AMO 平台
+// Which build this shell runs in (2026-10-28, the user: Work中转's desktop client installs and updates through AMO 平台
 // too; AGENTS.md constraint 3). scripts/package-portable.mjs writes `amoBuild: { mode, runtime }` into
 // resources/app/package.json:
 //   portable  the zip people unpacked themselves: 更新桌面程序 swaps its own files from the service's zip, as before.
@@ -39,5 +39,5 @@ export function stableExe(execPath: string, mode: BuildMode): string {
 
 /** What the shell tells the content and its own pages when the content needs a newer desktop program. */
 export function newShellText(mode: BuildMode): string {
-  return mode === "platform" ? "要新的桌面程序：在 AMO 平台的「工具」里更新 AMO 中转。" : "需要重新下载客户端。";
+  return mode === "platform" ? "要新的桌面程序：在 AMO 平台的「工具」里更新 Work中转。" : "需要重新下载客户端。";
 }

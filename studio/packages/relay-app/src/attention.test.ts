@@ -28,7 +28,7 @@ describe("中转's attention: taskbar and tray (2026-10-29)", () => {
   it("a count while nobody looks: the taskbar flashes and carries it, the tray blinks with it", () => {
     const { attention, take } = setup();
     attention.setCount(3);
-    expect(take()).toEqual(["flash true", "overlay 3", "tip AMO 中转 · 3 条待处理 / 未读", "tray 3"]);
+    expect(take()).toEqual(["flash true", "overlay 3", "tip Work中转 · 3 条待处理 / 未读", "tray 3"]);
     vi.advanceTimersByTime(500);
     expect(take()).toEqual(["tray plain"]);
     vi.advanceTimersByTime(500);
@@ -46,15 +46,15 @@ describe("中转's attention: taskbar and tray (2026-10-29)", () => {
     expect(attention.state.blinking).toBe(false);
     // More while looked at: no flash.
     attention.setCount(4);
-    expect(take()).toEqual(["overlay 4", "tip AMO 中转 · 4 条待处理 / 未读", "tray 4"]);
+    expect(take()).toEqual(["overlay 4", "tip Work中转 · 4 条待处理 / 未读", "tray 4"]);
     // Away again with 4 waiting: the tray blinks again; the taskbar does not flash for what was already seen.
     attention.setInUse(false);
     expect(take()).toEqual(["tray 4"]);
     expect(attention.state.blinking).toBe(true);
     attention.setCount(1);
-    expect(take()).toEqual(["overlay 1", "tip AMO 中转 · 1 条待处理 / 未读", "tray 1"]);
+    expect(take()).toEqual(["overlay 1", "tip Work中转 · 1 条待处理 / 未读", "tray 1"]);
     attention.setCount(0);
-    expect(take()).toEqual(["flash false", "overlay 0", "tip AMO 中转", "tray plain"]);
+    expect(take()).toEqual(["flash false", "overlay 0", "tip Work中转", "tray plain"]);
     expect(attention.state).toEqual({ count: 0, inUse: false, blinking: false });
   });
 
@@ -81,7 +81,7 @@ describe("中转's attention: taskbar and tray (2026-10-29)", () => {
       { count: 0, blink: false, pid: 4242 },
       null,
     ]);
-    expect(tooltipText(0)).toBe("AMO 中转");
+    expect(tooltipText(0)).toBe("Work中转");
   });
 
   it("writes the file whole and removes it", () => {

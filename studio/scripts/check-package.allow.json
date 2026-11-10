@@ -1,4 +1,8 @@
 {
+  "resources/app/packages/relay-app/client/amo-relay.mjs": [
+    "../types/index: 文件不在",
+    "./types/index: 文件不在"
+  ],
   "resources/app/node_modules/@modelcontextprotocol/sdk/dist/cjs/validation/cfworker-provider.js": [
     "@cfworker/json-schema: 包不在"
   ],

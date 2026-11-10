@@ -61,10 +61,10 @@
     },
     {
       "id": "tool.relayClient",
-      "label": "AMO 中转客户端（界面和外壳）",
+      "label": "Work中转客户端（界面和外壳）",
       "aliases": ["中转客户端", "relay-ui", "relay-app", "热更新", "loader", "已接手", "复制给 AI", "查看器面板", "open-thread"],
       "category": "tool",
-      "purpose": "中转的桌面客户端：外壳（relay-app，平台装、平台更新）加载从服务器热更新的界面（relay-ui）；和 Studio 互相跳转（中转 → Studio 找数据目录调 Host 的 /api/ui/open，Studio → 中转带 --open-thread 启动）。",
+      "purpose": "WorkStudio 顶栏打开 Work中转配套窗口；集成包包含 relay-app 和本机编译的 relay-ui（--bundled-relay），由同一 exe 的 --amo-app=relay 启动。旧独立版仍可用服务器热更新界面。中转和远程开关独立，共用平台账号；和 Studio 保留按会话互相跳转。",
       "anchors": [
         { "label": "外壳主进程", "path": "studio/packages/relay-app/src/main.ts" },
         { "label": "加载服务器上的界面", "path": "studio/packages/relay-app/src/loader.ts" },
@@ -74,7 +74,7 @@
         { "label": "改动说明（外壳）", "path": "studio/packages/relay-app/CHANGELOG.md" }
       ],
       "related": ["tool.relayService", "app.shell", "tool.platform"],
-      "next": ["studio/plans/done/relay-round-2026-11-05.md", "studio/plans/done/relay-tasks.md"]
+      "next": ["studio/docs/work-relay.md", "studio/plans/done/relay-round-2026-11-05.md", "studio/plans/done/relay-tasks.md"]
     },
     {
       "id": "tool.issues",

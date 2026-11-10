@@ -42,7 +42,7 @@ describe("the shell's build mode", () => {
   });
 
   it("says where a newer desktop program comes from", () => {
-    expect(newShellText("platform")).toContain("在 AMO 平台的「工具」里更新 AMO 中转");
+    expect(newShellText("platform")).toContain("在 AMO 平台的「工具」里更新 Work中转");
     expect(newShellText("portable")).toBe("需要重新下载客户端。");
   });
 });

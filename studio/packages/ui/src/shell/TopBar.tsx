@@ -126,6 +126,12 @@ export function TopBar({
           {remote.waiting && <span className="settings-dot" aria-label="有请求或回复等你看" data-testid="topbar-remote-dot" />}
         </button>
       )}
+      {window.amo?.openInRelay && (
+        <button type="button" className="tb-btn" title="打开 Work中转：团队聊天、AI 问询和回复；使用平台的团队账号" data-testid="topbar-relay" onClick={() => void window.amo!.openInRelay!().then((opened) => { if (!opened) showToast({ text: "没有找到 Work中转客户端，请在 AMO 平台里安装，或先编译本机中转客户端。", error: true }); }).catch((err: unknown) => showToast({ text: err instanceof Error ? err.message : String(err), error: true }))}>
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2.5h12v8H7l-3.5 3v-3H2zM5 5.5h6M5 7.5h4" /></svg>
+          Work中转
+        </button>
+      )}
       {scratchpad && (
         <button type="button" className="tb-btn" title="打开便签（它是单独的小程序，也可以用它的全局快捷键）" onClick={() => void scratchpad.open().catch((err: unknown) => showToast({ text: err instanceof Error ? err.message : String(err), error: true }))} data-testid="open-scratchpad">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">

@@ -16,7 +16,7 @@ import "./styles.css";
 applyTheme(readTheme());
 applyFontSize(readFontSize());
 
-// The AMO 中转 client's content: the login screen, then the conversations. The login is kept for the window
+// The Work中转 client's content: the login screen, then the conversations. The login is kept for the window
 // (sessionStorage), so a reload — an update applying itself — comes back signed in, with the same conversation open
 // (update.ts). The desktop client still asks at each start (its saved password fills the form).
 

@@ -1,7 +1,7 @@
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-// What waits in AMO 中转 shown outside its window (2026-10-29, the user: 「有待处理的 relay 信息时和未读聊天时，relay 的
+// What waits in Work中转 shown outside its window (2026-10-29, the user: 「有待处理的 relay 信息时和未读聊天时，relay 的
 // 任务栏图标应该闪烁，托盘也闪，托盘最好还带上信息数量。如果是收起来的托盘则切成 relay 图标来闪，也显示信息数量。」).
 // The count is the content's (relay-ui Home: sessions waiting for me + unread chats, relayShell.setUnread). Here:
 //  - the taskbar button: flashes when the count goes up while the window is not in use (until it is), and carries the
@@ -37,7 +37,7 @@ export interface AttentionEffects {
 export const BLINK_MS = 500;
 
 export function tooltipText(count: number): string {
-  return count > 0 ? `AMO 中转 · ${count} 条待处理 / 未读` : "AMO 中转";
+  return count > 0 ? `Work中转 · ${count} 条待处理 / 未读` : "Work中转";
 }
 
 export class Attention {

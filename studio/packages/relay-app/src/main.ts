@@ -29,7 +29,7 @@ import { ContentStore, fetchManifest, type InstalledContent } from "./content.js
 import { LOADER_HTML, type LoaderState } from "./loader.js";
 import { openInStudio, studioHas } from "./studio-link.js";
 
-// AMO 中转's desktop client (plans/done/relay.md). This shell is fixed; what people see — login, conversations — is content
+// Work中转's desktop client (plans/done/relay.md). This shell is fixed; what people see — login, conversations — is content
 // the service hands out (packages/relay-ui), kept in <home>/client and updated without a restart:
 //   start → loader (connect, check the version, download content — the first time, or a newer version) → the content's
 //   login screen. A version published while it runs is applied by the content when nothing would be lost (it asks the
@@ -52,6 +52,9 @@ const byPlatform = buildMode === "platform";
 const ICON = [join(here, "..", "assets", "icon.png"), join(here, "..", "..", "app", "assets", "icon.png")].find((p) => existsSync(p)) ?? "";
 const SCHEME = "relay-app";
 const CONTENT_URL = `${SCHEME}://content/index.html`;
+// Fork builds carry their reviewed UI with WorkStudio; never replace it with the team's remote JavaScript.
+const bundledDir = join(here, "..", "client");
+const bundledContent: InstalledContent | null = existsSync(join(bundledDir, "index.html")) ? { version: "work-bundled", dir: bundledDir } : null;
 const LOADER_URL = `${SCHEME}://shell/loader.html`;
 
 app.setPath("userData", join(home, "electron"));
@@ -144,7 +147,7 @@ function createWindow(): BrowserWindow {
     height: 720,
     minWidth: 720,
     minHeight: 500,
-    title: "AMO 中转",
+    title: "Work中转",
     icon: ICON || undefined,
     // Studio's ground, light or dark as the system is (the loader follows it too).
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#111316" : "#efede8",
@@ -225,7 +228,7 @@ const waitOrRetry = (ms: number) => Promise.race([wait(), new Promise<LoaderAnsw
 async function health(address: string): Promise<Health> {
   const res = await fetch(`${address}/api/health`, { signal: AbortSignal.timeout(6000) });
   const h = (await res.json().catch(() => null)) as Health | null;
-  if (!res.ok || h?.app !== "amo-relay") throw new Error("这个地址上不是 AMO 中转服务");
+  if (!res.ok || h?.app !== "amo-relay") throw new Error("这个地址上不是 Work中转服务");
   return h;
 }
 
@@ -237,7 +240,7 @@ const message = (err: unknown) => {
 /** Start (or start over, for another address): connect, check, download, then the content. */
 async function boot(askAddress = false): Promise<void> {
   await openLoader();
-  let address = askAddress ? null : (readServer() ?? argServer());
+  let address = askAddress ? null : (readServer() ?? argServer() ?? (await readAccount().catch(() => null))?.server ?? null);
   let askError: string | null = null;
   // What they typed last: kept in the field after a failed try.
   let tried: string | null = null;
@@ -256,6 +259,11 @@ async function boot(askAddress = false): Promise<void> {
         address = null;
         continue;
       }
+    }
+    if (bundledContent) {
+      server = address;
+      saveServer(address);
+      return loadContent(bundledContent, null);
     }
     loaderState({ step: "progress", text: "正在连接服务器…", progress: null, server: address });
     let manifest: ClientManifest | null = null;
@@ -446,12 +454,13 @@ function wire(): void {
   ipcMain.handle("relay:write-usage", (_e, text: string) => {
     const file = join(home, "AMO中转用法.md");
     mkdirSync(home, { recursive: true });
-    writeFileSync(file, `<!-- AMO 中转客户端自动生成，登录、成员或团队流程变化时会更新；${new Date().toLocaleString()} -->
+    writeFileSync(file, `<!-- Work中转客户端自动生成，登录、成员或团队流程变化时会更新；${new Date().toLocaleString()} -->
 
 ${String(text)}`);
     return file;
   });
   ipcMain.handle("relay:check-update", async () => {
+    if (bundledContent) return null;
     if (!server) return null;
     try {
       latest = await fetchManifest(server);
@@ -461,6 +470,7 @@ ${String(text)}`);
     return updateInfo();
   });
   ipcMain.handle("relay:apply-update", async () => {
+    if (bundledContent) throw new Error("Work中转随 WorkStudio 更新，请更新本机程序。");
     if (!server) throw new Error("没有连上服务器");
     const manifest = await fetchManifest(server);
     if (manifest.minShell > SHELL_VERSION) throw new Error(`这个版本${newShellText(buildMode)}`);
@@ -487,9 +497,10 @@ function updateLog(line: string): void {
 }
 
 async function updateShell(): Promise<void> {
+  if (bundledContent) throw new Error("Work中转随 WorkStudio 更新，请更新本机程序。");
   // Installed by the platform: its files are the platform's (Electron's hard-linked with the other tools), never
   // swapped from here. Content from before 10-28 may still offer the button; it gets this instead.
-  if (byPlatform) throw new Error("这个 AMO 中转是 AMO 平台装的，桌面程序在 AMO 平台的「工具」里更新。");
+  if (byPlatform) throw new Error("这个 Work中转是 AMO 平台装的，桌面程序在 AMO 平台的「工具」里更新。");
   if (process.platform !== "win32") throw new Error("自动更新桌面程序目前只支持 Windows；请从下载页下载新版");
   if (!server) throw new Error("没有连上服务器");
   if (shellUpdating) throw new Error("正在更新");
@@ -651,7 +662,7 @@ let badged: { count: number; image: Electron.NativeImage } | null = null;
 let plainTray: Electron.NativeImage | null = null;
 
 /** What waits, outside the window (2026-10-29): see attention.ts. Tests read what was last done (__relayAttention). */
-const shown = { flashing: false, overlay: 0, trayBadge: false, tooltip: "AMO 中转" };
+const shown = { flashing: false, overlay: 0, trayBadge: false, tooltip: "Work中转" };
 const attention = new Attention({
   flash(on) {
     shown.flashing = on;
@@ -682,18 +693,18 @@ if (testMode) Object.assign(globalThis, { __relayAttention: () => ({ ...shown, .
  *  this one makes no icon. Started on its own it keeps its tray (constraint 1). */
 const trayByPlatform = process.argv.includes("--amo-tray=platform");
 
-const trayWindow = new TrayMenu({ label: "AMO 中转菜单" });
+const trayWindow = new TrayMenu({ label: "Work中转菜单" });
 
 function createTray(): void {
   // Not in tests either (2026-10-29: each test client put an icon in the person's tray, blinking): as Studio and the platform.
   if (!ICON || trayByPlatform || testMode) return;
   tray = new Tray(trayImage());
-  tray.setToolTip("AMO 中转");
+  tray.setToolTip("Work中转");
   // Like 便签's menu, not Windows' own (2026-10-29, the user; @amo-studio/traymenu).
   tray.on("right-click", () =>
     trayWindow.open([
-      { kind: "title", label: "AMO 中转" },
-      { kind: "item", label: "显示 AMO 中转", strong: true, run: showWindow },
+      { kind: "title", label: "Work中转" },
+      { kind: "item", label: "显示 Work中转", strong: true, run: showWindow },
       { kind: "rule" },
       { kind: "item", label: "退出中转", run: () => ((quitting = true), app.quit()) },
     ]),

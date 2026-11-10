@@ -4,6 +4,8 @@
 
 ## 下一版
 
+- 顶栏增加“Work中转”入口，完整版随包携带中转窗口，可直接打开或跳转到指定会话。中转与远程开关独立，不会因打开中转而自动授权远程任务。
+
 ## 0.9.56（2026-11-09）
 
 - 项目里开着 SSE 连接的 MCP（比如 gorilla-canvas）时，DeepSeek 会话也能开起来了。以前 Studio 把它原样交给 DeepSeek（DSH），DSH 不支持 SSE，直接报「Invalid params: mcpServers[…] transport sse is not supported」，整个会话起不来，用 `session_start` 拉起的 DeepSeek 子会话也一样，只能去关掉项目里的 MCP。现在 DeepSeek 会话只带 DSH 支持的 MCP，带不上的不带，会话里多一行说明是哪个、为什么没带；其他 MCP 照常可用，DSH 以后支持了会自动带上。Codex 本来就带不上 SSE 的 MCP，以前是不声不响地跳过，现在新会话里也会说明。Claude 会话不受影响。

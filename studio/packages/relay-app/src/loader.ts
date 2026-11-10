@@ -20,7 +20,7 @@ export type LoaderState =
   | { step: "ask-server"; server: string; recent: string[]; error: string | null }
   | { step: "error"; text: string; server: string | null; download: string | null };
 
-export const LOADER_HTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>AMO 中转</title>
+export const LOADER_HTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Work中转</title>
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
 <style>
 :root{--bg:#efede8;--panel:#fbfaf7;--ink:#22201c;--muted:#8d877c;--line:#d9d3c7;--strong:#2a2723;--accent:#23436f;--accent-ink:#fbfaf7;--error:#a3302b}
@@ -53,7 +53,7 @@ button.primary{background:var(--accent);border-color:var(--accent);color:var(--a
 .recent button.on{border-color:var(--accent)}.recent button.on::before{background:var(--accent);border-color:var(--accent)}
 .recent .tag{margin-left:auto;font-size:12px;color:var(--muted)}
 </style></head><body><div class="titlebar" id="titlebar"><button id="wmin" title="最小化"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M0.5 5.5 H9.5"/></svg></button><button id="wclose" class="close" title="关闭"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M0.5 0.5 L9.5 9.5 M9.5 0.5 L0.5 9.5"/></svg></button></div><div class="card">
-<div class="brand"><div class="mark">${ICON_SVG}</div><div><h1>AMO 中转</h1><div class="muted small" id="where"></div></div></div>
+<div class="brand"><div class="mark">${ICON_SVG}</div><div><h1>Work中转</h1><div class="muted small" id="where"></div></div></div>
 <div id="progress"><div id="text">正在启动…</div><div class="bar busy" id="bar"><div></div></div></div>
 <form id="ask" class="hide"><div id="recentBox" class="hide"><div class="muted small">最近连过的（双击直接连接）</div><div class="recent" id="recent"></div></div><label>服务器地址<input id="server" placeholder="例如 192.168.1.20:47120" required></label>
 <div class="muted small" style="margin-top:6px">在同事发给你的下载页上能看到这个地址。</div><div class="err" id="askErr"></div>

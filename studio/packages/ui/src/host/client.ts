@@ -80,7 +80,7 @@ declare global {
       openInWorkbench?(target: { taskId?: string; sessionId?: string; show?: boolean; passage?: Passage; topicId?: string; calloutId?: string; /** 设置 on this page (远程, 2026-10-29). */ settings?: "remote" }): Promise<void>;
       /** 在中转里打开 (2026-11-05): an AMO 中转 client Studio can find; showing a thread in it (false: none found). */
       relayAvailable?(): Promise<boolean>;
-      openInRelay?(threadId: string): Promise<boolean>;
+      openInRelay?(threadId?: string): Promise<boolean>;
       /** 画布小窗 (2026-10-27): a topic's canvas in the small window on top. */
       openCanvasMini?(target: { topicId?: string }): Promise<void>;
       /** In the 画布小窗: keep it on top of other windows (or not); without a value, whether it is. */

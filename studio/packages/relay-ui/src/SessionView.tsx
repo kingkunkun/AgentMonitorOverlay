@@ -108,7 +108,7 @@ export function SessionView(props: {
     toast(`已复制新回复${notesSaid(out.count)}，贴回原来的对话`);
   };
   const copyPickup = async () => {
-    await copyText(`用 AMO 中转取会话 ${thread.id} 的回复（命令行 relay replies ${thread.id}，或 MCP 的 relay_session_get），按回复接着推进：没问清楚就追问（send --then ask / relay_session_reply then="ask"），已经敲定就标记完成（--then done / then="done"）。`);
+    await copyText(`用 Work中转取会话 ${thread.id} 的回复（命令行 relay replies ${thread.id}，或 MCP 的 relay_session_get），按回复接着推进：没问清楚就追问（send --then ask / relay_session_reply then="ask"），已经敲定就标记完成（--then done / then="done"）。`);
     toast("已复制取回指令，贴给任何 agent 都行");
   };
 
