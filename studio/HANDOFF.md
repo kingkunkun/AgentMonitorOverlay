@@ -10,7 +10,7 @@
 |---|---|
 | 开发目录 | `G:\PROJECT\AgentMonitorOverlay\studio`（桌面快捷方式「AMO Source」指这里的 `start-studio.cmd`） |
 | 分支 | `master` 是主线；旧版 AMO 在标签 `amo-legacy-final` |
-| kingkunkun fork | 本机 `D:\Codex\AgentMonitorOverlay`；origin 仅 `kingkunkun/AgentMonitorOverlay`，upstream 禁止推送。上游同步基线 `455720b4`，WorkStudio 名称与依赖修复保留。11-10 按用户要求在无运行会话时正常重启，已确认新版 Codex 界面和两种 # 打包预设加载。46 任务/46 会话/7 工作目录的 ID 全保留；重启前 SQLite 在线备份在 `.data/backup-before-newui-restart-20261110184551`。当前已登录，远程/中转/手机服务关闭，Jenkins 授权保存且打包开启。 |
+| kingkunkun fork | 本机 `D:\Codex\AgentMonitorOverlay`；origin 仅 `kingkunkun/AgentMonitorOverlay`，upstream 禁止推送。上游同步基线 `455720b4`。11-11 已加载 Fast 用量提示、全部渠道模型接续、Focus/聊天文案和隐藏导航箭头；切换携带当前 WorkStudio 文本，不转附件或原生记录。无运行会话时正常重启，45 任务/45 会话/7 工作目录 ID 和 6575 条聊天记录全保留；SQLite 在线备份 `.data/backup-before-newui-restart-20261111114414`。账号、合作开关和 Jenkins 凭据设置未改变。Android APK 已编译；IPA 仍须 Mac 构建签名。 |
 | Work中转 / 合作模式（本机集成） | 顶栏合作模式内置账号、远程/中转独立开关、LAN 手机服务，书签和原生历史导入关闭。旧独立中转停用，边界见 `docs/cooperation-privacy-lan.md`。固定 iOS/安卓 Job、# 提示词、本地设置和失败日志原聊天分析见 `docs/build-job.md`、`docs/chat-presets.md`；本机 Jenkins Token 已配置，身份认证和两个 Job 读取验证通过，未触发真实构建。手机共用聊天样式已同步并编译 Android APK，IPA 仍须 Mac 构建签名。 |
 | 常设 worktree | 都是 master 的 detached worktree：值守目录 `G:\PROJECT\AgentMonitorOverlay-duty`（值守修问题、`release land`）、打包目录 `G:\PROJECT\AgentMonitorOverlay-release`（自动打包跑 `release auto --if-due`）。别的 worktree 是各任务自己的（`git worktree list` 看） |
 | 用户在用的 Studio | 平台装的版本（`D:\TOOLS\AMO Platform\apps\studio\<版本>`），不是这个开发目录：在这里改代码、build 都不影响它；提交进 master 且写了「下一版」的会被自动打包发到测试通道，用户自己选装 |

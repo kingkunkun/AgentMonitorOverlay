@@ -350,6 +350,13 @@ export class RemoteGrants {
     const sessions = this.ctx.host.sessions;
     try {
       switch (kind) {
+        case "rt.continue": {
+          const s = this.sessionFor(from, id(b.sessionId, "sessionId"), true);
+          if (from.account !== this.ctx.ownAccount()) throw new HostError("read_only", "只有自己的账号设备能切换渠道接续聊天");
+          const profileId = id(b.profileId, "profileId");
+          if (!s.taskId || !this.allowedFor(s.taskId, from).includes(profileId)) throw new HostError("read_only", "这个模型未授权给此设备");
+          return ok({ session: await sessions.continueWithModel(s.id, profileId, typeof b.model === "string" ? b.model : undefined) });
+        }
         case "rt.task-archive": {
           const taskId = id(b.taskId, "taskId");
           this.grantFor(from, taskId);
@@ -368,7 +375,9 @@ export class RemoteGrants {
         }
         case "rt.choices": {
           const s = this.sessionFor(from, id(b.sessionId, "sessionId"), false);
-          return ok({ choices: await this.ctx.host.cooperation.modelChoices(s.profileId), options: s.options ?? {} });
+          if (b.all === true && from.account !== this.ctx.ownAccount()) throw new HostError("read_only", "只有自己的账号设备能读取全部可用渠道");
+          const profiles = b.all === true && s.taskId ? await Promise.all(this.allowedFor(s.taskId, from).map(async (profileId) => ({ profileId, label: this.labelOf(profileId), choices: await this.ctx.host.cooperation.modelChoices(profileId).catch(() => null) }))) : undefined;
+          return ok({ choices: await this.ctx.host.cooperation.modelChoices(s.profileId), options: s.options ?? {}, ...(profiles ? { profiles } : {}) });
         }
         case "rt.options": {
           const s = this.sessionFor(from, id(b.sessionId, "sessionId"), true);

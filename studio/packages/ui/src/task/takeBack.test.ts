@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SessionItem } from "@amo-studio/protocol";
+import { boundedChatContext, composeChatContext, composeRoleUpdate, type SessionItem } from "@amo-studio/protocol";
 import { unansweredPrompt } from "./takeBack.js";
 
 const base = { sessionId: "s", createdAt: "2026-10-28T00:00:00.000Z" };
@@ -7,6 +7,11 @@ let n = 0;
 const item = (x: Record<string, unknown>) => ({ ...base, id: `i${n++}`, ...x }) as SessionItem;
 
 describe("停止 right after sending", () => {
+  it("restores only the person's message, not carried history or internal role updates", () => {
+    const context = boundedChatContext("old", "旧聊天", [{ role: "assistant", text: "以前的回答" }]);
+    const sent = item({ type: "user", text: composeRoleUpdate(composeChatContext("请继续", context), ["当前项目"] ) });
+    expect(unansweredPrompt([sent])).toBe("请继续");
+  });
   it("gives the message back while nothing has answered it, thinking aside", () => {
     const sent = item({ type: "user", text: "改一下掉落表" });
     expect(unansweredPrompt([sent])).toBe("改一下掉落表");

@@ -95,7 +95,7 @@ test("Claude can change model and permissions through the compact menus without 
     await page.getByTestId("switch-model").click();
     await expect(page.getByRole("slider", { name: "思考强度", exact: true })).toBeVisible();
     await page.getByRole("button", { name: "选择模型", exact: true }).click();
-    await page.getByRole("option", { name: second.label, exact: true }).click();
+    await page.getByRole("group", { name: "Mock Claude", exact: true }).getByRole("option", { name: second.label, exact: true }).click();
     await expect(page.getByTestId("switch-model")).toContainText(second.label);
     await page.getByTestId("switch-permission").click();
     await page.getByRole("dialog", { name: "权限", exact: true }).getByRole("button", { name: /全部允许/ }).click();

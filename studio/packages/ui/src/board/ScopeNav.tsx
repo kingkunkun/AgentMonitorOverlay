@@ -434,7 +434,7 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
     <nav className="scope-nav" aria-label="范围">
       <div className="nav-top">
         <button type="button" className="nav-row nav-new-chat" onClick={() => onNewChat?.()} data-testid="nav-new-chat">✎ <span>新聊天</span></button>
-        {row(null, null, { kind: "all" }, "全部任务", liveTasks.length, "scope-all")}
+        {row(null, null, { kind: "all" }, "全部聊天", liveTasks.length, "scope-all")}
         {panorama && (
           <div className="nav-item">
             <button type="button" className="nav-row" aria-current={panorama.current} onClick={panorama.open} data-testid="nav-panorama" title="全景：所有专题和任务画在一张图上（测试功能）">

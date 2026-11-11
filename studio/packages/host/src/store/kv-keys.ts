@@ -90,6 +90,7 @@ export const KV_KEYS: readonly KvKey[] = [
   { key: "report-turn:", scope: "session", owner: "features/sessions/service.ts", what: "已汇报过的那一轮" },
   { key: "claude.login:", scope: "session", owner: "runtime/claude/claude-login.ts", what: "会话用的 Claude 登录方式" },
   { key: "subsession-setup:", scope: "session", owner: "features/sessions/setups.ts", what: "@ 开子会话… 的设定（session_start 的 setup）" },
+  { key: "session-continuation:", scope: "session", owner: "features/sessions/service.ts", what: "跨渠道接续的当前工作台聊天文本；首次发送成功后标记已传递" },
   { key: "claude-handoff-seen:", scope: "session", owner: "runtime/claude/transcripts.ts", what: "已读过的子会话交回" },
   { key: "claude-adopted:", scope: "outside", owner: "runtime/claude/outside.ts", what: "接续已有会话：已经接过的原会话 → 接着做的 Studio 会话" },
   { key: "mcp-identity:session:", scope: "session", owner: "mcp/identity.ts", what: "会话的 MCP token" },

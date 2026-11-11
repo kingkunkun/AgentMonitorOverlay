@@ -1,6 +1,6 @@
 import { createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Annotation, ApprovalDecision, Session, SessionItem, TurnUsage } from "@amo-studio/protocol";
-import { splitAnnotationRefs, splitRoleUpdate } from "@amo-studio/protocol";
+import { splitChatContext, splitAnnotationRefs, splitRoleUpdate } from "@amo-studio/protocol";
 import { Markdown } from "../lib/markdown.js";
 import { copyText } from "../host/client.js";
 import { IconCheck, IconChevronDown, IconChevronRight, IconCopy, IconEdit, IconTerminal, IconSparkle } from "./icons.js";
@@ -333,13 +333,15 @@ function StandaloneItem({ item, busy, highlights, onApprove }: { item: SessionIt
  */
 function UserBubble({ item }: { item: Extract<SessionItem, { type: "user" }> }) {
   const { text: sent, update } = splitRoleUpdate(item.text);
-  const { text: own, refs: annotations } = splitAnnotationRefs(sent);
+  const carried = splitChatContext(sent);
+  const { text: own, refs: annotations } = splitAnnotationRefs(carried.text);
   const { text: withRefs, refs } = splitFileRefItems(own);
   // Its @ names (快速提交 among them) coloured as in the composer; what the message told the model of them on hover.
   const { text, names, commit, blocks } = splitMentionRefs(withRefs);
   return (
     <div className="msg-user-row">
       <div className="msg-user" data-testid="msg-user">
+        {carried.context && <details className="carried-context" data-testid="carried-context"><summary>已携带此前聊天文本{carried.context.truncated ? "（最近部分）" : ""} · {carried.context.messages.length} 条</summary><div>{carried.context.messages.map((m, i) => <section key={i}><b>{m.role === "user" ? "你" : "AI"}</b><pre>{m.text}</pre></section>)}</div></details>}
         {item.images?.length ? <MessageImages images={item.images} /> : null}
         {annotations.length > 0 && (
           <span className="msg-anno-refs">

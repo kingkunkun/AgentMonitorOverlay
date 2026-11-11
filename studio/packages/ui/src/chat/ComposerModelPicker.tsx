@@ -2,11 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import type { ModelOption } from "@amo-studio/protocol";
 import { effortLabel } from "../lib/choices.js";
 
+export interface ComposerModelGroup { profileId: string; label: string; models: readonly ModelOption[]; loading?: boolean; disabledReason?: string }
+
 /** A compact model/effort control, shared by conversation and new-chat composers. */
-export function ComposerModelPicker({ models, model, label, effort, fast, disabled, open, onOpen, onModel, onEffort, onFast, footer }: {
+export function ComposerModelPicker({ models, model, label, effort, fast, disabled, open, onOpen, onModel, onEffort, onFast, footer, fastUsage, groups, profileId, onProfileModel }: {
   models: readonly ModelOption[]; model?: ModelOption; label: string; effort?: string | null; fast?: boolean; disabled?: boolean;
   open: boolean; onOpen(open: boolean): void; onModel(id: string, label: string): void; onEffort(value: string | null): void;
-  onFast?(on: boolean): void; footer?: React.ReactNode;
+  onFast?(on: boolean): void; footer?: React.ReactNode; fastUsage?: React.ReactNode;
+  groups?: readonly ComposerModelGroup[]; profileId?: string; onProfileModel?(profileId: string, id: string, label: string): void;
 }) {
   const [page, setPage] = useState<"effort" | "models">("effort");
   const [query, setQuery] = useState("");
@@ -19,6 +22,7 @@ export function ComposerModelPicker({ models, model, label, effort, fast, disabl
   useEffect(() => { if (!open) { setPage("effort"); setQuery(""); return; } const close = (e: Event) => { if (e instanceof KeyboardEvent ? e.key === "Escape" : !box.current?.contains(e.target as Node)) onOpen(false); }; window.addEventListener("mousedown", close); window.addEventListener("keydown", close); return () => { window.removeEventListener("mousedown", close); window.removeEventListener("keydown", close); }; }, [open, onOpen]);
   const commit = (i: number) => { const value = levels[i]; if (value && value !== current) onEffort(value); };
   return <div className="composer-model-picker" ref={box}>
+    {fast === true && model?.fast && <button type="button" className="composer-fast-active" aria-label="Fast 已开启" aria-pressed="true" data-testid="fast-active" disabled={disabled} title={`Fast 已开启：${model.fast.description ?? "可能更快消耗额度或额外计费"}。点击关闭`} onClick={() => onFast?.(false)}><svg width="14" height="16" viewBox="0 0 16 18" aria-hidden="true"><path d="M9.5 1 2 10h5l-.5 7L14 7H9z" fill="currentColor" /></svg></button>}
     <button type="button" className="composer-model-trigger" data-testid="switch-model" aria-label="模型与思考强度" aria-expanded={open} disabled={disabled} onClick={() => onOpen(!open)} onContextMenu={(e) => { e.preventDefault(); setPage("models"); onOpen(true); }} title="选择模型与思考强度 · Alt M">
       <span className="composer-model-name">{label}</span>{levels.length > 0 && <span className="composer-effort-caption" data-testid="effort-label">{current ? effortLabel(current) : "默认"}</span>}<span aria-hidden="true">⌄</span>
     </button>
@@ -34,10 +38,20 @@ export function ComposerModelPicker({ models, model, label, effort, fast, disabl
           <input type="range" aria-label="思考强度" aria-valuetext={effortLabel(levels[preview] ?? "")} min={0} max={Math.max(0, levels.length - 1)} step={1} value={preview} disabled={disabled || levels.length < 2} onChange={(e) => setPreview(Number(e.target.value))} onPointerUp={(e) => commit(Number(e.currentTarget.value))} onKeyUp={(e) => { if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) commit(Number(e.currentTarget.value)); }} />
           <div className="effort-step-dots">{levels.map((level, i) => <button type="button" key={level} aria-label={`思考强度：${effortLabel(level)}`} aria-pressed={i === index} disabled={disabled} title={effortLabel(level)} onClick={() => { setPreview(i); commit(i); }} />)}</div>
         </div> : <p className="composer-popover-note">此模型不提供思考强度选项。</p>}
+        {fast === true && model?.fast && <>{model.fast.description && <p className="composer-popover-note">{model.fast.description}</p>}{fastUsage ?? <p className="composer-popover-note">Fast 可能更快消耗额度或额外计费；独立剩余额度以渠道提供的信息为准。</p>}</>}
       </> : <>
         <div className="composer-popover-heading">选择模型<button className="popover-icon" type="button" aria-label="返回思考强度" onClick={() => setPage("effort")}>‹</button></div>
         <input className="composer-model-search" type="search" aria-label="搜索模型" placeholder="搜索模型" value={query} onChange={(e) => setQuery(e.target.value)} autoFocus />
-        <div className="composer-model-list" role="listbox" aria-label="型号">{models.filter((m) => `${m.label} ${m.id}`.toLowerCase().includes(query.toLowerCase())).map((m) => <button type="button" role="option" key={m.id} aria-selected={m.id === model?.id} disabled={disabled} title={m.description} onClick={() => onModel(m.id, m.label)}><span>{m.label}</span><span aria-hidden="true">{m.id === model?.id ? "✓" : ""}</span></button>)}</div>
+        <div className="composer-model-list" role="listbox" aria-label="型号">{(groups ?? [{ profileId: profileId ?? "", label: "", models }]).map((g) => {
+          const rows = g.models.filter((m) => `${g.label} ${m.label} ${m.id}`.toLowerCase().includes(query.toLowerCase()));
+          if (query && !rows.length && !g.label.toLowerCase().includes(query.toLowerCase())) return null;
+          return <div className="composer-model-group" role="group" aria-label={g.label || "当前渠道"} key={g.profileId}>
+            {g.label && <div className="composer-model-group-title">{g.label}{g.profileId === profileId ? " · 当前" : ""}</div>}
+            {g.loading && <p className="composer-popover-note">正在读取型号…</p>}
+            {!g.loading && !g.models.length && <p className="composer-popover-note">暂时无法读取此渠道型号</p>}
+            {rows.map((m) => { const selected = (!groups || g.profileId === profileId) && m.id === model?.id; return <button type="button" role="option" key={m.id} aria-selected={selected} disabled={disabled || !!g.disabledReason} title={g.disabledReason ?? m.description} onClick={() => onProfileModel ? onProfileModel(g.profileId, m.id, m.label) : onModel(m.id, m.label)}><span>{m.label}</span><span aria-hidden="true">{selected ? "✓" : ""}</span></button>; })}
+          </div>;
+        })}</div>
         {footer}
       </>}
     </div>}

@@ -115,8 +115,8 @@ ${dir}` : ""}` : `在公共目录里运行${dir ? `：${dir}` : ""}`} data-testi
           type="button"
           className={tracked ? "bar-btn labeled track on" : "bar-btn labeled track"}
           aria-pressed={!!tracked}
-          aria-label="在 Focus 里追踪"
-          title={tracked ? "追踪中：这个任务置顶在 Focus 最上面。点一下取消" : "追踪：把这个任务置顶在 Focus 最上面（和在 Focus 里点置顶一样）"}
+          aria-label="在 Focus 中置顶"
+          title={tracked ? "Focus：当前聊天已置顶，点击取消" : "Focus：将当前聊天置顶到悬浮窗"}
           onClick={onTrack}
           data-testid="session-track"
         >
@@ -125,7 +125,7 @@ ${dir}` : ""}` : `在公共目录里运行${dir ? `：${dir}` : ""}`} data-testi
             <circle cx="8" cy="8" r="2.1" className={tracked ? "dot on" : "dot"} />
             <path d="M8 .9v2.2M8 12.9v2.2M.9 8h2.2M12.9 8h2.2" />
           </svg>
-          <span className="bar-label">{tracked ? "追踪中" : "追踪"}</span>
+          <span className="bar-label">Focus</span>
         </button>
       )}
       {!session.archivedAt && !remote && session.runtime !== "dsh" && !(session.runtime === "claude" && session.kind === "sub") && (

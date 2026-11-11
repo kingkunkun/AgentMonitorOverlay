@@ -2,6 +2,8 @@
 
 package dev.amo.studio
 
+import okio.ByteString.Companion.encodeUtf8
+
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.client.plugins.websocket.webSocketSession
@@ -502,15 +504,28 @@ class StudioRepository(private val platform: Platform) {
         val task = active(); val session = state.value.selectedSession ?: error("请先选择会话")
         receive(command(task.peer, "rt.people", JSONObject().put("sessionId", session.id)))
     }
-    fun sessionChoices(receive: (JSONObject) -> Unit) = mutate {
+    fun sessionChoices(all: Boolean = false, receive: (JSONObject) -> Unit) = mutate {
         val task = active(); val session = state.value.selectedSession ?: error("请先选择会话")
-        receive(command(task.peer, "rt.choices", JSONObject().put("sessionId", session.id)))
+        receive(command(task.peer, "rt.choices", JSONObject().put("sessionId", session.id).put("all", all)))
     }
-    fun setSessionOptions(model: String, effort: String, permission: String, receive: ((JSONObject) -> Unit)? = null) = mutate {
+    fun setSessionOptions(model: String, effort: String, permission: String, fast: Boolean? = null, receive: ((JSONObject) -> Unit)? = null) = mutate {
         val task = active(); val session = state.value.selectedSession ?: error("请先选择会话")
         check(!session.archived) { "会话已归档" }
-        val result = command(task.peer, "rt.options", JSONObject().put("sessionId", session.id).put("options", JSONObject().put("model", model.ifBlank { JSONObject.NULL }).put("effort", effort.ifBlank { JSONObject.NULL }).put("permission", permission.ifBlank { JSONObject.NULL })))
+        val options = JSONObject().put("model", model.ifBlank { JSONObject.NULL }).put("effort", effort.ifBlank { JSONObject.NULL }).put("permission", permission.ifBlank { JSONObject.NULL }); if (fast != null) options.put("fast", fast)
+        val result = command(task.peer, "rt.options", JSONObject().put("sessionId", session.id).put("options", options))
         receive?.invoke(result.optJSONObject("session")?.optJSONObject("options") ?: JSONObject())
+    }
+    fun continueModel(profileId: String, model: String, draft: String, receive: () -> Unit) = mutate {
+        val task = active(); val oldSession = state.value.selectedSession ?: error("请先选择会话")
+        val result = command(task.peer, "rt.continue", JSONObject().put("sessionId", oldSession.id).put("profileId", profileId).put("model", model))
+        val row = result.optJSONObject("session") ?: error("电脑没有返回接续会话")
+        val identity = listOf(state.value.account?.server, state.value.account?.name, task.peer.identity, task.id, row.str("id")).joinToString("\n")
+        drafts.put("draft-" + identity.encodeUtf8().sha256().hex(), draft)
+        val previousIdentity = listOf(state.value.account?.server, state.value.account?.name, task.peer.identity, task.id, oldSession.id).joinToString("\n")
+        drafts.remove("draft-" + previousIdentity.encodeUtf8().sha256().hex())
+        fetchTask(task.peer, task.id)
+        if (state.value.selectedTask?.key == task.key) selectSession(state.value.sessions.find { it.id == row.str("id") } ?: session(row, null, task.project))
+        receive()
     }
     fun approve(item: JSONObject, decision: String) = sessionCommand("rt.approve", JSONObject().put("approvalId", item.str("approvalId", item.str("id"))).put("decision", decision))
     fun answer(item: JSONObject, reply: JSONObject) = sessionCommand("rt.answer", JSONObject().put("itemId", item.str("id")).put("reply", reply))

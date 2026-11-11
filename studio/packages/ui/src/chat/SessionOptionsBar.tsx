@@ -1,17 +1,20 @@
 import { useEffect, useRef, useState } from "react";
-import type { ModelProfile, Session, SessionOptions, SessionPreset } from "@amo-studio/protocol";
+import { inTurn, type ModelProfile, type Session, type SessionOptions, type SessionPreset } from "@amo-studio/protocol";
 import { call, HostApiError, type HostLink } from "../host/client.js";
 import { activeModel, optionsSummary, sameOptions, useProfileChoices } from "../lib/choices.js";
+import { useChoicesFor } from "../lib/choices.js";
+import { pickable } from "../lib/profiles.js";
 import { rememberPick } from "../lib/recents.js";
 import { nextEffort, pickLabel } from "./pickers.js";
+import { FastUsageHint } from "./FastUsageHint.js";
 import { ComposerModelPicker } from "./ComposerModelPicker.js";
 import { DSH_FULL_ACCESS, SandboxHint } from "../settings/SandboxHint.js";
 import { SessionMcpTray, useSessionMcp } from "../mcp/SessionMcp.js";
 
 // Under the composer: what the session runs with — model, effort, permissions — each one click away
 // (design/ui-directions/new-task.html, "会话中切换"). Clicking the model or the permissions opens that group above the
-// composer; the effort bars are clicked directly. Models switch only within the session's own account (the context
-// stays); another account needs a new session. Codex takes a change from the next turn, Claude at once.
+// composer. Same-account changes retain the runtime session; another channel continues this task in a new session
+// with WorkStudio text carried on the next send. Codex applies same-channel changes next turn, Claude at once.
 
 type Tray = "model" | "permission" | "tools" | "mcp" | null;
 
@@ -21,12 +24,16 @@ export function SessionOptionsBar({
   profile,
   presets,
   disabled,
+  profiles = [],
+  onContinued,
 }: {
   link: HostLink;
   session: Session;
   profile: ModelProfile | undefined;
   presets: readonly SessionPreset[];
   disabled: boolean;
+  profiles?: readonly ModelProfile[];
+  onContinued?(session: Session): void;
 }) {
   const { choices } = useProfileChoices(link, session.profileId);
   const [tray, setTray] = useState<Tray>(null);
@@ -36,6 +43,10 @@ export function SessionOptionsBar({
   const mcp = useSessionMcp(link, session);
   const mcpOn = mcp.state?.entries.filter((e) => e.on).length ?? 0;
   const mine = presets.filter((p) => p.profileId === session.profileId);
+  const availableProfiles = pickable(profiles, session.profileId);
+  const allChoices = useChoicesFor(link, tray === "model" && onContinued ? availableProfiles.map((p) => p.id) : []);
+  const crossBusy = inTurn(session.status) || !!session.wake?.loop || !!session.wake?.limit || session.writer !== "workbench";
+  const modelGroups = onContinued ? availableProfiles.map((p) => ({ profileId: p.id, label: p.label, models: (p.id === session.profileId ? choices : allChoices.get(p.id))?.models ?? [], loading: p.id !== session.profileId && !allChoices.has(p.id), disabledReason: p.id !== session.profileId && crossBusy ? "请等待当前回复、审批或循环结束" : undefined })) : undefined;
   const model = choices ? activeModel(choices, session.options) : undefined;
   const when = session.runtime === "claude" ? "立即生效" : "下一轮生效";
 
@@ -85,6 +96,14 @@ export function SessionOptionsBar({
     rememberPick({ profileId: session.profileId, model: m?.isDefault ? null : id });
     void apply(next, `型号换成「${label}」`);
   };
+  const selectAcrossProfiles = async (profileId: string, id: string, label: string) => {
+    if (profileId === session.profileId) { setModel(id, label); return; }
+    if (!onContinued || crossBusy) return;
+    setBusy(true); setTray(null); setNote(null);
+    try { const next = await call(link, "POST /api/sessions/:id/continue", { id: session.id }, { profileId, model: id }); rememberPick({ profileId, model: id }); onContinued(next); }
+    catch (err) { setNote({ text: err instanceof Error ? err.message : String(err), error: true }); }
+    finally { setBusy(false); }
+  };
   const setEffort = (effort: string | null) => void apply({ ...session.options, effort: effort ?? undefined }, "思考强度已改");
   const setFast = (on: boolean) => void apply(session.options, on ? "Fast 已开" : "Fast 已关", on);
   const setPermission = (id: string) => void apply({ ...session.options, permission: id }, `权限换成「${choices?.permissions.find((p) => p.id === id)?.label ?? id}」`);
@@ -132,7 +151,7 @@ export function SessionOptionsBar({
       </div>}
       {tray === "mcp" && <div className="tray" role="dialog" aria-label="MCP" data-testid="options-tray"><SessionMcpTray link={link} session={session} state={mcp.state} onState={mcp.setState} disabled={disabled} /></div>}
       <span className="composer-options-spacer" />
-      <ComposerModelPicker models={choices?.models ?? []} model={model} label={label.main} effort={session.options.effort} fast={session.options.fast} disabled={disabled || busy || !choices} open={tray === "model"} onOpen={(on) => setTray(on ? "model" : null)} onModel={setModel} onEffort={setEffort} onFast={setFast} footer={<p className="composer-popover-note">当前账号：{profile?.label ?? "默认"}。切换型号保留上下文，{when}；其他账号请新开会话。</p>} />
+      <ComposerModelPicker groups={modelGroups} profileId={session.profileId} onProfileModel={(profileId, id, name) => void selectAcrossProfiles(profileId, id, name)} models={choices?.models ?? []} model={model} label={label.main} effort={session.options.effort} fast={session.options.fast} disabled={disabled || busy || !choices} fastUsage={<FastUsageHint link={link} profileId={session.profileId} />} open={tray === "model"} onOpen={(on) => setTray(on ? "model" : null)} onModel={setModel} onEffort={setEffort} onFast={setFast} footer={<p className="composer-popover-note">当前账号：{profile?.label ?? "默认"}。当前渠道内切换{when}；其他渠道在本轮结束后接续当前 WorkStudio 聊天文本，不自动传附件。</p>} />
       {note && <span className={note.error ? "form-error composer-options-note" : "applied composer-options-note"} role={note.error ? "alert" : "status"} data-testid="options-note">{note.error ? note.text : `✓ ${note.text}`}</span>}
     </div>
   );

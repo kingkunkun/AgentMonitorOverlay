@@ -699,6 +699,7 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
               busy={busy}
               onApprove={(item, decision) => void approve(item.approvalId, decision)}
               onJump={setSelected}
+              onContinued={(next) => { setSelected(next.id); setSessionsHiddenState(false); }}
               onSend={send}
               onInterrupt={() => session && void interrupt(session.id)}
               onDelivery={deliver}

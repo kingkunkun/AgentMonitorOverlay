@@ -1,3 +1,6 @@
+import { boundedChatContext, composeChatContext, splitChatContext, splitRoleUpdate, type ChatContext, type ChatContextMessage } from "@amo-studio/protocol";
+import { newId } from "../../store/store.js";
+import { sessionMoving } from "../../core/shared.js";
 import { resolve } from "node:path";
 import { inTurn, isCommon, type ModelOption, type SubsessionNote, type SubsessionSetup, type Workspace, asyncAnswerText, composeAnnotationRefs, composeRoleUpdate, formContent, type Attachment, type SessionOptions, type ProfileChoices, type ApprovalDecision, type Id, type QuestionAnswer, type QuestionReply, type Session, type SessionItem, type TerminalAttach } from "@amo-studio/protocol";
 import type { SendMode, SendOptions } from "../../runtime/runtime.js";
@@ -15,6 +18,7 @@ const MAX_MESSAGE_IMAGES = 10;
 export const SLOW_SEND_MS = 5000;
 /** A session in the middle of a turn: archiving it (closing its process) would cut the turn off (session_archive). */
 const busy = (s: Session) => inTurn(s.status);
+const CONTINUATION_KEY = "session-continuation:";
 
 /** Sessions: conversation, approvals, branches, archive, names and options, terminals. */
 export class SessionsFeature extends Feature<"attachments" | "collab" | "config" | "remote" | "review" | "tasks"> {
@@ -23,6 +27,49 @@ export class SessionsFeature extends Feature<"attachments" | "collab" | "config"
 
   /** Terminals that hold a Claude session (handoff); closing one gives the session back. */
   private readonly handoffs = new Map<Id, TerminalHandle>();
+  private readonly switchingModels = new Set<Id>();
+  private readonly sendingContext = new Set<Id>();
+  private continuation(id: Id): { context: ChatContext; sent: boolean } | null {
+    try { const c = JSON.parse(this.store.getKv(CONTINUATION_KEY + id)?.value ?? "null"); return c?.context && Array.isArray(c.context.messages) ? c : null; } catch { return null; }
+  }
+
+  /** A different runtime gets its own session in this task; the old record is never rewritten. No turn starts here. */
+  async continueWithModel(id: Id, profileId: Id, chosen?: string): Promise<Session> {
+    const source = this.requireSession(id);
+    if (source.archivedAt || source.kind === "sub" || isRemoteCopy(source) || source.writer !== "workbench" || !source.taskId) throw new HostError("read_only", "此聊天不能切换渠道");
+    if (sessionMoving(source) || this.switchingModels.has(id)) throw new HostError("conflict", "请等待当前回复、审批或循环结束后再切换其他渠道");
+    if (!this.host.cooperation.taskAllowed(source.taskId)) throw new HostError("read_only", "禁止向其他渠道接续原生客户端导入的历史");
+    const target = this.requireProfile(profileId);
+    if (target.hidden || target.unavailable) throw new HostError("bad_request", "这个渠道当前不可用");
+    this.switchingModels.add(id);
+    try {
+      const choices = await this.f.config.choices(profileId);
+      const model = chosen ? choices.models.find((m) => m.id === chosen) : choices.models.find((m) => m.isDefault) ?? choices.models[0];
+      if (!model) throw new HostError("bad_request", "这个渠道没有可选择的型号");
+      if (sessionMoving(this.requireSession(id))) throw new HostError("conflict", "当前会话又开始执行，请等它结束再切换");
+      if (profileId === source.profileId) return await this.updateSessionOptions(id, { model: model.id });
+      const task = this.store.getTask(source.taskId);
+      const workspace = this.store.getWorkspace(source.workspaceId);
+      if (!task || task.archivedAt || !workspace) throw new HostError("read_only", "当前聊天或项目已归档");
+      const previous = this.continuation(source.id)?.context;
+      const users = this.store.findItems(id, "user", {}, { newest: true, limit: 200 });
+      const agents = this.store.findItems(id, "agent", {}, { newest: true, limit: 200 });
+      const messages: ChatContextMessage[] = [...(previous?.messages ?? [])];
+      for (const item of [...users, ...agents].sort((a, b) => a.seq - b.seq)) {
+        if (item.type === "user") messages.push({ role: "user", text: splitChatContext(splitRoleUpdate(item.text).text).text });
+        else if (item.type === "agent") messages.push({ role: "assistant", text: item.markdown });
+      }
+      const context = boundedChatContext(source.id, source.title || task.title, messages, !!previous?.truncated || users.length >= 200 || agents.length >= 200);
+      const options: SessionOptions = { model: model.id, ...(model.efforts.includes(source.options.effort ?? "") ? { effort: source.options.effort } : {}), ...(model.fast ? { fast: false } : {}) };
+      const started = await this.f.tasks.startSession({ taskId: task.id, topicId: null }, workspace, { profileId, options });
+      this.store.setKv(CONTINUATION_KEY + started.id, JSON.stringify({ context, sent: false }));
+      const renamed = await this.renameSession(started.id, ((source.title || task.title) + " · " + target.label).slice(0, 100)).catch(() => started);
+      const item = this.store.appendItem({ id: newId("item"), sessionId: started.id, type: "notice", level: "info", createdAt: new Date().toISOString(), message: "已切换到「" + target.label + " / " + model.label + "」。原聊天记录保留；下一条消息将携带当前 WorkStudio 的聊天文本继续，不自动传附件、工具输出或原生客户端记录。" + (context.truncated ? "历史较长，只携带最近部分（最多 60000 字符）。" : "") });
+      this.publish({ type: "item.appended", item });
+      return renamed;
+    } finally { this.switchingModels.delete(id); }
+  }
+
 
   /** One reclaim at a time per session, or the terminal's additions would be imported twice. */
   private readonly reclaiming = new Map<Id, Promise<Session>>();
@@ -81,6 +128,11 @@ export class SessionsFeature extends Feature<"attachments" | "collab" | "config"
     }
     const images = this.images(attachments);
     if (!text?.trim() && !images.length) throw new HostError("bad_request", "text is required");
+    if (this.switchingModels.has(sessionId) || this.sendingContext.has(sessionId)) throw new HostError("conflict", "模型正在切换或接收首次上下文，请稍后发送");
+    const continuation = this.continuation(sessionId);
+    const carriesContext = !!continuation && !continuation.sent;
+    if (carriesContext) this.sendingContext.add(sessionId);
+    const outbound = carriesContext ? composeChatContext(text, continuation!.context) : text;
     const update = this.roleUpdate(sessionId);
     // 2026-11-05: a message the person sent right after 停止 (a DSH session) never came back and left no trace; the
     // composer had already cleared it. One that fails, or is still on its way after SLOW_SEND_MS, is written to host.log.
@@ -90,14 +142,16 @@ export class SessionsFeature extends Feature<"attachments" | "collab" | "config"
     slow.unref?.();
     let result: { mode: SendMode };
     try {
-      result = await this.wrap(() => this.runtime.sendMessage(sessionId, composeRoleUpdate(text ?? "", update.lines), images, options));
+      result = await this.wrap(() => this.runtime.sendMessage(sessionId, composeRoleUpdate(outbound ?? "", update.lines), images, options));
     } catch (err) {
       this.log(`${sessionId} (${runtime}): a message from the person failed after ${Date.now() - started} ms: ${err instanceof Error ? err.message : String(err)}`);
       throw err;
     } finally {
       clearTimeout(slow);
+      this.sendingContext.delete(sessionId);
     }
     if (Date.now() - started >= SLOW_SEND_MS) this.log(`${sessionId} (${runtime}): the message went in after ${Date.now() - started} ms (${result.mode})`);
+    if (carriesContext) this.store.setKv(CONTINUATION_KEY + sessionId, JSON.stringify({ ...continuation, sent: true }));
     update.told();
     // The person wrote: what the inbox held since they stopped the session goes in with it (inbox.ts, pause).
     this.inbox.resume(sessionId);

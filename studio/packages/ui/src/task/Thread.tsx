@@ -84,6 +84,7 @@ interface ThreadProps {
   busy: boolean;
   onApprove(item: ApprovalItem, decision: ApprovalDecision): void;
   onJump(sessionId: string): void;
+  onContinued?(session: Session): void;
   /** `attachments`: ids of uploaded images sent along; `now`: 立即发送 (Ctrl+Enter while it works, 2026-11-02). */
   /** `subsessions`: the 子会话设定 the message names (2026-11-05). */
   onSend(text: string, attachments: string[], now?: boolean, subsessions?: SubsessionSetup[]): Promise<boolean>;
@@ -113,7 +114,7 @@ interface ThreadProps {
 
 
 /** Conversation of one session plus its composer. */
-export function Thread({ link, presets, session, firstMessage, profile, profiles = [], subsessionNotes = [], tasks = [], sessions = [], projects, items, annotations, annotationRefs, model, busy, onApprove, onJump, onSend, onInterrupt, onDelivery, onSaveAnnotation, onEditAnnotation, onDeleteAnnotation, onBookmark, initialScroll, atPassage = false, onError, decisions = [], remote }: ThreadProps) {
+export function Thread({ link, presets, session, firstMessage, profile, profiles = [], subsessionNotes = [], tasks = [], sessions = [], projects, items, annotations, annotationRefs, model, busy, onApprove, onJump, onContinued, onSend, onInterrupt, onDelivery, onSaveAnnotation, onEditAnnotation, onDeleteAnnotation, onBookmark, initialScroll, atPassage = false, onError, decisions = [], remote }: ThreadProps) {
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
@@ -778,7 +779,7 @@ ${d}` : back));
                   e.currentTarget.value = "";
                 }}
               />
-              <SessionOptionsBar link={link} session={session} profile={profile} presets={presets} disabled={readOnly || isRemote} />
+              <SessionOptionsBar profiles={profiles} onContinued={onContinued ? (next) => { flushDraft(); writeSessionDraft(next.id, draft); writeSessionDraft(session.id, ""); pendingDraft.current = null; onContinued(next); } : undefined} link={link} session={session} profile={profile} presets={presets} disabled={readOnly || isRemote} />
 
 
               {generating && !readOnly && !blocked && (

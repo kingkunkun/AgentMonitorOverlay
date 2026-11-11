@@ -515,7 +515,7 @@
     {
       "id": "ui.chat",
       "label": "对话区",
-      "aliases": ["对话", "Transcript", "chat", "详细", "完全展开", "思考", "审批", "提问", "questions"],
+      "aliases": ["对话", "Transcript", "chat", "详细", "完全展开", "思考", "审批", "提问", "questions", "全部模型", "切换模型", "跨渠道接续", "Fast额度"],
       "category": "ui",
       "purpose": "会话的对话区：轮次和折叠、思考、工具行、审批和提问；Codex 风格输入框的模型/思考强度浮层、搜索型号、权限和工具菜单，以及无衬线正文排版。",
       "anchors": [
@@ -523,6 +523,9 @@
         { "label": "轮次折叠", "path": "studio/packages/ui/src/chat/turns.ts" },
         { "label": "会话选项栏", "path": "studio/packages/ui/src/chat/SessionOptionsBar.tsx" },
         { "label": "模型与强度浮层", "path": "studio/packages/ui/src/chat/ComposerModelPicker.tsx", "anchor": "export function ComposerModelPicker" },
+        { "label": "跨渠道接续", "path": "studio/packages/host/src/features/sessions/service.ts", "anchor": "async continueWithModel" },
+        { "label": "接续文字封装", "path": "studio/packages/protocol/src/chat-context.ts", "anchor": "export function composeChatContext" },
+        { "label": "Fast 用量提示", "path": "studio/packages/ui/src/chat/FastUsageHint.tsx", "anchor": "export function FastUsageHint" },
         { "label": "会话行数据", "path": "studio/packages/ui/src/host/useSessionItems.ts" }
       ],
       "related": ["studio.sessions", "studio.cli", "ui.shell", "ui.planReview"],

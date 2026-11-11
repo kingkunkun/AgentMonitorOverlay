@@ -67,20 +67,6 @@ export function TopBar({
           </>
         )}
       </div>
-      {nav && (
-        <div className="tb-nav" role="group" aria-label="后退和前进">
-          <button type="button" className="tb-btn icon" disabled={!nav.canBack} onClick={() => nav.go(-1)} title="后退（Alt+←）" aria-label="后退" data-testid="nav-back">
-            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-              <path d="M10 3.5 5.5 8l4.5 4.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </button>
-          <button type="button" className="tb-btn icon" disabled={!nav.canForward} onClick={() => nav.go(1)} title="前进（Alt+→）" aria-label="前进" data-testid="nav-forward">
-            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-              <path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </button>
-        </div>
-      )}
       <div className="spacer" />
       {cooperationLink && <HashPresetButton link={cooperationLink} />}
       {cooperationLink && <BuildMenu link={cooperationLink} />}

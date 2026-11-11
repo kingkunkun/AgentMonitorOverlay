@@ -95,5 +95,12 @@ it("all-task sync applies only to an explicitly paired own-account device, and i
   expect(archive).not.toHaveBeenCalled();
   expect((await service.remote.grants.serve({ account: "owner", device: "phone" }, "rt.task-archive", { taskId: task.id })).kind).not.toBe("error");
   expect(archive).toHaveBeenCalledWith(task.id);
+  const continuation = vi.spyOn(service.sessions, "continueWithModel").mockResolvedValue(session);
+  expect((await service.remote.grants.serve({ account: "other", device: "other" }, "rt.continue", { sessionId: session.id, profileId: "p" })).kind).toBe("error");
+  expect((await service.remote.grants.serve({ account: "owner", device: "phone" }, "rt.continue", { sessionId: session.id, profileId: "ungranted-profile" })).kind).toBe("error");
+  expect(continuation).not.toHaveBeenCalled();
+  expect((await service.remote.grants.serve({ account: "owner", device: "phone" }, "rt.continue", { sessionId: session.id, profileId: "p" })).kind).not.toBe("error");
+  expect(continuation).toHaveBeenCalledWith(session.id, "p", undefined);
+  expect((await service.remote.grants.serve({ account: "other", device: "other" }, "rt.choices", { sessionId: session.id, all: true })).kind).toBe("error");
   await cooperation.off();
 });

@@ -55,6 +55,8 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
     var choices by remember { mutableStateOf<JSONObject?>(null) }
     var optionPanel by remember { mutableStateOf<String?>(null) }
     var modelList by remember { mutableStateOf(false) }
+    var selectedProfile by remember { mutableStateOf("") }
+    var selectedFast by remember { mutableStateOf<Boolean?>(null) }
     var selectedModel by remember { mutableStateOf("") }
     var selectedEffort by remember { mutableStateOf("") }
     var selectedPermission by remember { mutableStateOf("") }
@@ -77,9 +79,10 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
     val task = state.selectedTask
     val writable = state.connected && !state.busy && task?.peer?.online == true && !task.revoked && session?.archived != true
     LaunchedEffect(session?.id, state.connected) { if (state.connected && session != null) repo.chatPresets { presets = it.objects("presets") } }
-    fun loadOptions(panel: String? = null) { if (panel != null) optionPanel = panel; repo.sessionChoices { value -> choices = value; val current = value.optJSONObject("options"); selectedModel = current?.str("model") ?: ""; selectedEffort = current?.str("effort") ?: ""; selectedPermission = current?.str("permission") ?: "" } }
+    fun loadOptions(panel: String? = null) { if (panel != null) optionPanel = panel; repo.sessionChoices(all = panel == "model") { value -> choices = value; selectedProfile = session?.profileId ?: ""; val current = value.optJSONObject("options"); selectedModel = current?.str("model") ?: ""; selectedEffort = current?.str("effort") ?: ""; selectedPermission = current?.str("permission") ?: ""; selectedFast = if (current?.has("fast") == true) current.optBoolean("fast") else null } }
     LaunchedEffect(session?.id, state.connected) { if (state.connected && session != null) loadOptions() }
-    val availableOptions = choices?.optJSONObject("choices")
+    val profileRows = choices?.objects("profiles").orEmpty()
+    val availableOptions = if (selectedProfile.isNotBlank() && selectedProfile != session?.profileId) profileRows.find { it.str("profileId") == selectedProfile }?.optJSONObject("choices") else choices?.optJSONObject("choices")
     val optionModels = availableOptions?.objects("models").orEmpty()
     val currentModel = optionModels.find { it.str("id") == selectedModel } ?: optionModels.find { it.optBoolean("isDefault") } ?: optionModels.firstOrNull()
     val modelCaption = currentModel?.str("label") ?: state.profiles.find { it.first == session?.profileId }?.second ?: "模型"
@@ -91,7 +94,7 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
     LaunchedEffect(state.items) {
-        if (submitted.isNotEmpty() && state.items.any { it.str("type") == "user" && it.str("text").trim() == submitted.trim() && it.optLong("seq", -1L) > sentAfter }) { if (draft.trim() == submitted.trim()) saveDraft(""); clearPending() }
+        if (submitted.isNotEmpty() && state.items.any { it.str("type") == "user" && splitCarriedContext(it.str("text")).first.trim() == submitted.trim() && it.optLong("seq", -1L) > sentAfter }) { if (draft.trim() == submitted.trim()) saveDraft(""); clearPending() }
     }
     // Following the newest message: kept while you are at the bottom; scrolling up lets go until you come back.
     val atBottom by remember { derivedStateOf { list.firstVisibleItemIndex == 0 && list.firstVisibleItemScrollOffset < 80 } }
@@ -161,12 +164,12 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
             leading = {
                 ComposerMenuButton("# 提示词", writable, "chat-presets") { presetMenu = !presetMenu; if (presetMenu) repo.chatPresets { presets = it.objects("presets") } }
                 ComposerMenuButton(if (permissionCaption in listOf("全部允许", "完全允许")) "完全访问" else permissionCaption, writable, "chat-permission", attention = permissionCaption in listOf("全部允许", "完全允许", "完全访问")) { loadOptions("permission") }
-            }, trailing = { ComposerMenuButton(modelCaption + if (effortCaption.isBlank()) " ⌄" else " " + mobileEffortLabel(effortCaption) + " ⌄", writable, "chat-model", compact = true) { loadOptions("model") } }) {
+            }, trailing = { ComposerMenuButton((if (selectedFast == true && currentModel?.optJSONObject("fast") != null) "ϟ " else "") + modelCaption + if (effortCaption.isBlank()) " ⌄" else " " + mobileEffortLabel(effortCaption) + " ⌄", writable, "chat-model", compact = true) { loadOptions("model") } }) {
             sentAfter = state.items.maxOfOrNull { it.optLong("seq", -1L) } ?: -1L; submitted = draft.trim(); saveDraft(submitted)
             prefs.edit(now = true) { put("pending-$draftKey", submitted); put("after-$draftKey", sentAfter) }; repo.send(submitted); stick = true
         }
     }
-    fun cancelOptions() { val saved = choices?.optJSONObject("options"); selectedModel = saved?.str("model") ?: ""; selectedEffort = saved?.str("effort") ?: ""; selectedPermission = saved?.str("permission") ?: ""; optionPanel = null }
+    fun cancelOptions() { val saved = choices?.optJSONObject("options"); selectedModel = saved?.str("model") ?: ""; selectedEffort = saved?.str("effort") ?: ""; selectedPermission = saved?.str("permission") ?: ""; selectedProfile = session?.profileId ?: ""; selectedFast = if (saved?.has("fast") == true) saved.optBoolean("fast") else null; optionPanel = null }
     optionPanel?.let { panel -> availableOptions?.let { available ->
         val efforts = currentModel?.optJSONArray("efforts")
         val effortValues = if (efforts == null) emptyList() else (0 until efforts.length()).map { efforts.optString(it) }
@@ -179,13 +182,24 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
                 Text(if (effortValues.isEmpty()) "模型" else mobileEffortLabel(effortValues[index]), color = androidx.compose.ui.graphics.Color(0xff4385ff), modifier = Modifier.align(Alignment.CenterHorizontally))
                 Box(Modifier.align(Alignment.CenterHorizontally)) {
                     AmoTextButton(onClick = { modelList = true }) { Text(modelCaption + " ›") }
-                    DropdownMenu(modelList, { modelList = false }) { optionModels.forEach { m -> DropdownMenuItem(text = { Text(m.str("label") + if (m.str("id") == currentModel?.str("id")) " ✓" else "") }, onClick = { selectedModel = m.str("id"); selectedEffort = ""; modelList = false }) } }
+                    DropdownMenu(modelList, { modelList = false }) {
+                        val groups = if (profileRows.isNotEmpty()) profileRows else listOf(JSONObject().put("profileId", session?.profileId ?: "").put("label", "当前渠道").put("choices", available))
+                        groups.forEach { group ->
+                            Text(group.str("label"), style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
+                            group.optJSONObject("choices")?.objects("models")?.forEach { m -> DropdownMenuItem(text = { Text(m.str("label") + if (group.str("profileId") == selectedProfile && m.str("id") == currentModel?.str("id")) " ✓" else "") }, enabled = !running || group.str("profileId") == session?.profileId, onClick = { selectedProfile = group.str("profileId"); selectedModel = m.str("id"); selectedEffort = ""; selectedFast = null; modelList = false }) }
+                        }
+                    }
                 }
-                if (effortValues.size > 1) Slider(value = index.toFloat(), onValueChange = { selectedEffort = effortValues[it.toInt().coerceIn(effortValues.indices)] }, valueRange = 0f..(effortValues.size - 1).toFloat(), steps = (effortValues.size - 2).coerceAtLeast(0))
+                if (effortValues.size > 1) Slider(value = index.toFloat(), onValueChange = { selectedEffort = effortValues[it.toInt().coerceIn(effortValues.indices)] }, valueRange = 0f..(effortValues.size - 1).toFloat(), steps = (effortValues.size - 2).coerceAtLeast(0), enabled = selectedProfile == session?.profileId)
                 else if (effortValues.isEmpty()) Text("此模型不提供思考强度选项。", style = MaterialTheme.typography.bodySmall)
-                AmoTextButton(onClick = { selectedEffort = "" }) { Text("恢复默认强度") }
+                currentModel?.optJSONObject("fast")?.let { fast ->
+                    Row(verticalAlignment = Alignment.CenterVertically) { Text("Fast", modifier = Modifier.weight(1f)); Switch(checked = selectedFast == true, onCheckedChange = { selectedFast = it }, enabled = selectedProfile == session?.profileId) }
+                    if (selectedFast == true) Text("Fast 已开启：" + fast.str("description", "可能更快消耗额度或额外计费") + "。独立 Fast 剩余额度以渠道提供的信息为准。", style = MaterialTheme.typography.bodySmall)
+                }
+                if (selectedProfile != session?.profileId) Text("将在同一任务下接续当前 WorkStudio 聊天文字，原记录保留；不自动传附件。切换成功后可调整思考强度和 Fast。", style = MaterialTheme.typography.bodySmall)
+                AmoTextButton(enabled = selectedProfile == session?.profileId, onClick = { selectedEffort = "" }) { Text("恢复默认强度") }
             }
-        } }, confirmButton = { AmoTextButton(onClick = { repo.setSessionOptions(selectedModel, selectedEffort, selectedPermission) { applied -> choices?.put("options", applied); selectedModel = applied.str("model"); selectedEffort = applied.str("effort"); selectedPermission = applied.str("permission"); optionPanel = null } }) { Text("应用") } }, dismissButton = { AmoTextButton(onClick = { cancelOptions() }) { Text("取消") } })
+        } }, confirmButton = { AmoTextButton(onClick = { if (selectedProfile != session?.profileId) repo.continueModel(selectedProfile, selectedModel, draft) { optionPanel = null } else repo.setSessionOptions(selectedModel, selectedEffort, selectedPermission, selectedFast) { applied -> choices?.put("options", applied); selectedModel = applied.str("model"); selectedEffort = applied.str("effort"); selectedPermission = applied.str("permission"); selectedFast = if (applied.has("fast")) applied.optBoolean("fast") else null; optionPanel = null } }) { Text("应用") } }, dismissButton = { AmoTextButton(onClick = { cancelOptions() }) { Text("取消") } })
     } }
     people?.let { members ->
         AlertDialog(onDismissRequest = { people = null }, title = { Text("@ 团队成员") }, text = {
@@ -316,7 +330,13 @@ private fun prettyInput(input: String): String {
             Spacer(Modifier.width(40.dp))
             Surface(color = c.bubble, shape = RoundedCornerShape(12.dp, 12.dp, 3.dp, 12.dp), modifier = Modifier.weight(1f, fill = false)) {
                 Column(Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
-                    if (item.str("text").isNotBlank()) SelectionContainer { Text(item.str("text")) }
+                    val carried = remember(item.str("text")) { splitCarriedContext(item.str("text")) }
+                    var expandedContext by remember(e.id) { mutableStateOf(false) }
+                    carried.second?.let { context ->
+                        AmoTextButton(onClick = { expandedContext = !expandedContext }) { Text("已携带此前聊天文本" + if (context.optBoolean("truncated")) "（最近部分）" else "") }
+                        if (expandedContext) Column(Modifier.heightIn(max = 240.dp).verticalScroll(rememberScrollState())) { context.objects("messages").forEach { m -> Text((if (m.str("role") == "user") "你：" else "AI：") + m.str("text"), style = MaterialTheme.typography.bodySmall) } }
+                    }
+                    if (carried.first.isNotBlank()) SelectionContainer { Text(carried.first) }
                     item.objects("images").forEachIndexed { index, image -> AmoTextButton(onClick = { repo.openFile(image.str("path")) }) { Text("查看图片 ${index + 1}：${image.str("path").replace('\\', '/').substringAfterLast('/')}") } }
                 }
             }

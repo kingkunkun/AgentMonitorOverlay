@@ -742,6 +742,7 @@ export interface HostRoutes
   "PATCH /api/sessions/:id": { req: { title: string }; res: Session };
   /** Switches the session's model, effort or permissions (null clears back to the default). Codex: from the next turn. */
   "PATCH /api/sessions/:id/options": { req: { model?: string | null; effort?: string | null; permission?: string | null; fast?: boolean | null }; res: Session };
+  "POST /api/sessions/:id/continue": { req: { profileId: string; model?: string | null }; res: Session };
   /** Archives the session together with its forks and subagents; returns every session changed. */
   "POST /api/sessions/:id/archive": { req: void; res: Session[] };
   "POST /api/sessions/:id/unarchive": { req: void; res: Session[] };

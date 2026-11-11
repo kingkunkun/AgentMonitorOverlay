@@ -7,6 +7,7 @@ import { checkSetups } from "./setups.js";
 export function sessionsRoutes(service: HostService): Route[] {
   return [
     route("PATCH /api/sessions/:id/options", ({ params, body }) => service.sessions.updateSessionOptions(params.id!, body)),
+    route("POST /api/sessions/:id/continue", ({ params, body }) => { const b = obj(body); return service.sessions.continueWithModel(params.id!, str(b.profileId, "profileId"), typeof b.model === "string" ? b.model : undefined); }),
     // 远程副本 (remoteCopy, http/route.ts): renamed on A (RemoteCopies.renameSession, 2026-10-30); its options are A's.
     route("PATCH /api/sessions/:id", ({ params, body }) => service.sessions.renameSession(params.id!, obj(body).title), { remoteCopy: "forward" }),
     route("GET /api/sessions/:id/items", ({ params, query }) => service.sessions.items(params.id!, Number(query.get("after") ?? 0) || 0, Number(query.get("tail") ?? 0) || 0)),
