@@ -131,7 +131,7 @@
       "label": "手机版（Android / iOS，KMP）",
       "aliases": ["Android", "iOS", "手机", "mobile", "APK", "TestFlight", "KMP", "Kotlin"],
       "category": "tool",
-      "purpose": "手机上的 AMO Studio：Kotlin Multiplatform（shared + app + iosApp），登录后经中转的设备通道连电脑，用 Host 的 rt.* 命令看和操作任务与会话。APK 发到团队服务器，iOS 走 TestFlight（`npm run release -- ios`）。",
+      "purpose": "手机上的 WorkStudio（KMP），可连接本机独立手机账号服务，使用 rt.* 设备协议查看并接管本机聊天，团队登录不变。Android/iOS 共用界面；Android 可本机编译，IPA 需 Mac 签名。",
       "anchors": [
         { "label": "工程说明", "path": "studio/mobile/README.md" },
         { "label": "iOS 版本号", "path": "studio/mobile/iosApp/Version.xcconfig" },

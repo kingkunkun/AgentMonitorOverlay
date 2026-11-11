@@ -7,7 +7,7 @@
 // path or an MCP token (the token's key goes with its session, see Store.purge). "outside": the prefix + the id of a
 // Claude session started outside Studio (接续已有会话, 2026-11-05).
 
-export type KvScope = "global" | "session" | "task" | "workspace" | "folder" | "token" | "outside";
+export type KvScope = "global" | "session" | "task" | "workspace" | "folder" | "token" | "outside" | "account";
 
 export interface KvKey {
   /** The whole key, or for a scope other than global the prefix the id is appended to. */
@@ -21,7 +21,10 @@ export interface KvKey {
 export const KV_KEYS: readonly KvKey[] = [
   { key: "build-job.state", scope: "global", owner: "core/build-job.ts", what: "固定 Jenkins Job 最近的构建状态，不包含凭据" },
   { key: "build-job.enabled", scope: "global", owner: "core/build-job.ts", what: "是否允许通过按钮和手机聊天触发固定打包 Job" },
-  { key: "cooperation.invite", scope: "global", owner: "core/cooperation.ts", what: "手机服务注册邀请码" },
+  { key: "phone.accounts", scope: "global", owner: "core/phone-remote.ts", what: "独立手机账号启用和团队来信路由，不含密码" },
+  { key: "phone.device", scope: "global", owner: "core/phone-remote.ts", what: "独立于团队设备通道的本机手机服务设备号" },
+  { key: "phone.team-inbox:", scope: "task", owner: "core/phone-remote.ts", what: "团队来信聊天，按指定手机账号同步" },
+  { key: "phone.remote:", scope: "account", owner: "core/phone-remote.ts", what: "按手机账号隔离的设备授权和创建设置，删除账号时清除" },
   { key: "cooperation.inbox", scope: "global", owner: "core/cooperation.ts", what: "中转收件箱映射到本地任务" },
   { key: "cooperation.security-version", scope: "global", owner: "core/cooperation.ts", what: "首次升级隐私规则时关闭已有远程连接" },
   // Settings (设置)
@@ -105,4 +108,5 @@ export const kvPrefixes = (scope: "session" | "task" | "workspace"): string[] =>
 
 /** The session's key that holds its MCP token; the token's own key is `MCP_TOKEN_PREFIX + token`. */
 export const MCP_SESSION_PREFIX = "mcp-identity:session:";
+export const PHONE_REMOTE_PREFIX = "phone.remote:";
 export const MCP_TOKEN_PREFIX = "mcp-identity:token:";

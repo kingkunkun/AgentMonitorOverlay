@@ -39,7 +39,7 @@ const text = (v: unknown, what: string, max: number): string => {
 
 function readList(ctx: RemoteContext, key: string): RemoteTaskRequest[] {
   try {
-    const v = JSON.parse(ctx.host.store.getKv(key)?.value ?? "[]") as RemoteTaskRequest[];
+    const v = JSON.parse((ctx.store ?? ctx.host.store).getKv(key)?.value ?? "[]") as RemoteTaskRequest[];
     return Array.isArray(v) ? v : [];
   } catch {
     return [];
@@ -59,7 +59,7 @@ export class TaskRequests {
   }
 
   private save(list: RemoteTaskRequest[]): void {
-    this.ctx.host.store.setKv(REQUESTS_KEY, JSON.stringify(list));
+    (this.ctx.store ?? this.ctx.host.store).setKv(REQUESTS_KEY, JSON.stringify(list));
   }
 
   /** Waiting for this computer's person (Focus, the remote page). */
@@ -200,7 +200,7 @@ export class TaskAsks {
 
   private hidden(): string[] {
     try {
-      const v = JSON.parse(this.ctx.host.store.getKv(HIDDEN_KEY)?.value ?? "[]") as string[];
+      const v = JSON.parse((this.ctx.store ?? this.ctx.host.store).getKv(HIDDEN_KEY)?.value ?? "[]") as string[];
       return Array.isArray(v) ? v : [];
     } catch {
       return [];
@@ -213,7 +213,7 @@ export class TaskAsks {
   }
 
   private save(list: RemoteTaskRequest[]): void {
-    this.ctx.host.store.setKv(ASKS_KEY, JSON.stringify(list));
+    (this.ctx.store ?? this.ctx.host.store).setKv(ASKS_KEY, JSON.stringify(list));
     this.ctx.changed();
   }
 
@@ -244,7 +244,7 @@ export class TaskAsks {
       this.save(all.filter((x) => x.id !== id));
       return;
     }
-    this.ctx.host.store.setKv(HIDDEN_KEY, JSON.stringify([...this.hidden(), id].slice(-500)));
+    (this.ctx.store ?? this.ctx.host.store).setKv(HIDDEN_KEY, JSON.stringify([...this.hidden(), id].slice(-500)));
     this.save(all.filter((x) => x.id !== id));
     void this.ask(peer, REMOTE_KINDS.withdraw, { requestId: id }).catch(() => undefined);
   }

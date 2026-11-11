@@ -282,6 +282,18 @@ export class RelayStore {
     return key;
   }
 
+  /** Embedded service's in-memory computer connection; never an HTTP account-management API. */
+  deviceKey(name: string): string { this.requireMember(name); return this.newKey(name); }
+
+  /** Only used by the embedded phone service, whose database contains no team conversations. */
+  deletePhoneMember(name: string): void {
+    this.requireMember(name);
+    this.db.prepare("DELETE FROM keys WHERE name = ?").run(name);
+    if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'device_pairs'").get()) this.db.prepare("DELETE FROM device_pairs WHERE owner_account = ? OR guest_account = ?").run(name, name);
+    if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'device_pair_requests'").get()) this.db.prepare("DELETE FROM device_pair_requests WHERE from_account = ? OR to_account = ?").run(name, name);
+    this.db.prepare("DELETE FROM members WHERE name = ?").run(name);
+  }
+
   memberByKey(key: string): string | null {
     const row = this.db.prepare("SELECT name FROM keys WHERE key_hash = ?").get(hashKey(key)) as Row | undefined;
     return row ? String(row.name) : null;

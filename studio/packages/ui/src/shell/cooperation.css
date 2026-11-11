@@ -8,3 +8,6 @@
 .cooperation-content button { font-size: 12px; }
 .cooperation-content details { margin-top: 14px; }
 .cooperation-content summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+.phone-account-create { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(160px, 1fr); gap: 8px; margin: 12px 0; }
+.phone-account-row { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; margin: 10px 0; }
+@media (max-width: 600px) { .phone-account-create { grid-template-columns: 1fr; } }

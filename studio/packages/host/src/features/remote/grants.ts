@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { NO_REMOTE_ALLOWED, REMOTE_KINDS, isCommon, REMOTE_PERMISSIONS, RUNTIME_LABELS, type HostEvent, type Id, type ModelProfile, type RemoteAllowed, type RemoteGrant, type RemoteItemsAnswer, type RemoteFileAsk, type RemotePermission, type RemotePush,type RemoteTaskSnapshot, type RemoteTaskView, type RemoteViewAsk, type ReviewOpenTarget, type Session, type SessionItem, type SessionOptions, type Task } from "@amo-studio/protocol";
 import type { DeviceRef } from "@amo-studio/relay";
 import type { FeatureHost } from "../../core/feature.js";
+import type { Store } from "../../store/store.js";
 import type { RemoteUses } from "./service.js";
 import { HostError, boundedText } from "../../core/shared.js";
 import type { DeviceLink } from "./link.js";
@@ -20,6 +21,12 @@ const ALLOWED_KEY = "remote.allowed";
 /** What the remote parts need of the feature that holds the connection. */
 export interface RemoteContext {
   host: FeatureHost<RemoteUses>;
+  /** Separate account domains may namespace remote metadata, without copying task/session data. */
+  store?: Store;
+  trustedOwnDevice?(peer: DeviceRef): boolean;
+  assertEnabled?(): void;
+  includeArchived?: boolean;
+  canAccessTask?(peer: DeviceRef, taskId: Id): boolean;
   link(): DeviceLink | null;
   /** This computer's name, for what the other side reads. */
   deviceName(): string;
@@ -84,7 +91,7 @@ export class RemoteGrants {
   constructor(private readonly ctx: RemoteContext) {}
 
   private get store() {
-    return this.ctx.host.store;
+    return this.ctx.store ?? this.ctx.host.store;
   }
 
   /** Read once, then kept: every Host event (streamed text too) asks whether its task is granted. */
@@ -151,7 +158,7 @@ export class RemoteGrants {
    * those the task's own sessions use. The default first.
    */
   allowedFor(taskId: Id, peer?: DeviceRef): Id[] {
-    if (peer && this.ctx.host.cooperation.ownDevice(peer.account)) return this.ctx.host.profiles.filter((p) => !p.hidden && !p.unavailable && p.runtime !== "remote").map((p) => p.id);
+    if (peer && (this.ctx.trustedOwnDevice?.(peer) ?? this.ctx.host.cooperation.ownDevice(peer.account))) return this.ctx.host.profiles.filter((p) => !p.hidden && !p.unavailable && p.runtime !== "remote").map((p) => p.id);
     const cfg = this.allowed();
     const usable = (pid: Id) => {
       const p = this.ctx.host.profiles.find((x) => x.id === pid);
@@ -241,7 +248,7 @@ export class RemoteGrants {
     const task = this.store.getTask(taskId);
     if (!task) throw new HostError("not_found", `没有任务 ${taskId}`);
     if (task.remote) throw new HostError("bad_request", "这是别的电脑授权给这台电脑的远程任务，不能再转授权");
-    if (task.archivedAt) throw new HostError("read_only", "任务已归档，不能授权");
+    if (task.archivedAt && !this.ctx.includeArchived) throw new HostError("read_only", "任务已归档，不能授权");
     const p = this.ctx.peer(peer, "owner");
     // Only a device this computer allowed to pair may reach it (the owner side, plans/done/remote-session.md「B 是谁」).
     if (!p) throw new HostError("bad_request", "只能授权给这台电脑允许配对的设备（在顶栏的「远程」里配对）");
@@ -285,6 +292,7 @@ export class RemoteGrants {
   // ---- what a device sends
 
   private grantFor(from: DeviceRef, taskId: Id): RemoteGrant {
+    if (this.ctx.canAccessTask && !this.ctx.canAccessTask(from, taskId)) throw new HostError("read_only", "手机账号未获准同步这个聊天");
     if (!this.ctx.host.cooperation.taskAllowed(taskId)) throw new HostError("read_only", "这个任务包含过去导入的原生对话，禁止远程转发");
     const g = this.list().find((x) => x.taskId === taskId && same(x, from));
     if (!g) throw new HostError("not_found", "这个任务没有授权给你（可能已经收回）");
@@ -349,6 +357,7 @@ export class RemoteGrants {
     const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
     const sessions = this.ctx.host.sessions;
     try {
+      this.ctx.assertEnabled?.();
       switch (kind) {
         case "rt.continue": {
           const s = this.sessionFor(from, id(b.sessionId, "sessionId"), true);
@@ -385,7 +394,7 @@ export class RemoteGrants {
           return ok({ session: await sessions.updateSessionOptions(s.id, b.options) });
         }
         case REMOTE_KINDS.list:
-          return ok({ tasks: this.list().filter((g) => same(g, from)).map((g) => ({ taskId: g.taskId, grantedAt: g.grantedAt })) });
+          return ok({ tasks: this.list().filter((g) => same(g, from) && (!this.ctx.canAccessTask || this.ctx.canAccessTask(from, g.taskId))).map((g) => ({ taskId: g.taskId, grantedAt: g.grantedAt })) });
         case REMOTE_KINDS.task:
           return ok(this.snapshot(from, id(b.taskId, "taskId")));
         case REMOTE_KINDS.items: {
@@ -514,7 +523,7 @@ export class RemoteGrants {
           const path = resolveAsked(roots, String(b.path ?? ""), typeof b.cwd === "string" ? b.cwd : undefined);
           const selected = real(path) ?? path;
           await this.ctx.host.cooperation.confirmTransfer(taskId, `${from.account} / ${from.device}`, selected, Number(b.offset) || 0);
-          this.ctx.host.cooperation.assertRemoteEnabled();
+          if (this.ctx.assertEnabled) this.ctx.assertEnabled(); else this.ctx.host.cooperation.assertRemoteEnabled();
           this.grantFor(from, taskId);
           return ok(await readRemoteFile(this.fileRoots(taskId), { ...b, path: selected } as unknown as RemoteFileAsk, this.ctx.deviceName()));
         }
@@ -528,7 +537,7 @@ export class RemoteGrants {
           const ask = b as unknown as RemoteViewAsk;
           // Reviewer responses can contain full file text/diffs, so they require the same local consent.
           await this.ctx.host.cooperation.confirmTransfer(taskId, `${from.account} / ${from.device}`, `项目 ${root} / ${ask.path}`, ask.piece?.offset ?? 0);
-          this.ctx.host.cooperation.assertRemoteEnabled();
+          if (this.ctx.assertEnabled) this.ctx.assertEnabled(); else this.ctx.host.cooperation.assertRemoteEnabled();
           this.grantFor(from, taskId);
           return ok(await this.views.serve(`${from.account}
 ${from.device}
@@ -546,6 +555,7 @@ ${taskId}`, ask, () => answerView({ host: this.ctx.host, task, root }, ask)));
   // ---- what A tells the devices unasked
 
   private push(g: RemoteGrant, body: RemotePush): void {
+    if (body.type !== "revoked" && this.ctx.canAccessTask && !this.ctx.canAccessTask(g, g.taskId)) return;
     if (!this.ctx.host.cooperation.taskAllowed(g.taskId)) return;
     if (body.type === "task") { const allowed = this.allowedFor(g.taskId, g); body = { ...body, allowed, profiles: this.profilesOf(g.taskId, allowed) }; }
     const link = this.ctx.link();

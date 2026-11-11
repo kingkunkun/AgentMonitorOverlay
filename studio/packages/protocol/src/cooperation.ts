@@ -1,13 +1,14 @@
 // This fork keeps existing bookmark data but disables the feature at every entry point.
 export const BOOKMARKS_ENABLED: boolean = false;
 export interface TransferRequest { id: string; taskId: string; peer: string; path: string; createdAt: string }
+export interface PhoneAccount { name: string; enabled: boolean; forwardTeamInbox: boolean; devices: number }
 export interface CooperationState {
   account: { name: string; server: string } | null;
   recentServers: string[];
   relayEnabled: boolean;
   remoteEnabled: boolean;
   syncOwnDevices: boolean;
-  server: { running: boolean; lan: boolean; port: number | null; addresses: string[]; invite: string; error: string | null };
+  server: { running: boolean; lan: boolean; port: number | null; addresses: string[]; invite: string; error: string | null; accounts?: PhoneAccount[] };
   transfers: TransferRequest[];
 }
 export interface CooperationRoutes {
@@ -18,5 +19,8 @@ export interface CooperationRoutes {
   "POST /api/cooperation/off": { req: never; res: CooperationState };
   "PUT /api/cooperation/relay": { req: { enabled: boolean }; res: CooperationState };
   "PUT /api/cooperation/server": { req: { enabled: boolean; lan?: boolean }; res: CooperationState };
+  "POST /api/cooperation/phone-accounts": { req: { name: string; password: string; forwardTeamInbox?: boolean }; res: CooperationState };
+  "PATCH /api/cooperation/phone-accounts/:name": { req: { enabled?: boolean; password?: string; forwardTeamInbox?: boolean }; res: CooperationState };
+  "DELETE /api/cooperation/phone-accounts/:name": { req: never; res: CooperationState };
   "POST /api/cooperation/transfers/:id": { req: { allow: boolean }; res: CooperationState };
 }

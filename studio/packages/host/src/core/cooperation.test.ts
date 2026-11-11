@@ -9,6 +9,7 @@ import { Store } from "../store/store.js";
 import { CodexRuntime } from "../runtime/codex/codex-runtime.js";
 import { FakeServers } from "../runtime/codex/fake-servers.test-support.js";
 import { Cooperation } from "./cooperation.js";
+import { RelayStore, startRelayServer } from "@amo-studio/relay";
 
 const clean: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const run of clean.splice(0).reverse()) await run(); });
@@ -27,21 +28,28 @@ async function setup() {
   clean.push(async () => { await cooperation.stop(); service.teamRelay.stop(); service.remote.stop(); service.teamLink.stop(); await servers.close(); store.close(); removeTempDir(root); });
   return { cooperation, service, env, root };
 }
-it("local service requires an invite and strong password; login does not enable remote/relay; off signs out and stops listening", async () => {
+async function teamServer(cooperation: Cooperation, name: string) {
+  const dir = mkdtempSync(join(tmpdir(), "amo-coop-team-"));
+  const db = new RelayStore(join(dir, "team.db"));
+  const server = await startRelayServer({ store: db, host: "127.0.0.1", port: 0 });
+  clean.push(async () => { await server.close(); db.close(); removeTempDir(dir); });
+  const created = db.register(name, "long-password-123"); db.logout(created.key);
+  return cooperation.account({ action: "login", server: server.url, name, password: "long-password-123" });
+}
+it("team login stays independent from local phone accounts; off signs out and stops both connection domains", async () => {
   const { cooperation, service, env } = await setup();
+  await teamServer(cooperation, "team-user");
   const state = await cooperation.setServer(true);
-  const address = state.server.addresses[0]!;
-  const denied = await fetch(`${address}/api/register`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "phone", password: "long-password-123" }) });
-  expect(denied.ok).toBe(false);
-  await expect(cooperation.account({ action: "register", server: address, name: "phone", password: "short", passphrase: state.server.invite })).rejects.toThrow("12");
-  const signed = await cooperation.account({ action: "register", server: address, name: "phone", password: "long-password-123", passphrase: state.server.invite });
-  expect(signed.account?.name).toBe("phone");
+  const denied = await fetch(state.server.addresses[0]! + "/api/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "phone", password: "long-password-123" }) });
+  expect(denied.status).toBe(403);
+  expect(() => cooperation.createPhoneAccount({ name: "phone", password: "short" })).toThrow("12");
+  const signed = cooperation.createPhoneAccount({ name: "phone", password: "phone-password-123" });
+  expect(signed.account?.name).toBe("team-user");
   expect(signed.remoteEnabled).toBe(false);
-  expect(signed.relayEnabled).toBe(false);
   cooperation.relay(true);
   expect(readCooperation(env).relayEnabled).toBe(true);
   const off = await cooperation.off();
-  expect(off).toMatchObject({ account: null, relayEnabled: false, remoteEnabled: false, server: { running: false } });
+  expect(off).toMatchObject({ account: null, relayEnabled: false, remoteEnabled: false, server: { running: false, accounts: [expect.objectContaining({ name: "phone" })] } });
   expect(service.teamLink.account).toBeNull();
   expect(readCooperation(env)).toMatchObject({ relayEnabled: false, serverEnabled: false });
 });
@@ -68,8 +76,7 @@ it("external native conversations cannot be listed, previewed or imported and au
 });
 it("all-task sync applies only to an explicitly paired own-account device, and imported tasks stay private", async () => {
   const { cooperation, service } = await setup();
-  const server = await cooperation.setServer(true);
-  await cooperation.account({ action: "register", server: server.server.addresses[0]!, name: "owner", password: "owner-password-123", passphrase: server.server.invite });
+  await teamServer(cooperation, "owner");
   service.store.setKv("remote.pairs", JSON.stringify([{ account: "owner", device: "phone", name: "自己的手机", role: "owner", pairedAt: new Date().toISOString() }, { account: "other", device: "other", name: "其他人的设备", role: "owner", pairedAt: new Date().toISOString() }]));
   await service.remote.setEnabled(true);
   const { task } = await service.tasks.createTask({ title: "本地任务" });

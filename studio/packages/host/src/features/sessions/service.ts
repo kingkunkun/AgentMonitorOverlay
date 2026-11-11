@@ -33,6 +33,21 @@ export class SessionsFeature extends Feature<"attachments" | "collab" | "config"
     try { const c = JSON.parse(this.store.getKv(CONTINUATION_KEY + id)?.value ?? "null"); return c?.context && Array.isArray(c.context.messages) ? c : null; } catch { return null; }
   }
 
+  /** Team inbox text is displayed immediately, but never starts an agent turn without a person's send. */
+  async receiveTeamInbox(taskId: Id, text: string, title: string): Promise<void> {
+    let session = this.store.listSessions({ taskId }).find((s) => !s.archivedAt && s.kind === "main" && s.runtime !== "remote");
+    if (!session) {
+      const profile = this.profiles.find((p) => !p.hidden && !p.unavailable && p.runtime !== "remote");
+      if (!profile) return;
+      session = await this.f.tasks.addSession(taskId, { profileId: profile.id });
+    }
+    const old = this.continuation(session.id);
+    const context = boundedChatContext(session.id, title, [...(old && !old.sent ? old.context.messages : []), { role: "user", text }]);
+    this.store.setKv(CONTINUATION_KEY + session.id, JSON.stringify({ context, sent: false }));
+    const item = this.store.appendItem({ id: newId("item"), sessionId: session.id, type: "notice", level: "info", createdAt: new Date().toISOString(), message: `团队来信 · ${title}\n\n${text}\n\n等待你回复；收到来信不会自动执行任务。` });
+    this.publish({ type: "item.appended", item });
+  }
+
   /** A different runtime gets its own session in this task; the old record is never rewritten. No turn starts here. */
   async continueWithModel(id: Id, profileId: Id, chosen?: string): Promise<Session> {
     const source = this.requireSession(id);
@@ -151,7 +166,8 @@ export class SessionsFeature extends Feature<"attachments" | "collab" | "config"
       this.sendingContext.delete(sessionId);
     }
     if (Date.now() - started >= SLOW_SEND_MS) this.log(`${sessionId} (${runtime}): the message went in after ${Date.now() - started} ms (${result.mode})`);
-    if (carriesContext) this.store.setKv(CONTINUATION_KEY + sessionId, JSON.stringify({ ...continuation, sent: true }));
+    // A team message arriving while this send was awaiting the runtime must stay pending for the next send.
+    if (carriesContext && JSON.stringify(this.continuation(sessionId)) === JSON.stringify(continuation)) this.store.setKv(CONTINUATION_KEY + sessionId, JSON.stringify({ ...continuation, sent: true }));
     update.told();
     // The person wrote: what the inbox held since they stopped the session goes in with it (inbox.ts, pause).
     this.inbox.resume(sessionId);

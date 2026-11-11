@@ -93,7 +93,7 @@ export class RemoteCreates {
   ) {}
 
   private get store() {
-    return this.ctx.host.store;
+    return this.ctx.store ?? this.ctx.host.store;
   }
 
   allowedProjects(): RemoteAllowedProjects {
@@ -237,7 +237,7 @@ export class RemoteCreates {
   /** rt.catalog: what the device may pick — A's topics, the allowed projects, the common folder, the allowed models. */
   catalog(from: DeviceRef): RemoteCatalog {
     this.requireOwner(from);
-    const own = this.ctx.host.cooperation.ownDevice(from.account);
+    const own = this.ctx.trustedOwnDevice?.(from) ?? this.ctx.host.cooperation.ownDevice(from.account);
     const tasks = this.store.listTasks().filter((t) => !t.archivedAt && !t.remote);
     const workspaces = this.store.listWorkspaces();
     const last = new Map<Id, string>();
@@ -284,7 +284,7 @@ export class RemoteCreates {
   async create(from: DeviceRef, body: Record<string, unknown>): Promise<RemoteCreateAnswer> {
     this.requireOwner(from);
     const name = this.ctx.deviceName();
-    const own = this.ctx.host.cooperation.ownDevice(from.account);
+    const own = this.ctx.trustedOwnDevice?.(from) ?? this.ctx.host.cooperation.ownDevice(from.account);
     const projects = own ? this.store.listWorkspaces().filter((w) => !w.archivedAt).map((w) => w.id) : this.liveProjects();
     if (!own && !remoteCreateOpen({ workspaceIds: this.liveProjects(), common: this.allowedProjects().common })) throw new HostError("bad_request", `${name} 还没勾远端允许的项目：在那台电脑的 远程 → 远程设置 里勾`);
     const text = textOf(body.text, "第一句话", TEXT_MAX, true);

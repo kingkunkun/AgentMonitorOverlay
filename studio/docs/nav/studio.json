@@ -42,11 +42,13 @@
     {
       "id": "studio.cooperation",
       "label": "合作模式、隐私开关、局域网手机服务与固定 Jenkins 打包",
-      "aliases": ["合作模式", "关闭远程", "关闭中转", "手机服务", "原生历史", "隐私", "外发确认", "Jenkins", "打包", "SurvivorTD_IOS_Auto", "SurvivorTD_Android_Auto", "# 提示词", "预设"],
+      "aliases": ["合作模式","关闭远程","关闭中转","手机服务","原生历史","隐私","外发确认","Jenkins","打包","SurvivorTD_IOS_Auto","SurvivorTD_Android_Auto","# 提示词","预设","手机远程","手机账号","账号管理","团队远程","团队来信"],
       "category": "host",
-      "purpose": "kingkunkun fork 用户定的合作模式：账号、远程和中转独立开关，一键断开，LAN 手机服务，同账号任务同步；应用内外发批准与原生历史隔离。固定 iOS/安卓 Jenkins Job 通过按钮、# 提示词或同账号手机触发；失败日志脱敏限长后在原聊天分析，不把密钥交给模型。",
+      "purpose": "kingkunkun fork：团队账号/远程与独立手机账号/服务分别管理，手机账号在电脑创建、改密、停用、删除并接管本机聊天，团队来信按勾选账号同步；文件外发需电脑确认，原生历史禁止导入。固定 Jenkins Job 和 # 提示词仍由本机执行。",
       "anchors": [
         { "label": "合作模式与隐私", "path": "studio/packages/host/src/core/cooperation.ts", "anchor": "export class Cooperation" },
+        {"label":"独立手机账号和设备通道","path":"studio/packages/host/src/core/phone-remote.ts","anchor":"export class PhoneRemote"},
+        {"label":"手机账号管理界面","path":"studio/packages/ui/src/shell/PhoneRemoteSettings.tsx","anchor":"export function PhoneRemoteSettings"},
         { "label": "合作模式界面", "path": "studio/packages/ui/src/shell/CooperationMenu.tsx", "anchor": "export function CooperationMenu" },
         { "label": "固定打包接口", "path": "studio/packages/host/src/core/build-job.ts", "anchor": "export class BuildJob" },
         { "label": "本地提示词设置", "path": "studio/packages/host/src/core/chat-presets.ts", "anchor": "export class ChatPresets" },

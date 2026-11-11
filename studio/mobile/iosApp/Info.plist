@@ -10,7 +10,7 @@
 		<true/>
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>连接局域网里的 AMO 服务器和你的电脑。</string>
+	<string>连接局域网里的 WorkStudio 手机服务。</string>
 	<!-- Only the system's HTTPS/TLS: exempt, so TestFlight does not ask about export compliance every build. -->
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>

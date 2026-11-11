@@ -355,13 +355,13 @@ private fun taskTone(t: RemoteTask): Tone {
     var password by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 32.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("WorkStudio", style = MaterialTheme.typography.headlineMedium)
-        Text("登录团队账号，在电脑上确认配对后，就能在手机上看进度、回消息、审批。", color = LocalAmoColors.current.dim, style = MaterialTheme.typography.bodySmall)
+        Text("登录电脑“手机远程”里创建的独立账号，即可查看聊天、发送任务、选择模型和审批。", color = LocalAmoColors.current.dim, style = MaterialTheme.typography.bodySmall)
         Spacer(Modifier.height(4.dp))
-        Field(server, { server = it }, "服务器地址", "login-server", hint = "比如 192.168.1.20:47120")
+        Field(server, { server = it }, "服务器地址", "login-server", hint = "比如 192.168.1.20:47950")
         Field(name, { name = it }, "账号", "login-name")
         OutlinedTextField(password, { password = it }, label = { Text("密码") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth().testTag("login-password"))
         PrimaryButton(if (state.busy) "正在登录…" else "登录", "login-submit", !state.busy && server.isNotBlank() && name.isNotBlank() && password.isNotBlank(), Modifier.fillMaxWidth()) { repo.login(server.trim(), name.trim(), password); password = "" }
-        Text("填中转服务的地址（和电脑上 AMO 平台登录的是同一个）；Wi-Fi 或 Tailscale 都行。",color = LocalAmoColors.current.dim, style = MaterialTheme.typography.bodySmall)
+        Text("地址和账号请在电脑 WorkStudio → 合作模式 → 手机远程中查看和创建；这套账号与团队账号独立，先在互通局域网连接。",color = LocalAmoColors.current.dim, style = MaterialTheme.typography.bodySmall)
     }
 }
 

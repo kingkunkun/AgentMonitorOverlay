@@ -63,3 +63,15 @@ it("bounds long histories and safely round-trips code, newlines and delimiter-li
   expect(context.truncated).toBe(true); expect(context.messages.reduce((n, m) => n + m.text.length, 0)).toBe(60000);
   expect(splitChatContext(composeChatContext("新的要求", context))).toEqual({ text: "新的要求", context });
 });
+
+it("keeps a team message pending when it arrives while the previous context send is in flight", async () => {
+  const { host, runtime, task, source } = await setup();
+  await host.sessions.receiveTeamInbox(task.id, "第一封来信", "同事");
+  let finish!: (value: { mode: "start" }) => void;
+  const send = vi.spyOn(runtime, "sendMessage").mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; })).mockResolvedValue({ mode: "start" });
+  const pending = host.sessions.sendMessage(source.id, "回复第一封");
+  await host.sessions.receiveTeamInbox(task.id, "第二封来信", "同事");
+  finish({ mode: "start" }); await pending;
+  await host.sessions.sendMessage(source.id, "继续回复");
+  expect(send.mock.calls[1]![1]).toContain("第二封来信");
+});

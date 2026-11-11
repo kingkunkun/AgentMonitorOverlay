@@ -31,6 +31,8 @@ import { DEVICE_CHANNEL_VERSION, MAX_DEVICE_FRAME } from "./devices-protocol.js"
 // /api/platform/android and /platform/android/<name>.apk (2026-10-31).
 
 export interface RelayServerOptions {
+  /** Embedded phone service: accounts are managed only through the local WorkStudio Host. */
+  localPhoneOnly?: boolean;
   minPasswordLength?: number;
   store: RelayStore;
   /** The invite passphrase registering takes; none = anyone who reaches the service may register. */
@@ -66,6 +68,7 @@ export interface RelayServerOptions {
 export interface RelayServer {
   url: string;
   port: number;
+  devices: DeviceHub;
   close(): Promise<void>;
 }
 
@@ -286,10 +289,21 @@ export async function startRelayServer(opts: RelayServerOptions): Promise<RelayS
     return true;
   };
 
+  const phoneLogins = new Map<string, { count: number; until: number }>();
   async function route(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
     // HEAD is answered as GET; Node leaves the body out.
     const method = req.method === "HEAD" ? "GET" : (req.method ?? "GET");
     const path = url.pathname;
+    if (opts.localPhoneOnly) {
+      if (!["/api/health", "/api/login"].includes(path) && !path.startsWith("/api/devices/")) throw new RelayError("forbidden", "手机服务只开放登录和设备连接；账号请在电脑 WorkStudio 中管理");
+      if (path === "/api/login" && method === "POST") {
+        const ip = req.socket.remoteAddress ?? "unknown", now = Date.now();
+        if (phoneLogins.size > 1024) for (const [key, entry] of phoneLogins) if (entry.until <= now) phoneLogins.delete(key);
+        const entry = phoneLogins.get(ip);
+        if (entry && entry.until > now && entry.count >= 10) throw new RelayError("forbidden", "登录尝试过多，请一分钟后重试");
+        phoneLogins.set(ip, entry && entry.until > now ? { ...entry, count: entry.count + 1 } : { count: 1, until: now + 60000 });
+      }
+    }
     if (method === "GET" && path === "/api/health") {
       const health: Health = { app: RELAY_APP, version: RELAY_VERSION, name: serviceName, invite: inviteNeeded(), client: files.manifest()?.version ?? null, shell: files.shell(), devices: DEVICE_CHANNEL_VERSION };
       return send(res, 200, health);
@@ -865,7 +879,7 @@ export async function startRelayServer(opts: RelayServerOptions): Promise<RelayS
     }
     let name: string;
     try {
-      if (url.pathname !== "/ws") throw new RelayError("not_found", "");
+      if (url.pathname !== "/ws" || opts.localPhoneOnly) throw new RelayError("not_found", "");
       name = auth(req, url);
     } catch {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
@@ -899,6 +913,7 @@ export async function startRelayServer(opts: RelayServerOptions): Promise<RelayS
   return {
     url: `http://${shownHost}:${port}`,
     port,
+    devices,
     close: async () => {
       closing = true;
       clearInterval(watchClient);

@@ -1,9 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { networkInterfaces } from "node:os";
-import { join, dirname } from "node:path";
-import { mkdirSync } from "node:fs";
 import { login, register, logout, clearAccount, recentServers, readCooperation, updateCooperation, privateClientPath } from "@amo-studio/account";
-import { RelayStore, startRelayServer, type RelayServer } from "@amo-studio/relay";
+import { PhoneRemote } from "./phone-remote.js";
 import type { CooperationState, TransferRequest } from "@amo-studio/protocol";
 import type { HostService } from "../service.js";
 import { HostError } from "./shared.js";
@@ -15,15 +12,12 @@ function defaultPhonePort(): number {
 
 // Security controls belong to the Host, not to agent permission modes. There is no MCP tool to approve a transfer.
 export class Cooperation {
-  private server: RelayServer | null = null;
-  private relayStore: RelayStore | null = null;
-  private error: string | null = null;
+  readonly phone: PhoneRemote;
   private changing: Promise<void> = Promise.resolve();
-  private invite = "";
   private pending = new Map<string, { request: TransferRequest; resolve(allow: boolean): void }>();
   private fileGrants = new Map<string, number>();
   private policyWatch: ReturnType<typeof setInterval> | null = null;
-  constructor(private readonly host: HostService, private readonly serverPort = defaultPhonePort()) {}
+  constructor(private readonly host: HostService, serverPort = defaultPhonePort()) { this.phone = new PhoneRemote(host, serverPort); }
   modelChoices(profileId: string) { return this.host.config.choices(profileId); }
   teamMembers() { return this.host.teamRelay.members(); }
   assertRemoteEnabled(): void { if (!this.host.remote.enabled()) throw new HostError("read_only", "远程已关闭"); }
@@ -43,8 +37,7 @@ export class Cooperation {
   state(): CooperationState {
     const a = this.host.teamLink.account;
     const p = readCooperation(this.env);
-    const addresses = this.server ? [`http://127.0.0.1:${this.server.port}`, ...(p.serverLan ? Object.values(networkInterfaces()).flatMap((all) => (all ?? []).filter((n) => !n.internal && n.family === "IPv4").map((n) => `http://${n.address}:${this.server!.port}`)) : [])] : [];
-    return { account: a ? { name: a.name, server: a.server } : null, recentServers: recentServers({ env: this.env }), relayEnabled: p.relayEnabled, remoteEnabled: this.host.remote.enabled(), syncOwnDevices: p.syncOwnDevices, server: { running: !!this.server, lan: p.serverLan, port: this.server?.port ?? null, addresses, invite: this.invite, error: this.error }, transfers: [...this.pending.values()].map((p) => p.request) };
+    return { account: a ? { name: a.name, server: a.server } : null, recentServers: recentServers({ env: this.env }), relayEnabled: p.relayEnabled, remoteEnabled: this.host.remote.enabled(), syncOwnDevices: p.syncOwnDevices, server: { ...this.phone.state(), lan: p.serverLan }, transfers: [...this.pending.values()].map((p) => p.request) };
   }
   async account(input: { action: string; server: string; name: string; password: string; passphrase?: string }): Promise<CooperationState> {
     if (input.action !== "login" && input.action !== "register") throw new HostError("bad_request", "账号操作无效");
@@ -84,6 +77,8 @@ export class Cooperation {
       const made = await this.host.tasks.createTask({ title: `中转 · ${title || threadId}`, column: "todo", firstMessage: text.slice(0, 19000) });
       taskId = made.task.id;
     }
+    this.phone.markTeamInbox(taskId);
+    await this.host.sessions.receiveTeamInbox(taskId, text.slice(-19000), title || "团队消息");
     this.host.tasks.updateTask(taskId, { description: `来自 Work中转的消息（不会自动执行）\n\n${text.slice(-19000)}` });
     mapping[key] = { taskId, seq };
     this.host.store.setKv("cooperation.inbox", JSON.stringify(mapping));
@@ -108,31 +103,20 @@ export class Cooperation {
     this.policyWatch = setInterval(() => { if (readCooperation(this.env).relayEnabled && this.host.teamLink.account) this.host.teamRelay.start(); else this.host.teamRelay.stop(); }, 500);
     this.policyWatch.unref();
     const p = readCooperation(this.env);
-    if (p.serverEnabled) await this.setServer(true, p.serverLan);
+    // A busy phone port must not stop local chats or the independent team account from starting.
+    if (p.serverEnabled) await this.setServer(true, p.serverLan).catch((e) => this.host.log("手机远程未启动：" + (e instanceof Error ? e.message : String(e))));
   }
   async setServer(on: boolean, lan = false): Promise<CooperationState> {
     this.changing = this.changing.catch(() => undefined).then(async () => {
       updateCooperation({ serverEnabled: on, serverLan: lan }, this.env);
-      await this.stopServer();
-      if (!on) return;
-      const dir = join(dirname(this.host.store.path), "phone-server");
-      mkdirSync(dir, { recursive: true });
-      this.invite = this.host.store.getKv("cooperation.invite")?.value ?? randomBytes(18).toString("base64url");
-      this.host.store.setKv("cooperation.invite", this.invite);
-      try {
-        this.relayStore = new RelayStore(join(dir, "relay.db"));
-        this.server = await startRelayServer({ store: this.relayStore, filesDir: join(dir, "files"), host: lan ? "0.0.0.0" : "127.0.0.1", port: this.serverPort, name: "WorkStudio 手机服务", passphrase: this.invite, minPasswordLength: 12 });
-        this.error = null;
-      } catch (e) { this.relayStore?.close(); this.relayStore = null; this.error = e instanceof Error ? e.message : String(e); }
+      if (on) await this.phone.start(lan); else await this.phone.stop(lan);
     });
-    await this.changing;
-    return this.state();
+    await this.changing; return this.state();
   }
-  private async stopServer(): Promise<void> {
-    await this.server?.close(); this.server = null;
-    this.relayStore?.close(); this.relayStore = null;
-  }
-  async stop(): Promise<void> { if (this.policyWatch) clearInterval(this.policyWatch); this.policyWatch = null; await this.changing; await this.stopServer(); for (const p of this.pending.values()) p.resolve(false); this.pending.clear(); this.fileGrants.clear(); }
+  createPhoneAccount(input: { name: string; password: string; forwardTeamInbox?: boolean }): CooperationState { this.phone.create(input.name, input.password, input.forwardTeamInbox === true); return this.state(); }
+  updatePhoneAccount(name: string, patch: { enabled?: boolean; password?: string; forwardTeamInbox?: boolean }): CooperationState { this.phone.update(name, patch); return this.state(); }
+  deletePhoneAccount(name: string): CooperationState { this.phone.delete(name); return this.state(); }
+  async stop(): Promise<void> { if (this.policyWatch) clearInterval(this.policyWatch); this.policyWatch = null; await this.changing.catch(() => undefined); await this.phone.close(); for (const p of this.pending.values()) p.resolve(false); this.pending.clear(); this.fileGrants.clear(); }
   async confirmTransfer(taskId: string, peer: string, path: string, offset = 0): Promise<void> {
     if (privateClientPath(path)) throw new HostError("read_only", "禁止发送原生客户端的对话和私有数据");
     const key = `${taskId}\n${peer}\n${path}`;
