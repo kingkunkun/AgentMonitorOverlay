@@ -27,7 +27,7 @@ import { askCommands, askModels, CLI_SETTING_SOURCES, withTimeout } from "./prob
 import { ClaudeSubagents } from "./subagents.js";
 import { firstLine } from "./tool-use.js";
 import { requireClaudeCode } from "./executable.js";
-import { handoffKey, hasTranscript, importTranscript, readTranscript, withConfigDir } from "./transcripts.js";
+import { handoffKey, hasTranscript, importTranscript, isWorkStudioTranscript, readTranscript, withConfigDir } from "./transcripts.js";
 import { ClaudeTurns } from "./turns.js";
 import { ClaudeUsageTracker } from "./usage-tracker.js";
 import { ClaudeAccounts } from "./accounts.js";
@@ -357,7 +357,7 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
     const workspace = this.store.getWorkspace(parent.workspaceId);
     if (!workspace || !parent.runtimeRef) throw new Error(`session ${sessionId} cannot be forked`);
     const home = this.homeOf(parent.id);
-    if (!hasTranscript(parent.runtimeRef, home)) throw Object.assign(new Error("这个会话还没有对话内容，不能分支"), { code: "conflict" });
+    if (!hasTranscript(parent.runtimeRef, home, this.store)) throw Object.assign(new Error("这个会话还没有对话内容，不能分支"), { code: "conflict" });
     // The copy stays in the parent's config dir, so the branch runs the way the parent did.
     if (home.login === "local" && !this.isSubscription(profile)) throw Object.assign(new Error("这个会话用本机 Claude Code 的登录，分支只能继续用 Claude 订阅"), { code: "bad_request" });
     const title = `${parent.title || "会话"} · 分支`;
@@ -416,7 +416,7 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
   async rename(sessionId: Id, title: string): Promise<Session> {
     const session = this.requireSession(sessionId);
     const home = this.homeOf(sessionId);
-    if (session.runtimeRef && hasTranscript(session.runtimeRef, home)) {
+    if (session.runtimeRef && hasTranscript(session.runtimeRef, home, this.store)) {
       const dir = this.store.getWorkspace(session.workspaceId)?.path;
       try {
         await withConfigDir(home, () => renameSession(session.runtimeRef!, title, dir ? { dir } : {}));
@@ -513,11 +513,11 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
     const env = { ...shellHelpEnv(this.store), ...claudeEnv(this.profile(session.profileId), this.options.providers, this.options.credentials, home, this.options.baseEnv), ...claudeAutoCompactEnv(this.store, session.profileId) };
     await this.close(sessionId);
     const ref = session.runtimeRef!;
-    const seen = hasTranscript(ref, home) ? (await readTranscript(ref, workspace.path, home)).length : 0;
+    const seen = hasTranscript(ref, home, this.store) ? (await readTranscript(ref, workspace.path, home, this.store)).length : 0;
     this.store.setKv(handoffKey(sessionId), String(seen));
     this.updateSession(sessionId, { writer: "terminal-handoff" });
     // The Claude Code the sessions run on, so the transcript format matches; never the "auto" permission mode.
-    const resume = hasTranscript(ref, home) ? `--resume ${ref}` : `--session-id ${ref}`;
+    const resume = hasTranscript(ref, home, this.store) ? `--resume ${ref}` : `--session-id ${ref}`;
     return { command: `& '${exe.replace(/'/g, "''")}' ${resume} --permission-mode default`, cwd: workspace.path, env };
   }
 
@@ -529,8 +529,8 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
     const seen = Number(this.store.getKv(handoffKey(sessionId))?.value ?? "0") || 0;
     let added = 0;
     const home = this.homeOf(sessionId);
-    if (workspace && session.runtimeRef && hasTranscript(session.runtimeRef, home)) {
-      const messages = await readTranscript(session.runtimeRef, workspace.path, home);
+    if (workspace && session.runtimeRef && hasTranscript(session.runtimeRef, home, this.store)) {
+      const messages = await readTranscript(session.runtimeRef, workspace.path, home, this.store);
       added = importTranscript(this.core, sessionId, this.cwdOf(sessionId), messages.slice(seen));
     }
     this.store.setKv(handoffKey(sessionId), "");
@@ -624,6 +624,7 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
   // ---- the process --------------------------------------------------------------------------------------------------
 
   private ensureLive(session: Session): Live {
+    if (!session.runtimeRef || !isWorkStudioTranscript(session.runtimeRef, this.store)) throw Object.assign(new Error("隐私规则禁止启动或接续原生导入记录"), { code: "read_only" });
     const existing = this.live.get(session.id);
     if (existing) return existing;
     const profile = this.profile(session.profileId);
@@ -697,7 +698,7 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
           ? { settings: { ...(plan.enableJson.length ? { enabledMcpjsonServers: plan.enableJson } : {}), ...(session.options.fast !== undefined ? { fastMode: session.options.fast } : {}) } }
           : {}),
         // A session that already has a transcript continues it; a new one starts under the id Studio chose.
-        ...(hasTranscript(ref, home) ? { resume: ref } : { sessionId: ref }),
+        ...(hasTranscript(ref, home, this.store) ? { resume: ref } : { sessionId: ref }),
         pathToClaudeCodeExecutable: exe,
         spawnClaudeCodeProcess: spawnClaudeProcess((line) => this.emit("log", `${session.id}: ${line}`)),
       },
@@ -988,7 +989,9 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
   }
 
   protected override writable(id: Id): Session {
-    if (this.requireSession(id).kind === "sub") throw Object.assign(new Error("Claude 的子 agent 不能单独接收消息，请在父会话里继续"), { code: "read_only" });
+    const session = this.requireSession(id);
+    if (!session.runtimeRef || !isWorkStudioTranscript(session.runtimeRef, this.store)) throw Object.assign(new Error("隐私规则禁止接续或移交原生导入记录"), { code: "read_only" });
+    if (session.kind === "sub") throw Object.assign(new Error("Claude 的子 agent 不能单独接收消息，请在父会话里继续"), { code: "read_only" });
     return super.writable(id);
   }
 }

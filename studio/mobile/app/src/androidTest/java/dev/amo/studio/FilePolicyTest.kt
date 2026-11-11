@@ -24,12 +24,12 @@ class FilePolicyTest {
         listOf("https://example.com/file", "https://amo.invalid.evil/file", "http://amo.invalid/file", "javascript:alert(1)", "data:text/html,hello", "content://private/file", "mailto:someone@example.com").forEach { target -> assertNull(target, localFileTarget(target, "report.html")) }
     }
 
-    @Test fun isolatedReportsKeepInlineInteractionAndStandardsMode() {
+    @Test fun isolatedReportsBlockScriptsAndKeepStandardsMode() {
         val input = "<!DOCTYPE html><html><head><style>body{color:red}</style></head><body><button onclick=\"this.textContent='完成'\">切换</button><script>window.ready=true</script></body></html>"
         val output = isolatedHtml(input)
         assertTrue(output.startsWith("<!doctype html><meta http-equiv=\"Content-Security-Policy\""))
         assertEquals(1, Regex("(?i)<!doctype").findAll(output).count())
-        assertTrue(output.contains("script-src 'unsafe-inline'"))
+        assertTrue(output.contains("script-src 'none'"))
         listOf("connect-src 'none'", "frame-src 'none'", "worker-src 'none'", "form-action 'none'", "object-src 'none'", "base-uri 'none'").forEach { assertTrue(it, output.contains(it)) }
         assertTrue(output.indexOf("Content-Security-Policy") < output.indexOf("<script>"))
         assertTrue(output.contains("onclick=\"this.textContent='完成'\""))

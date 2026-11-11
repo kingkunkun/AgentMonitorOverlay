@@ -109,14 +109,16 @@ export class PhoneRemote {
   }
   allowedTask(name: string, taskId: string): boolean {
     if (!this.active(name) || !this.host.cooperation.taskAllowed(taskId)) return false;
-    const task = this.host.store.getTask(taskId); if (!task || task.remote) return false;
+    const task = this.host.store.getTask(taskId); if (!task || task.remote || task.archivedAt) return false;
+    const sessions = this.host.store.listSessions({ taskId });
+    if (sessions.length && sessions.every((s) => s.archivedAt || s.writer === "archived")) return false;
     const inbox = this.host.store.getKv("phone.team-inbox:" + taskId);
     return !inbox || this.policies()[name]?.forwardTeamInbox === true;
   }
   markTeamInbox(taskId: string): void { this.host.store.setKv("phone.team-inbox:" + taskId, "1"); this.scheduleSync(); }
   private onEvent = (event: HostEvent): void => {
     // Wait until inbox routing metadata is committed before granting a newly created task.
-    if (event.type === "task.upserted" || event.type === "data.purged" || event.type === "profiles.updated") this.scheduleSync();
+    if (event.type === "task.upserted" || event.type === "session.upserted" || event.type === "data.purged" || event.type === "profiles.updated") this.scheduleSync();
     for (const c of this.connections.values()) c.onHostEvent(event);
   };
   scheduleSync(): void {
@@ -149,7 +151,7 @@ class PhoneConnection {
     this.ctx = {
       host: phone.host, store: phone.scopedStore(self.account), link: () => this.stopped ? null : this.link,
       ownAccount: () => self.account, deviceName: () => self.name, inbox: () => this.inbox,
-      trustedOwnDevice: (p) => p.account === self.account && phone.active(p.account), includeArchived: true,
+      trustedOwnDevice: (p) => p.account === self.account && phone.active(p.account), activeSessionsOnly: true,
       canAccessTask: (p, taskId) => p.account === self.account && phone.allowedTask(self.account, taskId),
       assertEnabled: () => { if (this.stopped || !phone.active(self.account)) throw new HostError("read_only", "手机远程已关闭或账号已停用"); },
       peer: (ref, role) => { const p = this.peers().find((p) => same(p.peer, ref) && (!role || p.role === role)); return p ? { name: p.peer.name, online: p.online } : null; },

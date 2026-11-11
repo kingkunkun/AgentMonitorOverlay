@@ -26,6 +26,7 @@ export interface RemoteContext {
   trustedOwnDevice?(peer: DeviceRef): boolean;
   assertEnabled?(): void;
   includeArchived?: boolean;
+  activeSessionsOnly?: boolean;
   canAccessTask?(peer: DeviceRef, taskId: Id): boolean;
   link(): DeviceLink | null;
   /** This computer's name, for what the other side reads. */
@@ -303,6 +304,7 @@ export class RemoteGrants {
     const s = this.store.getSession(sessionId);
     if (!s?.taskId) throw new HostError("not_found", "这个会话不在授权的任务里");
     this.grantFor(from, s.taskId);
+    if (this.ctx.activeSessionsOnly && (s.archivedAt || s.writer === "archived")) throw new HostError("read_only", "归档聊天不向手机同步");
     if (write) {
       if (s.archivedAt) throw new HostError("read_only", "这个会话已经归档了");
       if (this.store.getTask(s.taskId)?.archivedAt) throw new HostError("read_only", "这个任务已经归档了");
@@ -315,7 +317,7 @@ export class RemoteGrants {
     const task = this.store.getTask(taskId);
     if (!task) throw new HostError("not_found", "任务已经不在了");
     const allowed = this.allowedFor(taskId, from);
-    const sessions = this.store.listSessions({ taskId });
+    const sessions = this.store.listSessions({ taskId }).filter((s) => !this.ctx.activeSessionsOnly || !s.archivedAt && s.writer !== "archived");
     const sessionProjects = Object.fromEntries(sessions.map((s) => [s.id, this.projectName(s.workspaceId)]));
     return { task: this.view(task), sessions, sessionProjects, profiles: this.profilesOf(taskId, allowed), allowed, grantedAt: g.grantedAt };
   }
@@ -555,6 +557,13 @@ ${taskId}`, ask, () => answerView({ host: this.ctx.host, task, root }, ask)));
   // ---- what A tells the devices unasked
 
   private push(g: RemoteGrant, body: RemotePush): void {
+    if (this.ctx.activeSessionsOnly) {
+      if (body.type === "session" && (body.session.archivedAt || body.session.writer === "archived")) body = { type: "session-hidden", taskId: g.taskId, sessionId: body.session.id };
+      else if (body.type === "item" || body.type === "delta") {
+        const s = this.store.getSession(body.type === "item" ? body.item.sessionId : body.sessionId);
+        if (!s || s.archivedAt || s.writer === "archived") return;
+      }
+    }
     if (body.type !== "revoked" && this.ctx.canAccessTask && !this.ctx.canAccessTask(g, g.taskId)) return;
     if (!this.ctx.host.cooperation.taskAllowed(g.taskId)) return;
     if (body.type === "task") { const allowed = this.allowedFor(g.taskId, g); body = { ...body, allowed, profiles: this.profilesOf(g.taskId, allowed) }; }

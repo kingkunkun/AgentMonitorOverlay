@@ -6,6 +6,7 @@ import type { Live } from "./live.js";
 import type { ClaudeTurns } from "./turns.js";
 import { agentToolUseId } from "./wake.js";
 import { subagentLogFile, subagentStatsOf } from "./subagent-log.js";
+import { isWorkStudioTranscript } from "./transcripts.js";
 
 type CallUsage = { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null };
 
@@ -135,7 +136,7 @@ export class ClaudeSubagents {
   fillFromLog(child: Session): boolean {
     const parent = child.parentId ? this.core.store.getSession(child.parentId) : undefined;
     const toolUseId = child.runtimeRef?.split("/agent/")[1];
-    if (!parent?.runtimeRef || !toolUseId) return false;
+    if (!parent?.runtimeRef || !toolUseId || !isWorkStudioTranscript(parent.runtimeRef, this.core.store)) return false;
     const file = subagentLogFile(this.core.homeOf(parent.id).dir, parent.runtimeRef, toolUseId);
     const stats = file ? subagentStatsOf(file) : null;
     if (!stats) return false;
@@ -165,7 +166,7 @@ export class ClaudeSubagents {
     let toolUseId = live.agents.get(agentId);
     if (!toolUseId && sessionId) {
       const ref = this.core.store.getSession(sessionId)?.runtimeRef;
-      toolUseId = ref ? (agentToolUseId(this.core.homeOf(sessionId).dir, ref, agentId) ?? undefined) : undefined;
+      toolUseId = ref && isWorkStudioTranscript(ref, this.core.store) ? (agentToolUseId(this.core.homeOf(sessionId).dir, ref, agentId) ?? undefined) : undefined;
       if (toolUseId) live.agents.set(agentId, toolUseId);
     }
     if (!toolUseId) return undefined;

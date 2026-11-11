@@ -21,7 +21,7 @@ import java.util.concurrent.TimeUnit
 
 // AndroidLatest and AppUpdate (the state 设置 shows) are in the shared code (Platform.kt); this is how Android does it.
 internal class AndroidUpdater(private val app: Context) : Updater {
-    private val client = OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
+    private val client = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).connectTimeout(10, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
     override suspend fun latest(account: Account) = withContext(Dispatchers.IO) { AppUpdates.latest(client, account) }
     override suspend fun download(account: Account, latest: AndroidLatest, progress: (Long) -> Unit): String = runInterruptible(Dispatchers.IO) { AppUpdates.download(client, app, account, latest, progress).path }
     override suspend fun forget() { withContext(Dispatchers.IO) { AppUpdates.dir(app).deleteRecursively() } }

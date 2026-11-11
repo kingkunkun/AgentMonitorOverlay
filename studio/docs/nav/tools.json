@@ -129,7 +129,7 @@
     {
       "id": "tool.mobile",
       "label": "手机版（Android / iOS，KMP）",
-      "aliases": ["Android", "iOS", "手机", "mobile", "APK", "TestFlight", "KMP", "Kotlin"],
+      "aliases": ["Android", "iOS", "手机", "mobile", "APK", "TestFlight", "KMP", "Kotlin", "手机隐私", "隐私审计", "privacy", "归档缓存"],
       "category": "tool",
       "purpose": "手机上的 WorkStudio（KMP），可连接本机独立手机账号服务，使用 rt.* 设备协议查看并接管本机聊天，团队登录不变。Android/iOS 共用界面；Android 可本机编译，IPA 需 Mac 签名。",
       "anchors": [
@@ -137,11 +137,13 @@
         { "label": "iOS 版本号", "path": "studio/mobile/iosApp/Version.xcconfig" },
         { "label": "发 APK", "path": "studio/scripts/android-publish.mjs", "anchor": "export function androidRelease" },
         { "label": "发 iOS", "path": "studio/scripts/ios-release.mjs", "anchor": "export async function releaseIos" },
+        { "label": "手机出站协议与归档过滤", "path": "studio/mobile/shared/src/commonMain/kotlin/dev/amo/studio/PhonePrivacy.kt", "anchor": "internal object PhonePrivacy" },
+        { "label": "聊天缓存清单", "path": "studio/mobile/shared/src/commonMain/kotlin/dev/amo/studio/HistoryCache.kt", "anchor": "internal class HistoryCache" },
         { "label": "测试用的假电脑", "path": "studio/scripts/android-fixture.mjs" },
         { "label": "手机用的命令", "path": "studio/packages/protocol/src/remote.ts", "anchor": "rt.rename" }
       ],
       "related": ["studio.remote", "tool.relayService"],
-      "next": ["studio/plans/ios.md", "studio/plans/done/android-mobile-redesign.md"]
+      "next": ["studio/plans/ios.md", "studio/plans/done/android-mobile-redesign.md", "studio/docs/mobile-privacy-audit.md"]
     }
   ]
 }

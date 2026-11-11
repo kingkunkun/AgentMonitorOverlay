@@ -51,10 +51,12 @@ internal fun chatRows(items: List<JSONObject>): List<ChatRow> {
 }
 private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") && e.json.str("state") == "pending"
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable internal fun ChatScreen(state: StudioState, repo: StudioRepository, back: () -> Unit, newSession: () -> Unit, openTask: () -> Unit) {
     var choices by remember { mutableStateOf<JSONObject?>(null) }
     var optionPanel by remember { mutableStateOf<String?>(null) }
     var modelList by remember { mutableStateOf(false) }
+    var modelQuery by remember { mutableStateOf("") }
     var selectedProfile by remember { mutableStateOf("") }
     var selectedFast by remember { mutableStateOf<Boolean?>(null) }
     var selectedModel by remember { mutableStateOf("") }
@@ -106,15 +108,15 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
     LaunchedEffect(atBottom, newest) { if (atBottom) seen = newest }
     val pinned = remember(rows) { reversed.indexOfFirst { it is ItemRow && pending(it.entry) } }
     val pinnedVisible = pinned >= 0 && list.layoutInfo.visibleItemsInfo.any { it.index == pinned }
-    val status = session?.let { s -> listOfNotNull(if (s.archived) "已归档" else if (running) "正在回复…" else sessionStatusLabel(s.state), state.profiles.find { it.first == s.profileId }?.second, s.project).joinToString(" · ") }
+    val status = when { task?.peer?.online == false -> "电脑离线"; running -> "正在回复…"; session != null && needsYou(session.state) -> sessionStatusLabel(session.state); else -> task?.project }
 
     Column(Modifier.fillMaxSize()) {
-        TopBar(session?.title?.ifBlank { null } ?: "未命名会话", status, back = back) {
+        TopBar(session?.title?.ifBlank { null } ?: "未命名会话", status, back = back, navigationIcon = AmoIcons.Menu, navigationLabel = "聊天列表") {
             Box {
                 IconAction(AmoIcons.More, "更多", "chat-menu") { menu = true }
                 DropdownMenu(menu, { menu = false }) {
-                    DropdownMenuItem(text = { Text("新会话") }, enabled = writable || (state.connected && task?.peer?.online == true && !task.revoked), onClick = { menu = false; newSession() })
-                    DropdownMenuItem(text = { Text("这个任务的全部会话") }, onClick = { menu = false; openTask() })
+                    DropdownMenuItem(text = { Text("新聊天") }, enabled = writable || (state.connected && task?.peer?.online == true && !task.revoked), onClick = { menu = false; newSession() })
+                    DropdownMenuItem(text = { Text("聊天分支") }, onClick = { menu = false; openTask() })
                     DropdownMenuItem(text = { Text("刷新") }, onClick = { menu = false; repo.refresh(force = true) })
                     DropdownMenuItem(text = { Text("执行 iOS 打包") }, enabled = writable, onClick = { menu = false; repo.send("/打包") })
                     DropdownMenuItem(text = { Text("# 提示词与打包任务") }, enabled = writable, onClick = { menu = false; presetMenu = true; repo.chatPresets { presets = it.objects("presets") } })
@@ -162,7 +164,7 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
         if (verify) AlertDialog(onDismissRequest = { verify = false }, title = { Text("处理待确认消息") }, text = { Text("请先在最新对话或电脑上核对这条消息。解除等待后可以继续编辑并发送；若原消息实际已送达，重发会让模型再次执行。") }, confirmButton = { AmoTextButton(onClick = { clearPending(); verify = false }) { Text("已确认未送达，继续编辑") } }, dismissButton = { AmoTextButton(onClick = { verify = false }) { Text("继续等待") } })
         Composer(draft, ::saveDraft, running, writable, canSend = writable && draft.isNotBlank() && submitted.isEmpty(), stop = repo::interrupt,
             leading = {
-                ComposerMenuButton("# 提示词", writable, "chat-presets") { presetMenu = !presetMenu; if (presetMenu) repo.chatPresets { presets = it.objects("presets") } }
+                ComposerMenuButton("#", writable, "chat-presets") { presetMenu = !presetMenu; if (presetMenu) repo.chatPresets { presets = it.objects("presets") } }
                 ComposerMenuButton(if (permissionCaption in listOf("全部允许", "完全允许")) "完全访问" else permissionCaption, writable, "chat-permission", attention = permissionCaption in listOf("全部允许", "完全允许", "完全访问")) { loadOptions("permission") }
             }, trailing = { ComposerMenuButton((if (selectedFast == true && currentModel?.optJSONObject("fast") != null) "ϟ " else "") + modelCaption + if (effortCaption.isBlank()) " ⌄" else " " + mobileEffortLabel(effortCaption) + " ⌄", writable, "chat-model", compact = true) { loadOptions("model") } }) {
             sentAfter = state.items.maxOfOrNull { it.optLong("seq", -1L) } ?: -1L; submitted = draft.trim(); saveDraft(submitted)
@@ -174,32 +176,46 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
         val efforts = currentModel?.optJSONArray("efforts")
         val effortValues = if (efforts == null) emptyList() else (0 until efforts.length()).map { efforts.optString(it) }
         val index = effortValues.indexOf(selectedEffort.ifBlank { currentModel?.str("defaultEffort") ?: "" }).coerceAtLeast(0)
-        AlertDialog(onDismissRequest = { cancelOptions() }, title = { Text(if (panel == "permission") "权限" else "模型与思考强度") }, text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (panel == "permission") {
-                Choice("权限", listOf("" to "默认") + available.objects("permissions").filter { it.str("unavailable").isBlank() }.map { it.str("id") to it.str("label") }, selectedPermission) { selectedPermission = it }
-                Text("任务仍在电脑执行。完全访问不能跳过电脑上的文件外发确认。", style = MaterialTheme.typography.bodySmall)
-            } else {
-                Text(if (effortValues.isEmpty()) "模型" else mobileEffortLabel(effortValues[index]), color = androidx.compose.ui.graphics.Color(0xff4385ff), modifier = Modifier.align(Alignment.CenterHorizontally))
-                Box(Modifier.align(Alignment.CenterHorizontally)) {
-                    AmoTextButton(onClick = { modelList = true }) { Text(modelCaption + " ›") }
-                    DropdownMenu(modelList, { modelList = false }) {
-                        val groups = if (profileRows.isNotEmpty()) profileRows else listOf(JSONObject().put("profileId", session?.profileId ?: "").put("label", "当前渠道").put("choices", available))
-                        groups.forEach { group ->
-                            Text(group.str("label"), style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
-                            group.optJSONObject("choices")?.objects("models")?.forEach { m -> DropdownMenuItem(text = { Text(m.str("label") + if (group.str("profileId") == selectedProfile && m.str("id") == currentModel?.str("id")) " ✓" else "") }, enabled = !running || group.str("profileId") == session?.profileId, onClick = { selectedProfile = group.str("profileId"); selectedModel = m.str("id"); selectedEffort = ""; selectedFast = null; modelList = false }) }
+        ModalBottomSheet(onDismissRequest = { cancelOptions() }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+            Column(Modifier.fillMaxWidth().fillMaxHeight(0.86f).navigationBarsPadding()) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) { Text(if (panel == "permission") "权限" else "模型与思考强度", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f)); IconAction(AmoIcons.Close, "关闭选项") { cancelOptions() } }
+                Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    if (panel == "permission") {
+                        (listOf("" to "默认权限") + available.objects("permissions").filter { it.str("unavailable").isBlank() }.map { it.str("id") to it.str("label") }).forEach { (id, label) ->
+                            Row(Modifier.fillMaxWidth().clickable { selectedPermission = id }.heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) { Text(label, modifier = Modifier.weight(1f)); RadioButton(selectedPermission == id, { selectedPermission = id }) }
+                        }
+                        Text("执行在电脑上。文件外发仍需电脑确认，不会读取手机相册、联系人或剪贴板。", style = MaterialTheme.typography.bodySmall, color = LocalAmoColors.current.dim)
+                    } else {
+                        SecondaryButton(currentModel?.str("label") ?: "选择模型", "select-mobile-model", modifier = Modifier.fillMaxWidth()) { modelList = !modelList; modelQuery = "" }
+                        if (modelList) {
+                            OutlinedTextField(modelQuery, { modelQuery = it }, placeholder = { Text("搜索模型") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("model-search"))
+                            val groups = if (profileRows.isNotEmpty()) profileRows else listOf(JSONObject().put("profileId", session?.profileId ?: "").put("label", "当前渠道").put("choices", available))
+                            groups.forEach { group ->
+                                val models = group.optJSONObject("choices")?.objects("models").orEmpty().filter { modelQuery.isBlank() || it.str("label").contains(modelQuery, true) || group.str("label").contains(modelQuery, true) }
+                                if (models.isNotEmpty()) Text(group.str("label"), style = MaterialTheme.typography.labelMedium, color = LocalAmoColors.current.dim)
+                                models.forEach { model ->
+                                    val enabled = !running || group.str("profileId") == session?.profileId
+                                    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(enabled = enabled) { selectedProfile = group.str("profileId"); selectedModel = model.str("id"); selectedEffort = ""; selectedPermission = ""; selectedFast = false; modelList = false }, verticalAlignment = Alignment.CenterVertically) { Text(model.str("label"), modifier = Modifier.weight(1f)); if (group.str("profileId") == selectedProfile && model.str("id") == selectedModel) Text("✓") }
+                                }
+                            }
+                        } else {
+                            Text("思考强度 · " + mobileEffortLabel(selectedEffort.ifBlank { currentModel?.str("defaultEffort") ?: "默认" }), style = MaterialTheme.typography.titleSmall)
+                            if (effortValues.size > 1) Slider(value = index.toFloat(), onValueChange = { selectedEffort = effortValues[it.toInt().coerceIn(effortValues.indices)] }, valueRange = 0f..(effortValues.size - 1).toFloat(), steps = (effortValues.size - 2).coerceAtLeast(0))
+                            else Text("此模型不提供思考强度选项。", style = MaterialTheme.typography.bodySmall, color = LocalAmoColors.current.dim)
+                            currentModel?.optJSONObject("fast")?.let { fast -> Row(verticalAlignment = Alignment.CenterVertically) { Text("Fast", modifier = Modifier.weight(1f)); Switch(checked = selectedFast == true, onCheckedChange = { selectedFast = it }) }; Text(fast.str("description", "Fast 可能更快消耗额度，独立剩余额度以渠道提供的信息为准。"), style = MaterialTheme.typography.bodySmall, color = LocalAmoColors.current.dim) }
+                            if (selectedProfile != session?.profileId) Text("继续当前 WorkStudio 聊天，原记录保留；不自动转发附件。", style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
-                if (effortValues.size > 1) Slider(value = index.toFloat(), onValueChange = { selectedEffort = effortValues[it.toInt().coerceIn(effortValues.indices)] }, valueRange = 0f..(effortValues.size - 1).toFloat(), steps = (effortValues.size - 2).coerceAtLeast(0), enabled = selectedProfile == session?.profileId)
-                else if (effortValues.isEmpty()) Text("此模型不提供思考强度选项。", style = MaterialTheme.typography.bodySmall)
-                currentModel?.optJSONObject("fast")?.let { fast ->
-                    Row(verticalAlignment = Alignment.CenterVertically) { Text("Fast", modifier = Modifier.weight(1f)); Switch(checked = selectedFast == true, onCheckedChange = { selectedFast = it }, enabled = selectedProfile == session?.profileId) }
-                    if (selectedFast == true) Text("Fast 已开启：" + fast.str("description", "可能更快消耗额度或额外计费") + "。独立 Fast 剩余额度以渠道提供的信息为准。", style = MaterialTheme.typography.bodySmall)
+                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp), horizontalArrangement = Arrangement.End) {
+                    AmoTextButton(onClick = { cancelOptions() }) { Text("取消") }; Spacer(Modifier.width(12.dp))
+                    PrimaryButton("应用", "apply-chat-options", !state.busy) {
+                        if (selectedProfile != session?.profileId) repo.continueModel(selectedProfile, selectedModel, draft, JSONObject().put("model", selectedModel).put("effort", selectedEffort.ifBlank { JSONObject.NULL }).put("permission", selectedPermission.ifBlank { JSONObject.NULL }).put("fast", selectedFast ?: false)) { optionPanel = null }
+                        else repo.setSessionOptions(selectedModel, selectedEffort, selectedPermission, selectedFast) { applied -> choices?.put("options", applied); selectedModel = applied.str("model"); selectedEffort = applied.str("effort"); selectedPermission = applied.str("permission"); selectedFast = if (applied.has("fast")) applied.optBoolean("fast") else null; optionPanel = null }
+                    }
                 }
-                if (selectedProfile != session?.profileId) Text("将在同一任务下接续当前 WorkStudio 聊天文字，原记录保留；不自动传附件。切换成功后可调整思考强度和 Fast。", style = MaterialTheme.typography.bodySmall)
-                AmoTextButton(enabled = selectedProfile == session?.profileId, onClick = { selectedEffort = "" }) { Text("恢复默认强度") }
             }
-        } }, confirmButton = { AmoTextButton(onClick = { if (selectedProfile != session?.profileId) repo.continueModel(selectedProfile, selectedModel, draft) { optionPanel = null } else repo.setSessionOptions(selectedModel, selectedEffort, selectedPermission, selectedFast) { applied -> choices?.put("options", applied); selectedModel = applied.str("model"); selectedEffort = applied.str("effort"); selectedPermission = applied.str("permission"); selectedFast = if (applied.has("fast")) applied.optBoolean("fast") else null; optionPanel = null } }) { Text("应用") } }, dismissButton = { AmoTextButton(onClick = { cancelOptions() }) { Text("取消") } })
+        }
     } }
     people?.let { members ->
         AlertDialog(onDismissRequest = { people = null }, title = { Text("@ 团队成员") }, text = {
@@ -225,7 +241,7 @@ private fun mobileEffortLabel(value: String) = when (value) { "none" -> "不思�
     Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).padding(horizontal = 10.dp, vertical = 8.dp)) {
         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(c.input).border(1.dp, c.line, RoundedCornerShape(24.dp)).padding(horizontal = 8.dp)) {
             Box(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 14.dp, bottom = 10.dp)) {
-                BasicTextField(draft, change, minLines = 2, maxLines = 6, textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface), cursorBrush = SolidColor(MaterialTheme.colorScheme.primary), modifier = Modifier.fillMaxWidth().testTag("chat-input"), decorationBox = { inner -> if (draft.isEmpty()) Text(if (writable) "和 WorkStudio 一起工作" else "现在发不了消息", color = c.dim, style = MaterialTheme.typography.bodyLarge); inner() })
+                BasicTextField(draft, change, minLines = 1, maxLines = 6, textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface), cursorBrush = SolidColor(MaterialTheme.colorScheme.primary), modifier = Modifier.fillMaxWidth().testTag("chat-input"), decorationBox = { inner -> if (draft.isEmpty()) Text(if (writable) "和 WorkStudio 一起工作" else "现在发不了消息", color = c.dim, style = MaterialTheme.typography.bodyLarge); inner() })
             }
             Row(Modifier.fillMaxWidth().padding(bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 leading(); Spacer(Modifier.weight(1f)); trailing()

@@ -16,7 +16,7 @@ import platform.darwin.NSObject
 import kotlin.io.encoding.Base64
 
 // The same rules as Android's WebView (FileViews.android.kt), in WKWebView (2026-11-02, plans/ios.md 第 2d 步): no
-// stored data (a non-persistent store), no new windows; isolatedHtml's CSP stops every load but inline script,
+// stored data (a non-persistent store), no new windows; scripts are disabled, CSP stops every load but inline
 // style and data: images; every navigation but the page itself and its #fragments is cancelled, and a local link
 // goes back through localFileTarget to the Host. Unverified: WKWebView has no blockNetworkLoads, the CSP is the guard.
 @OptIn(ExperimentalForeignApi::class)
@@ -31,6 +31,7 @@ import kotlin.io.encoding.Base64
             val config = WKWebViewConfiguration().apply {
                 websiteDataStore = WKWebsiteDataStore.nonPersistentDataStore()
                 preferences.javaScriptCanOpenWindowsAutomatically = false
+                defaultWebpagePreferences.allowsContentJavaScript = false
             }
             WKWebView(frame = CGRectMake(0.0, 0.0, 0.0, 0.0), configuration = config).apply { navigationDelegate = navigation }
         },

@@ -19,14 +19,19 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
-// Pages (2026-10-31 redesign): 工作台 (what waits for you, then tasks by activity) → a task's sessions as a tree → the
-// conversation; 设置 holds the computers and pairing. Opening the app goes back to the last conversation (设置 can turn
-// that off); new tasks and sessions start from the 「+」 at the bottom right, in a sheet.
+// Chat-first navigation: a task opens its latest live main chat directly. The drawer holds projects/search/settings;
+// the branch browser is an explicit chat-menu action, not an intermediate step required for every chat.
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StudioUi(state: StudioState, repo: StudioRepository) {
     val stack = rememberSaveable(saver = listSaver(save = { it.toList() }, restore = { it.toMutableStateList() })) { mutableStateListOf("home") }
+    val drawer = rememberDrawerState(DrawerValue.Closed)
+    val drawerScope = rememberCoroutineScope()
+    fun closeDrawer() { drawerScope.launch { drawer.close() } }
+    fun openDrawer() { drawerScope.launch { drawer.open() } }
     var sheet by rememberSaveable { mutableStateOf("") }
     var handledSession by rememberSaveable { mutableStateOf(state.selectedSession?.id) }
     var resumed by rememberSaveable { mutableStateOf(false) }
@@ -58,13 +63,15 @@ fun StudioUi(state: StudioState, repo: StudioRepository) {
     val page = stack.lastOrNull() ?: "home"
     fun back() {
         when {
+            drawer.isOpen -> closeDrawer()
             state.file != null || state.fileLoading != null -> repo.closeFile()
             sheet.isNotEmpty() -> sheet = ""
             stack.size > 1 -> { val left = stack.removeAt(stack.lastIndex); if (left == "task") repo.leaveTask() }
         }
     }
     @OptIn(ExperimentalComposeUiApi::class)
-    BackHandler(state.file != null || state.fileLoading != null || sheet.isNotEmpty() || stack.size > 1) { back() }
+    BackHandler(drawer.isOpen || state.file != null || state.fileLoading != null || sheet.isNotEmpty() || stack.size > 1) { back() }
+    ModalNavigationDrawer(drawerState = drawer, gesturesEnabled = state.account != null, drawerContent = { if (state.account != null) ChatDrawer(state, repo, select = { task -> closeDrawer(); repo.selectTask(task); latestChat(task)?.let { repo.selectSession(it) } ?: reset("home", "task") }, home = { closeDrawer(); repo.leaveTask(); reset("home") }, create = { closeDrawer(); sheet = "task" }, settings = { closeDrawer(); go("settings") }) }) {
     Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
         Box(Modifier.fillMaxSize().safeDrawingPadding()) {
             Column(Modifier.fillMaxSize()) {
@@ -72,18 +79,19 @@ fun StudioUi(state: StudioState, repo: StudioRepository) {
                     state.account == null -> Login(state, repo)
                     state.file != null -> { TopBar(state.file.name, state.file.path.takeIf { it != state.file.name }, back = repo::closeFile); Box(Modifier.weight(1f)) { FileViewer(state.file) { repo.openFile(it) } } }
                     page == "settings" -> Settings(state, repo) { back() }
-                    page == "chat" && state.selectedSession != null -> ChatScreen(state, repo, back = { back() }, newSession = { sheet = "session" }, openTask = { back() })
+                    page == "chat" && state.selectedSession != null -> ChatScreen(state, repo, back = { openDrawer() }, newSession = { sheet = "session" }, openTask = { back() })
                     (page == "task" || page == "chat") && state.selectedTask != null -> TaskPage(state, repo, back = { stack.clear(); stack.add("home"); repo.leaveTask() }) { sheet = "session" }
-                    else -> Home(state, repo, settings = { go("settings") }, create = { sheet = "task" }, open = { task, session -> repo.selectTask(task); if (session != null) repo.selectSession(session) else go("task") })
+                    else -> Home(state, repo, drawer = { openDrawer() }, create = { sheet = "task" }, open = { task, session -> repo.selectTask(task); (session ?: latestChat(task))?.let { repo.selectSession(it) } ?: go("task") })
                 }
             }
             if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp).align(Alignment.TopCenter))
             Column(Modifier.align(Alignment.BottomCenter).padding(bottom = if (page == "chat") 76.dp else 84.dp)) {
-                if (state.account != null && !state.connected) Notice(if (state.connecting) "正在连接团队服务器…" else "连接断了 · 草稿留在手机上", if (state.connecting) Tone.Quiet else Tone.Attention, if (state.connecting) null else "重连", repo::retry, tag = "connection")
+                if (state.account != null && !state.connected) Notice(if (state.connecting) "正在连接你的电脑…" else "连接断了 · 草稿留在手机上", if (state.connecting) Tone.Quiet else Tone.Attention, if (state.connecting) null else "重连", repo::retry, tag = "connection")
                 state.fileLoading?.let { path -> Notice("正在读取 ${path.replace('\\', '/').substringAfterLast('/')}", Tone.Quiet, "取消", repo::closeFile, tag = "file-loading") }
                 state.message?.let { Notice(it, Tone.Attention, onClose = repo::clearMessage, tag = "message") }
             }
         }
+    }
     }
     if (sheet.isNotEmpty() && state.account != null) CreateSheet(state, repo, sheet == "task") { sheet = "" }
     LaunchedEffect(state.message) { if (state.message == "已提交，等待电脑确认") sheet = "" }
@@ -102,78 +110,39 @@ private fun taskTone(t: RemoteTask): Tone {
     }
 }
 
-@Composable private fun Home(state: StudioState, repo: StudioRepository, settings: () -> Unit, create: () -> Unit, open: (RemoteTask, RemoteSession?) -> Unit) {
+@Composable private fun Home(state: StudioState, repo: StudioRepository, drawer: () -> Unit, create: () -> Unit, open: (RemoteTask, RemoteSession?) -> Unit) {
     val computers = state.peers.filter { it.role == "guest" }
-    var filter by rememberSaveable { mutableStateOf("") }
+    var query by rememberSaveable { mutableStateOf("") }
     var menuTask by remember { mutableStateOf<String?>(null) }
     var rename by remember { mutableStateOf<RemoteTask?>(null) }
     var renameText by remember { mutableStateOf("") }
     var archiving by remember { mutableStateOf<RemoteTask?>(null) }
-    val shown = state.tasks.filter { filter.isEmpty() || it.peer.identity == filter }.sortedWith(compareByDescending<RemoteTask> { it.key in state.pinnedTasks }.thenByDescending { it.activeAt })
-    val waiting = shown.filterNot { it.revoked }.flatMap { t -> t.sessions.filter { !it.archived && needsYou(it.state) }.map { t to it } }.sortedByDescending { it.second.updatedAt }
-    val subtitle = when {
-        state.connecting -> "正在连接…"
-        !state.connected -> "未连接"
-        computers.isEmpty() -> "还没有配对电脑"
-        else -> computers.count { it.online }.let { n -> if (computers.size == 1) "${computers[0].name} · ${if (n > 0) "在线" else "离线"}" else "$n / ${computers.size} 台电脑在线" }
-    }
+    val shown = state.tasks.filterNot { it.revoked }.filter { query.isBlank() || it.title.contains(query, true) || it.project.orEmpty().contains(query, true) }.sortedWith(compareByDescending<RemoteTask> { it.key in state.pinnedTasks }.thenByDescending { it.activeAt })
+    val subtitle = when { state.connecting -> "正在连接…"; !state.connected -> "离线 · 草稿已保留"; computers.isEmpty() -> "连接你的电脑"; else -> state.selectedPeer?.name ?: "已连接" }
     Column(Modifier.fillMaxSize()) {
-        TopBar("工作台", subtitle) { IconAction(AmoIcons.Refresh, "刷新", "refresh", enabled = state.connected) { repo.refresh(force = true) }; IconAction(AmoIcons.Settings, "设置", "settings", onClick = settings) }
-        Box(Modifier.weight(1f)) {
-            LazyColumn(Modifier.fillMaxSize().testTag("tasks"), contentPadding = PaddingValues(bottom = 96.dp)) {
-                state.update.latest?.let { latest -> item("update") { ListRow("有新版本 ${latest.version}", "点这里去下载安装", Tone.Attention, tag = "update-banner", onClick = settings) } }
-                if (computers.isEmpty()) item("pair") { Column { SectionHeader("配对电脑"); Text("在电脑上确认配对后，这里会列出它授权给手机的任务。", color = LocalAmoColors.current.dim, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp)); PairingList(state, repo) } }
-                if (computers.size > 1) item("computers") {
-                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Chip("全部", filter.isEmpty(), null) { filter = "" }
-                        computers.forEach { p -> Chip(p.name, filter == p.identity, if (p.online) Tone.Running else Tone.Quiet) { filter = p.identity; repo.selectPeer(p) } }
-                    }
-                }
-                if (waiting.isNotEmpty()) {
-                    item("waiting-head") { SectionHeader("等你处理 · ${waiting.size}") }
-                    items(waiting, key = { "w-" + it.first.key + "/" + it.second.id }) { (t, s) -> ListRow(s.title.ifBlank { "未命名会话" }, "${sessionStatusLabel(s.state)} · ${t.title}", Tone.Attention, shortTime(s.updatedAt), tag = "attention-row", highlight = true) { open(t, s) } }
-                }
-                for ((projectName, chats) in shown.groupBy { it.project ?: "未指定项目" }) {
-                item("project-$projectName") { SectionHeader(projectName) }
-                items(chats, key = { it.key }) { t ->
-                    val live = t.sessions.filterNot { it.archived }
-                    val parts = buildList {
-                        when { t.revoked -> add("授权已撤回"); !t.peer.online -> add("电脑离线") }
-                        live.count { it.state == "running" }.takeIf { it > 0 }?.let { add("$it 个在跑") }
-                        live.count { needsYou(it.state) }.takeIf { it > 0 }?.let { add("$it 个等你") }
-                        if (none()) add(if (live.isEmpty()) "还没有会话" else "${live.size} 个会话")
-                        if (computers.size > 1 && filter.isEmpty()) add(t.peer.name)
-                        t.project?.let { add(it) }
-                        if (t.description.isNotBlank()) add(t.description.lineSequence().first())
-                    }
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.weight(1f)) { ListRow((if (t.key in state.pinnedTasks) "⌖ " else "") + t.title.ifBlank { "新聊天" }, parts.joinToString(" · "), taskTone(t), shortTime(t.activeAt), tag = "task-row") { open(t, null) } }
-                        Box {
-                            IconAction(AmoIcons.More, "聊天操作", "task-menu") { menuTask = t.key }
-                            DropdownMenu(menuTask == t.key, { menuTask = null }) {
-                                DropdownMenuItem(text = { Text(if (t.key in state.pinnedTasks) "取消置顶聊天" else "置顶聊天") }, onClick = { repo.pinTask(t); menuTask = null })
-                                DropdownMenuItem(text = { Text("重命名聊天") }, enabled = state.connected && t.peer.online && !t.revoked, onClick = { rename = t; renameText = t.title; menuTask = null })
-                                DropdownMenuItem(text = { Text("归档聊天") }, enabled = state.connected && t.peer.online && !t.revoked && t.peer.account == state.account?.name, onClick = { archiving = t; menuTask = null })
-                            }
+        TopBar("WorkStudio", subtitle, back = drawer, navigationIcon = AmoIcons.Menu, navigationLabel = "聊天列表") { IconAction(AmoIcons.Edit, "新聊天", "task-create", enabled = state.connected && state.selectedPeer?.online == true, onClick = create) }
+        OutlinedTextField(query, { query = it }, placeholder = { Text("搜索聊天") }, leadingIcon = { Icon(AmoIcons.Search, null, modifier = Modifier.size(18.dp)) }, singleLine = true, shape = MaterialTheme.shapes.large, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp).testTag("chat-search"))
+        LazyColumn(Modifier.weight(1f).testTag("tasks"), contentPadding = PaddingValues(bottom = 24.dp)) {
+            if (computers.isEmpty()) item("pair") { SectionHeader("连接电脑"); Text("使用电脑手机远程里创建的账号登录，并选择你的电脑。", style = MaterialTheme.typography.bodySmall, color = LocalAmoColors.current.dim, modifier = Modifier.padding(horizontal = 16.dp)); PairingList(state, repo) }
+            item("recent") { SectionHeader(if (query.isBlank()) "最近聊天" else "搜索结果") { IconAction(AmoIcons.Refresh, "刷新", "refresh", enabled = state.connected) { repo.refresh(force = true) } } }
+            items(shown, key = { it.key }) { task ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f)) { ListRow((if (task.key in state.pinnedTasks) "⌖ " else "") + task.title.ifBlank { "新聊天" }, listOfNotNull(task.project, if (task.sessions.any { needsYou(it.state) }) "等待审批" else null, if (!task.peer.online) "电脑离线" else null).joinToString(" · "), taskTone(task).takeIf { it != Tone.Quiet }, shortTime(task.activeAt), "task-row") { open(task, null) } }
+                    Box {
+                        IconAction(AmoIcons.More, "聊天操作", "task-menu") { menuTask = task.key }
+                        DropdownMenu(menuTask == task.key, { menuTask = null }) {
+                            DropdownMenuItem(text = { Text(if (task.key in state.pinnedTasks) "取消置顶聊天" else "置顶聊天") }, onClick = { repo.pinTask(task); menuTask = null })
+                            DropdownMenuItem(text = { Text("重命名聊天") }, enabled = state.connected && task.peer.online, onClick = { rename = task; renameText = task.title; menuTask = null })
+                            DropdownMenuItem(text = { Text("归档聊天") }, enabled = state.connected && task.peer.online && task.peer.account == state.account?.name, onClick = { archiving = task; menuTask = null })
                         }
                     }
                 }
-                }
-                if (shown.isEmpty() && computers.isNotEmpty()) item("empty") { Empty(if (state.connected) "还没有授权给手机的任务。可以点右下角的「+」在电脑上新建一个，或者在电脑的任务页把任务授权给这台手机。" else "连上之后会列出授权给手机的任务。") }
             }
-            Box(Modifier.align(Alignment.BottomEnd).padding(20.dp)) { Fab("新聊天", "task-create", state.connected && state.selectedPeer?.online == true && state.selectedPeer.role == "guest", create) }
+            if (shown.isEmpty()) item("empty") { Empty(if (query.isBlank()) "今天想做什么？点右上角新建聊天，执行会在你的电脑上完成。" else "没有找到聊天") }
         }
     }
-    rename?.let { task ->
-        AlertDialog(onDismissRequest = { rename = null }, title = { Text("重命名聊天") }, text = { OutlinedTextField(renameText, { renameText = it }, label = { Text("聊天名称") }, singleLine = true) },
-            confirmButton = { AmoTextButton(enabled = renameText.isNotBlank(), onClick = { repo.renameTask(task, renameText); rename = null }) { Text("保存") } },
-            dismissButton = { AmoTextButton(onClick = { rename = null }) { Text("取消") } })
-    }
-    archiving?.let { task ->
-        AlertDialog(onDismissRequest = { archiving = null }, title = { Text("归档聊天？") }, text = { Text("聊天记录保留，可在电脑设置中恢复。正在执行的会话会停止。") },
-            confirmButton = { AmoTextButton(onClick = { repo.archiveTask(task); archiving = null }) { Text("归档聊天") } },
-            dismissButton = { AmoTextButton(onClick = { archiving = null }) { Text("取消") } })
-    }
+    rename?.let { task -> AlertDialog(onDismissRequest = { rename = null }, title = { Text("重命名聊天") }, text = { OutlinedTextField(renameText, { renameText = it }, label = { Text("聊天名称") }, singleLine = true) }, confirmButton = { AmoTextButton(enabled = renameText.isNotBlank(), onClick = { repo.renameTask(task, renameText); rename = null }) { Text("保存") } }, dismissButton = { AmoTextButton(onClick = { rename = null }) { Text("取消") } }) }
+    archiving?.let { task -> AlertDialog(onDismissRequest = { archiving = null }, title = { Text("归档聊天？") }, text = { Text("聊天在电脑保留，手机上的聊天副本会移除。正在执行的会话会停止。") }, confirmButton = { AmoTextButton(onClick = { repo.archiveTask(task); archiving = null }) { Text("归档聊天") } }, dismissButton = { AmoTextButton(onClick = { archiving = null }) { Text("取消") } }) }
 }
 
 @Composable private fun Chip(label: String, selected: Boolean, tone: Tone?, onClick: () -> Unit) {
@@ -200,10 +169,8 @@ private fun taskTone(t: RemoteTask): Tone {
     val task = state.selectedTask ?: return
     val c = LocalAmoColors.current
     val open = rememberSaveable(task.key, saver = listSaver(save = { it.toList() }, restore = { it.toMutableStateList() })) { mutableStateListOf<String>() }
-    var archivedOpen by rememberSaveable(task.key) { mutableStateOf(false) }
     var descriptionOpen by rememberSaveable(task.key) { mutableStateOf(false) }
     val live = state.sessions.filterNot { it.archived }
-    val archived = state.sessions.filter { it.archived }.sortedByDescending { it.updatedAt }
     val ids = live.map { it.id }.toSet()
     val children = live.filter { it.parentId != null && it.parentId in ids }.groupBy { it.parentId!! }
     val roots = live.filter { it.parentId == null || it.parentId !in ids }.sortedByDescending { it.updatedAt }
@@ -237,15 +204,7 @@ private fun taskTone(t: RemoteTask): Tone {
                 }
                 roots.forEach { branch(it, 0) }
                 if (live.isEmpty()) item("empty") { Empty("这个任务还没有会话。点右下角的「+」开一个。") }
-                if (archived.isNotEmpty()) {
-                    item("archived-head") {
-                        Row(Modifier.fillMaxWidth().clickable { archivedOpen = !archivedOpen }.heightIn(min = 44.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(if (archivedOpen) AmoIcons.ChevronDown else AmoIcons.ChevronRight, contentDescription = null, tint = c.dim, modifier = Modifier.size(16.dp))
-                            Text("已归档 ${archived.size} 个", style = MaterialTheme.typography.labelMedium, color = c.dim, modifier = Modifier.padding(start = 6.dp))
-                        }
-                    }
-                    if (archivedOpen) items(archived, key = { "a-" + it.id }) { s -> ListRow(s.title.ifBlank { "未命名会话" }, listOfNotNull("已归档", model(s)).joinToString(" · "), Tone.Quiet, shortTime(s.updatedAt), tag = "session-row") { repo.selectSession(s) } }
-                }
+
             }
             Box(Modifier.align(Alignment.BottomEnd).padding(20.dp)) { Fab("新建会话", "session-create", state.connected && !state.busy && task.peer.online && !task.revoked, create) }
         }
@@ -314,6 +273,9 @@ private fun taskTone(t: RemoteTask): Tone {
                 if (repo.updatesSupported) UpdateSection(state.update, repo)
                 else Text("当前版本 ${repo.versionName}", color = c.dim, style = MaterialTheme.typography.bodySmall)
             }
+            SectionHeader("隐私与本机数据")
+            Text("不读取或上传手机相册、通讯录、位置、短信、其他应用数据或剪贴板。只向你登录的服务器发送手动提交的聊天、配对信息和任务操作；手机文件上传已禁用。", modifier = Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall, color = c.dim)
+            Text("已归档聊天不下载、不保留手机缓存。账号令牌由系统密钥加密保存在此设备；覆盖安装保留登录，卸载、清除应用数据或主动退出会删除本机登录。服务器改密或撤销账号后需重新登录。", modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp), style = MaterialTheme.typography.bodySmall, color = c.dim)
             SectionHeader("账号")
             Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(account.name, style = MaterialTheme.typography.titleSmall)
@@ -356,6 +318,7 @@ private fun taskTone(t: RemoteTask): Tone {
     Column(Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 32.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("WorkStudio", style = MaterialTheme.typography.headlineMedium)
         Text("登录电脑“手机远程”里创建的独立账号，即可查看聊天、发送任务、选择模型和审批。", color = LocalAmoColors.current.dim, style = MaterialTheme.typography.bodySmall)
+        Text("登录保存在此设备并加密，覆盖安装无需重新输入；不要卸载或清除应用数据。", color = LocalAmoColors.current.dim, style = MaterialTheme.typography.bodySmall)
         Spacer(Modifier.height(4.dp))
         Field(server, { server = it }, "服务器地址", "login-server", hint = "比如 192.168.1.20:47950")
         Field(name, { name = it }, "账号", "login-name")

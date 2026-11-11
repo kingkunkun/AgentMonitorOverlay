@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
 import type { Id } from "@amo-studio/protocol";
 import type { RuntimeCore } from "../runtime.js";
+import type { Store } from "../../store/store.js";
 import { tail } from "../items.js";
 import type { ClaudeHome } from "./claude-env.js";
 import { describeToolUse, toolResultText } from "./tool-use.js";
@@ -23,11 +24,23 @@ export async function withConfigDir<T>(home: ClaudeHome, fn: () => Promise<T>): 
   }
 }
 
-export function readTranscript(ref: string, dir: string, home: ClaudeHome) {
+export function isWorkStudioTranscript(ref: string, store: Store): boolean {
+  const session = store.listSessions().find((s) => s.runtime === "claude" && s.runtimeRef === ref);
+  if (!session) return false;
+  const imported = new Set((store.db.prepare("SELECT value FROM kv WHERE key LIKE 'claude-adopted:%'").all() as Array<{ value: string }>).map((r) => r.value));
+  if (session.taskId && store.listSessions({ taskId: session.taskId }).some((s) => imported.has(s.id))) return false;
+  const seen = new Set<string>(); let current = session;
+  while (current && !seen.has(current.id)) { if (imported.has(current.id)) return false; seen.add(current.id); const parent = current.parentId ? store.getSession(current.parentId) : undefined; if (!parent) break; current = parent; }
+  return true;
+}
+
+export function readTranscript(ref: string, dir: string, home: ClaudeHome, store: Store) {
+  if (!isWorkStudioTranscript(ref, store)) throw new Error("隐私规则禁止读取不属于 WorkStudio 自建聊天的原生记录");
   return withConfigDir(home, () => getSessionMessages(ref, { dir }));
 }
 
-export function hasTranscript(ref: string, home: ClaudeHome): boolean {
+export function hasTranscript(ref: string, home: ClaudeHome, store: Store): boolean {
+  if (!isWorkStudioTranscript(ref, store)) return false;
   const projects = join(home.dir, "projects");
   if (!existsSync(projects)) return false;
   return readdirSync(projects).some((dir) => existsSync(join(projects, dir, `${ref}.jsonl`)));

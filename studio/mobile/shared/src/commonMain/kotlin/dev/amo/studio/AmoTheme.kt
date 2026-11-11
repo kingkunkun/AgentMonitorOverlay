@@ -28,7 +28,7 @@ data class AmoColors(
     val added: Color = Color(0xffe3efe2), val addedText: Color = Color(0xff2f6b3f), val removed: Color = Color(0xfff6e0dc),
 )
 private val lightAmo = AmoColors(Color(0xffebe3d1), Color(0xfffbfaf7), Color(0xff5d5850))
-private val codexAmo = AmoColors(Color(0xffeeebef), Color(0xfffffefd), Color(0xff716c68), line = Color(0xffe5e1dd), code = Color(0xfff4f2ef), selected = Color(0xffeae6ec))
+private val codexAmo = AmoColors(Color(0xfff2f2f2), Color(0xffffffff), Color(0xff716c68), line = Color(0xffe5e1dd), code = Color(0xfff4f2ef), selected = Color(0xffeae6ec))
 private val darkAmo = AmoColors(
     Color(0xff2c2c2e), Color(0xff232324), Color(0xffa0a8b2), line = Color(0xff2b3036),
     attention = Color(0xfff2b544), attentionBg = Color(0xff2a2416), attentionLine = Color(0xff5a4a24),
@@ -52,7 +52,7 @@ fun AmoTheme(preference: String, content: @Composable () -> Unit) {
     val dark = preference == "dark" || (preference == "system" && isSystemInDarkTheme())
     val codex = preference == "codex"
     val scheme = if (dark) darkColorScheme(primary = Color(0xff7fb2ff), onPrimary = Color(0xff0b1626), background = Color(0xff111316), surface = Color(0xff181b1f), onBackground = Color(0xffe6e8eb), onSurface = Color(0xffe6e8eb), outline = Color(0xff2b3036), error = Color(0xffff8a8a))
-    else if (codex) lightColorScheme(primary = Color(0xff363230), onPrimary = Color.White, background = Color(0xfffaf9f7), surface = Color(0xfffffefd), onBackground = Color(0xff292725), onSurface = Color(0xff292725), outline = Color(0xffe5e1dd), error = Color(0xffa3302b))
+    else if (codex) lightColorScheme(primary = Color(0xff363230), onPrimary = Color.White, background = Color(0xffffffff), surface = Color(0xffffffff), onBackground = Color(0xff292725), onSurface = Color(0xff292725), outline = Color(0xffe5e1dd), error = Color(0xffa3302b))
     else lightColorScheme(primary = Color(0xff23436f), onPrimary = Color(0xfffbfaf7), background = Color(0xffefede8), surface = Color(0xfffbfaf7), onBackground = Color(0xff22201c), onSurface = Color(0xff22201c), outline = Color(0xffd9d3c7), error = Color(0xffa3302b))
     val colors = scheme.copy(
         secondary = scheme.primary, onSecondary = scheme.onPrimary,

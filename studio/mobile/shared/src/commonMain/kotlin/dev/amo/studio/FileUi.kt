@@ -13,8 +13,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
-// Web content gets no network, file access, credentials or native bridge. Local scripts
-// may drive the report's controls. CSP also prevents fetch, frames, forms and workers.
+// Web content gets no scripts, network, file access, credentials or native bridge.
+// Static report styles remain; CSP also prevents fetch, frames, forms and workers.
 // Local links
 // return to rt.file so the owning Host applies its task authorization checks again.
 @Composable internal fun FileViewer(file: ViewedFile, open: (String) -> Unit) {
@@ -43,7 +43,7 @@ internal expect fun decodeImage(bytes: ByteArray): ImageBitmap?
 
 // Public, not internal (2026-11-02): the app module's FilePolicyTest checks it from another module now.
 fun isolatedHtml(source: String): String {
-    val policy = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'\">"
+    val policy = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'\">"
     // The guard must precede all source nodes, including malformed pre-head scripts.
     // Keep a standards-mode doctype before it so existing report CSS stays faithful.
     return "<!doctype html>" + policy + source.replaceFirst(Regex("(?is)^\\s*<!doctype[^>]*>"), "")

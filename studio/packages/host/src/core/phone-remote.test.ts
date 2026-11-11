@@ -158,3 +158,25 @@ it("a busy phone port cannot prevent the desktop from starting or shutting down 
   expect(cooperation.state().account?.name).toBe("same-name");
   await expect(blocked.stop()).resolves.toBeUndefined();
 });
+
+it("archived chats are absent from lists/snapshots, direct reads and subsequent content pushes", async () => {
+  const { cooperation, host, store, task, session } = await setup();
+  const old = await host.tasks.createTask({ title: "归档私密任务", firstSession: { profileId: "p" } });
+  store.updateTask(old.task.id, { archivedAt: new Date().toISOString() });
+  const archived = store.createSession({ ...session, id: "archived-session", title: "归档私密分支", runtimeRef: null });
+  store.archiveSubtree(archived.id);
+  cooperation.createPhoneAccount({ name: "owner", password: "phone-password-123" }); await cooperation.setServer(true);
+  const client = await phone(cooperation, "owner");
+  expect((await client.ask("rt.list")).tasks.map((t: { taskId: string }) => t.taskId)).toEqual([task.id]);
+  expect((await client.ask("rt.task", { taskId: task.id })).sessions.map((s: { id: string }) => s.id)).toEqual([session.id]);
+  await expect(client.ask("rt.items", { sessionId: archived.id })).rejects.toThrow();
+  await expect(client.ask("rt.task", { taskId: old.task.id })).rejects.toThrow();
+  const frames: unknown[] = []; client.link.on("event", (e) => { if (e.type === "relay") frames.push(e.body); });
+  const row = store.archiveSubtree(session.id)[0]!;
+  host.emit("event", { seq: 98, type: "session.upserted", session: row });
+  host.emit("event", { seq: 99, type: "item.appended", item: { id: "secret", sessionId: session.id, type: "agent", markdown: "never-push-this-content", streaming: false, createdAt: new Date().toISOString(), seq: 99 } });
+  await until(async () => (await client.ask("rt.list")).tasks, (tasks) => tasks.length === 0);
+  await expect(client.ask("rt.items", { sessionId: session.id })).rejects.toThrow();
+  expect(JSON.stringify(frames)).not.toContain("never-push-this-content");
+  expect(store.getSession(archived.id)).toBeDefined(); expect(store.getTask(old.task.id)).toBeDefined();
+});

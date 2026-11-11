@@ -15,17 +15,28 @@ internal class HistoryCache(private val fs: FileSystem, root: Path, account: Acc
 
     private fun sessionFile(key: String) = sessions / "${sha(key)}.json"
 
-    fun loadTasks(): JSONObject? = runCatching { (dir / "tasks.json").takeIf { fs.exists(it) }?.let { JSONObject(fs.read(it) { readUtf8() }) } }.getOrNull()
+    fun loadTasks(): JSONObject? = runCatching { (dir / "tasks.json").takeIf { fs.exists(it) }?.let { val previous = JSONObject(fs.read(it) { readUtf8() }); val clean = if (previous.optInt("version") < 3) JSONObject().put("version", 3).put("revision", previous.optLong("revision")).put("tasks", JSONArray()).put("snapshots", JSONObject()) else activePhoneCache(previous); saveTasks(clean); clean } }.getOrNull()
 
-    fun saveTasks(root: JSONObject) = write(dir / "tasks.json", root.toString())
+    fun saveTasks(root: JSONObject) {
+        val file = dir / "tasks.json"
+        val previous = runCatching { if (fs.exists(file)) JSONObject(fs.read(file) { readUtf8() }) else null }.getOrNull()
+        if ((previous?.optLong("revision") ?: 0L) > root.optLong("revision")) return
+        val clean = activePhoneCache(root); write(file, clean.toString())
+        val keep = activeSessionKeys(clean).map(::sha).toSet()
+        fs.list(sessions).filter { it.name.endsWith(".json") && it.name.removeSuffix(".json") !in keep }.forEach { fs.delete(it, mustExist = false) }
+    }
+
+    private fun allowed(key: String): Boolean = runCatching { val file = dir / "tasks.json"; fs.exists(file) && key in activeSessionKeys(activePhoneCache(JSONObject(fs.read(file) { readUtf8() }))) }.getOrDefault(false)
 
     /** A session's items as saved, oldest first; empty when none. */
     fun loadSession(key: String): List<JSONObject> = runCatching {
+        if (!allowed(key)) return@runCatching emptyList()
         val file = sessionFile(key)
         if (!fs.exists(file)) emptyList() else JSONArray(fs.read(file) { readUtf8() }).let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) } }
     }.getOrDefault(emptyList())
 
     fun saveSession(key: String, items: List<JSONObject>) {
+        if (!allowed(key)) { fs.delete(sessionFile(key), mustExist = false); return }
         write(sessionFile(key), JSONArray(items.takeLast(MAX_ITEMS)).toString())
         prune()
     }

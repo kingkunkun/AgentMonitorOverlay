@@ -79,7 +79,9 @@ export class BuildJob {
         this.host.publish({ type: "item.appended", item });
       }
       // Exactly one POST. A timeout may mean Jenkins accepted it: never retry automatically.
-      const response = await this.call(`${BUILD_JOBS[job].url}build?delay=0sec`, "POST");
+      // Both owner-approved jobs are parameterized. Jenkins uses each configured default when no values are sent.
+      // /build returns HTTP 400 for these jobs; never retry that request with a second POST.
+      const response = await this.call(`${BUILD_JOBS[job].url}buildWithParameters?delay=0sec`, "POST");
       await response.body?.cancel();
       if (response.status !== 201) throw new HostError("bad_request", response.status === 401 || response.status === 403 ? "Jenkins 拒绝访问，请检查账号、API Token 和此 Job 的构建权限" : `Jenkins 未确认入队（HTTP ${response.status}）；请在 Job 页面检查，勿重复点击`);
       const queueUrl = this.safeUrl(response.headers.get("location") ?? "", true, job);

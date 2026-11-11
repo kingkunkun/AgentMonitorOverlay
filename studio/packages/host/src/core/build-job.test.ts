@@ -34,7 +34,7 @@ it("only posts the fixed job once, tracks its own queue/build and keeps credenti
   await expect(job.run()).rejects.toThrow("已有打包");
   expect((await job.check()).last?.status).toBe("running");
   expect((await job.check()).last).toMatchObject({ status: "success", url: `${BUILD_JOB_URL}100/` });
-  expect(request.mock.calls.map(([url, options]) => [url, options?.method])).toEqual([[`${BUILD_JOB_URL}build?delay=0sec`, "POST"], ["http://172.16.8.85:8080/queue/item/12/api/json", "GET"], [`${BUILD_JOB_URL}100/api/json`, "GET"]]);
+  expect(request.mock.calls.map(([url, options]) => [url, options?.method])).toEqual([[`${BUILD_JOB_URL}buildWithParameters?delay=0sec`, "POST"], ["http://172.16.8.85:8080/queue/item/12/api/json", "GET"], [`${BUILD_JOB_URL}100/api/json`, "GET"]]);
   for (const [, options] of request.mock.calls) { expect(options?.redirect).toBe("manual"); expect(options?.body).toBeUndefined(); }
   expect(JSON.stringify(store.db.prepare("SELECT * FROM kv").all())).not.toContain("test-api-token");
 });
@@ -52,7 +52,7 @@ it("routes the Android hash preset to Android and returns a redacted failure tai
   const s = store.createSession({ taskId: task.id, topicId: null, parentId: null, kind: "main", runtime: "codex", profileId: "p", workspaceId: ws.id, title: "", status: "idle", writer: "workbench", runtimeRef: null });
   job.configure({ username: "builder", token: "test-api-token", enabled: true });
   await job.command(s.id, "#高配打包机 自动出安卓包");
-  expect(request.mock.calls[0]![0]).toBe(`${base}build?delay=0sec`);
+  expect(request.mock.calls[0]![0]).toBe(`${base}buildWithParameters?delay=0sec`);
   await job.check();
   const result = await job.check();
   expect(result.last).toMatchObject({ job: "android", status: "failed", sessionId: s.id, analysisQueued: true });
@@ -88,4 +88,13 @@ it("does not follow a foreign queue URL or retry a POST with an unknown result",
   expect(isBuildCommand("/打包")).toBe(true);
   expect(isBuildCommand("请帮我看看 /打包")).toBe(false);
   expect(isBuildCommand("/打包 http://other/job")).toBe(false);
+});
+
+it("uses job defaults on the parameterized endpoint and never retries an HTTP 400", async () => {
+  const request = vi.fn<typeof fetch>().mockResolvedValue(new Response("parameter rejection", { status: 400 }));
+  const { job } = setup(request); job.configure({ username: "builder", token: "test-api-token", enabled: true });
+  expect((await job.run(undefined, "/打包", "android")).last).toMatchObject({ status: "unknown", message: expect.stringContaining("HTTP 400") });
+  await job.check(); expect(request).toHaveBeenCalledTimes(1);
+  expect(request.mock.calls[0]).toEqual([`${BUILD_JOBS.android.url}buildWithParameters?delay=0sec`, expect.objectContaining({ method: "POST", redirect: "manual" })]);
+  expect(request.mock.calls[0]![1]?.body).toBeUndefined();
 });

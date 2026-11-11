@@ -36,13 +36,21 @@ Windows 在本目录执行：
 
 同一可达局域网不需要 Tailscale；没有公网入口时，5G 不能直接连接公司内网电脑。公司 Wi-Fi 隔离和 Windows 防火墙仍可能阻止连接，未自动修改公司网络。详细边界见 [局域网手机说明](../docs/cooperation-privacy-lan.md)。
 
-新版 Android 内部包为 0.2.1 / build 5，应用显示名 WorkStudio，Android/iOS 共用原创头像，来源与提示词见 [图标说明](assets/README.md)。
+新版 Android 内部包为 0.2.2 / build 6，应用显示名 WorkStudio，Android/iOS 共用原创头像，来源与提示词见 [图标说明](assets/README.md)。
 
 当前团队服务器是 HTTP；应用为此允许明文连接。需要传输加密时使用 HTTPS/WSS 或覆盖到服务器的 Tailscale 链路。应用不忽略 TLS 证书错误。
 
+## 隐私与升级
+
+只下载未归档的 WorkStudio 自建聊天；升级清理旧聊天缓存后重新同步，账号和草稿单独保存。相同包名及签名覆盖安装保留登录，卸载、清除应用数据、主动退出或服务端撤销账号除外。手机没有文件上传、原生聊天扫描、剪贴板读取或个人数据权限；详见 [检查报告](../docs/mobile-privacy-audit.md)。
+
+点击聊天直接进入正文与输入框，左上角打开项目抽屉；右下角模型面板支持搜索、思考强度、Fast 和权限选择。5G 方案见 [连接说明](../docs/cooperation-privacy-lan.md)。
+
 ## 测试
 
-构建 app 与 androidTest APK 后，可在 mobile 目录使用统一入口（自动安装、运行、保存日志并清除临时测试凭据）：
+不要对正在使用的正式手机账号运行旧测试脚本：它可能登录模拟账号。界面测试请先用 `-PworkstudioIsolatedTest=true` 构建 `.qa` 独立包，手动安装并使用 `dev.amo.studio.qa.test` runner。`MobileRefreshUiTest` 只允许 `.qa`，不会清理正式包。
+
+以下旧入口仅限专用模拟器/测试设备。构建 app 与 androidTest APK 后，可在 mobile 目录使用统一入口（自动安装、运行、保存日志并清除临时测试凭据）：
 
 ```powershell
 ./test.ps1 -FixtureReady '<ready.json路径>'

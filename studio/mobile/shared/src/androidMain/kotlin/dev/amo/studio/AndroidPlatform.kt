@@ -33,7 +33,8 @@ class AndroidPlatform(context: Context) : Platform {
 
     // The same OkHttp settings as before the move to Ktor: a ping every 15 s keeps the devices socket alive through NAT.
     override fun httpClient() = HttpClient(OkHttp) {
-        engine { config { pingInterval(15, TimeUnit.SECONDS); connectTimeout(10, TimeUnit.SECONDS); readTimeout(30, TimeUnit.SECONDS) } }
+        followRedirects = false
+        engine { config { followRedirects(false); followSslRedirects(false); pingInterval(15, TimeUnit.SECONDS); connectTimeout(10, TimeUnit.SECONDS); readTimeout(30, TimeUnit.SECONDS) } }
         install(WebSockets)
     }
 

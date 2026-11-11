@@ -23,7 +23,7 @@ import java.io.ByteArrayInputStream
     val currentOpen by rememberUpdatedState(open)
     AndroidView(factory = { context ->
         WebView(context).apply {
-            settings.javaScriptEnabled = true
+            settings.javaScriptEnabled = false
             settings.javaScriptCanOpenWindowsAutomatically = false
             settings.allowFileAccess = false
             settings.allowContentAccess = false

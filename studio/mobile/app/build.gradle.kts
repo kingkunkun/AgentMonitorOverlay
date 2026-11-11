@@ -9,8 +9,8 @@ android {
         applicationId = "dev.amo.studio"
         minSdk = 28
         targetSdk = 36
-        versionCode = 5
-        versionName = "0.2.1"
+        versionCode = 6
+        versionName = "0.2.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildFeatures { compose = true; buildConfig = true }
@@ -19,6 +19,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     buildTypes {
+        debug { if (providers.gradleProperty("workstudioIsolatedTest").orNull == "true") applicationIdSuffix = ".qa" }
         release { isMinifyEnabled = false }
     }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }

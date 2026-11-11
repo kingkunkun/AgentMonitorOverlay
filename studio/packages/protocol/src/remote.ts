@@ -408,6 +408,8 @@ export type RemotePush =
   | { type: "task"; task: RemoteTaskView; profiles: RemoteTaskSnapshot["profiles"]; allowed: Id[] }
   /** `project`: the session's project name on A (null: the common folder; 2026-11-09, an older A leaves it out). */
   | { type: "session"; session: Session; project?: string | null }
+  /** Phone policy: remove the archived session's cached copy without sending its contents. */
+  | { type: "session-hidden"; taskId: Id; sessionId: Id }
   /** An item appended or changed. */
   | { type: "item"; item: SessionItem }
   /** Streaming text of an agent item (not stored on its own on either side). */

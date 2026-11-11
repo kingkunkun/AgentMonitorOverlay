@@ -28,6 +28,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import okio.Buffer
@@ -87,6 +89,8 @@ class StudioRepository(private val platform: Platform) {
     private val histories = mutableMapOf<String, List<JSONObject>>()
     private var cache: HistoryCache? = null
     private val dirtySessions = mutableSetOf<String>()
+    private val cacheWrites = Mutex()
+    private var cacheRevision = 0L
     private var tasksDirty = false
     private var saveJob: Job? = null
     private var fileRequest = 0L
@@ -105,7 +109,7 @@ class StudioRepository(private val platform: Platform) {
         return scope.launch(OperationEpoch(epoch)) { try { block() } catch (e: CancellationException) { throw e } catch (e: Exception) { if (epoch == generation) message(e.message ?: "操作失败") } }
     }
     private fun mutate(block: suspend () -> Unit) {
-        if (mutationPending) { message("上一项操作尚未完成，请等待结果"); return }
+        if (mutationPending) return // Ignore duplicate taps; read-only panel loads never acquire this gate.
         mutationPending = true
         update { it.copy(busy = true) }
         launch { try { block() } finally { mutationPending = false; update { it.copy(busy = false) } } }
@@ -120,7 +124,7 @@ class StudioRepository(private val platform: Platform) {
                 val epoch = generation
                 launch { restoreCache(account); if (epoch == generation && state.value.account == account && !closed) connect() }
             }
-        }.onFailure { prefs.remove("account"); message("保存的登录已失效，请重新登录") }
+        }.onFailure { message("本机登录凭据暂时无法解密，保存的数据未删除；请重启应用或重新登录") }
     }
 
     fun login(server: String, name: String, password: String) = launch {
@@ -189,7 +193,7 @@ class StudioRepository(private val platform: Platform) {
     fun setTheme(theme: String) { if (theme !in listOf("codex", "light", "dark", "system")) return; prefs.put("theme-v2", theme); update { it.copy(theme = theme) } }
     fun pinTask(task: RemoteTask) { val pins = state.value.pinnedTasks.let { if (task.key in it) it - task.key else it + task.key }; prefs.put("chat-pins", pins.joinToString("\n")); update { it.copy(pinnedTasks = pins) } }
     fun renameTask(task: RemoteTask, title: String) = mutate { check(title.isNotBlank()) { "聊天名称不能为空" }; command(task.peer, "rt.rename", JSONObject().put("taskId", task.id).put("title", title.trim())); fetchTask(task.peer, task.id) }
-    fun archiveTask(task: RemoteTask) = mutate { command(task.peer, "rt.task-archive", JSONObject().put("taskId", task.id)); snapshots.remove(task.key); update { it.copy(tasks = it.tasks.filterNot { t -> t.key == task.key }, selectedTask = it.selectedTask?.takeIf { t -> t.key != task.key }) }; markTasks() }
+    fun archiveTask(task: RemoteTask) = mutate { command(task.peer, "rt.task-archive", JSONObject().put("taskId", task.id)); discardTask(task.peer, task.id) }
     fun setResumeLast(on: Boolean) { prefs.put("resume-last", on); update { it.copy(resumeLast = on) } }
     fun clearMessage() = message(null)
     fun retry() { attempt = 0; connect() }
@@ -322,6 +326,7 @@ class StudioRepository(private val platform: Platform) {
         }
     }
     private suspend fun command(peer: Peer, kind: String, body: JSONObject = JSONObject()): JSONObject {
+        PhonePrivacy.requireCommand(kind, body)
         val epoch = generation
         // An onResume refresh can overlap initial connection setup; discard that obsolete read silently.
         if (coroutineContext[OperationEpoch]?.value?.let { it != epoch } == true) throw CancellationException("Obsolete connection operation")
@@ -353,10 +358,7 @@ class StudioRepository(private val platform: Platform) {
             try {
                 val list = command(peer, "rt.list")
                 val ids = list.objects("tasks").map { it.str("taskId") }.toSet()
-                update { s -> s.copy(
-                    tasks = s.tasks.map { if (it.peer.identity == peer.identity && it.id !in ids) it.copy(revoked = true) else it },
-                    selectedTask = s.selectedTask?.let { if (it.peer.identity == peer.identity && it.id !in ids) it.copy(revoked = true) else it },
-                ) }
+                state.value.tasks.filter { it.peer.identity == peer.identity && it.id !in ids }.forEach { discardTask(peer, it.id) }
                 val gate = Semaphore(3)
                 coroutineScope { ids.map { id -> async { gate.withPermit { fetchTask(peer, id) } } }.awaitAll() }
             } catch (e: Exception) { if (e is CancellationException) throw e; if (epoch != generation) return; message(e.message) }
@@ -383,22 +385,48 @@ class StudioRepository(private val platform: Platform) {
         val projects = snapshot.optJSONObject("sessionProjects")
         return RemoteTask(id, row.str("title"), peer, revoked, row.str("description"), row.str("updatedAt"), snapshot.objects("sessions").map { session(it, projects, project) }, project)
     }
+    private fun discardTask(peer: Peer, id: String) {
+        val k = key(peer, id)
+        val old = state.value.tasks.find { it.key == k }
+        old?.sessions?.forEach { session -> val sessionKey = key(peer, session.id); histories.remove(sessionKey); dirtySessions.remove(sessionKey) }
+        snapshots.remove(k)
+        update { state -> if (state.selectedTask?.key == k) state.copy(tasks = state.tasks.filterNot { it.key == k }, selectedTask = null, selectedSession = null, sessions = emptyList(), items = emptyList()) else state.copy(tasks = state.tasks.filterNot { it.key == k }) }
+        markTasks()
+    }
+    private fun discardSession(peer: Peer, id: String) {
+        val selected = state.value.selectedSession?.id == id && state.value.selectedTask?.peer?.identity == peer.identity
+        val k = key(peer, id); histories.remove(k); dirtySessions.remove(k)
+        for (task in state.value.tasks.filter { it.peer.identity == peer.identity && it.sessions.any { s -> s.id == id } }) {
+            val remaining = task.sessions.filterNot { it.id == id }
+            if (remaining.isEmpty()) { discardTask(peer, task.id); continue }
+            snapshots[task.key]?.put("sessions", JSONArray(snapshots[task.key]!!.objects("sessions").filterNot { it.str("id") == id }))
+            putTask(task.copy(sessions = remaining), snapshots[task.key])
+        }
+        if (selected) update { it.copy(selectedSession = null, items = emptyList()) }
+        markTasks()
+    }
+    private fun hasActiveSession(peer: Peer, id: String) = state.value.tasks.any { it.peer.identity == peer.identity && !it.revoked && it.sessions.any { s -> s.id == id && !s.archived } }
     /** Puts a task (new or changed) into the state, keeping what is selected in step. */
     private fun putTask(task: RemoteTask, snapshot: JSONObject?) {
+        if (task.revoked || task.sessions.isNotEmpty() && task.sessions.all { it.archived }) { discardTask(task.peer, task.id); return }
+        val live = task.sessions.filterNot { it.archived }
+        state.value.tasks.find { it.key == task.key }?.sessions?.filterNot { old -> live.any { it.id == old.id } }?.forEach { old -> histories.remove(key(task.peer, old.id)); dirtySessions.remove(key(task.peer, old.id)) }
+        val visible = task.copy(sessions = live)
         update { s ->
             val selected = s.selectedTask?.key == task.key
             s.copy(
-                tasks = s.tasks.filterNot { it.key == task.key } + task,
-                selectedTask = if (selected) task else s.selectedTask,
-                sessions = if (selected) task.sessions else s.sessions,
-                selectedSession = if (selected) task.sessions.find { it.id == s.selectedSession?.id } ?: s.selectedSession else s.selectedSession,
+                tasks = s.tasks.filterNot { it.key == task.key } + visible,
+                selectedTask = if (selected) visible else s.selectedTask,
+                sessions = if (selected) live else s.sessions,
+                selectedSession = if (selected) live.find { it.id == s.selectedSession?.id } else s.selectedSession,
                 profiles = if (selected && snapshot != null) profiles(snapshot) else s.profiles,
             )
         }
         markTasks()
     }
     private suspend fun fetchTask(peer: Peer, id: String) {
-        val snapshot = command(peer, "rt.task", JSONObject().put("taskId", id)); snapshots[key(peer, id)] = snapshot
+        val snapshot = activePhoneSnapshot(command(peer, "rt.task", JSONObject().put("taskId", id))) ?: return discardTask(peer, id)
+        snapshots[key(peer, id)] = snapshot
         putTask(taskOf(peer, id, snapshot), snapshot)
     }
     private suspend fun fetchCatalog(peer: Peer) {
@@ -414,6 +442,7 @@ class StudioRepository(private val platform: Platform) {
         if (!task.revoked && task.peer.online && state.value.connected) launch { fetchTask(task.peer, task.id) }
     }
     fun selectSession(session: RemoteSession) {
+        if (session.archived) return
         val task = state.value.selectedTask ?: return
         val k = key(task.peer, session.id)
         val known = histories[k]
@@ -442,7 +471,7 @@ class StudioRepository(private val platform: Platform) {
     /** From where the phone's copy ends — or from the oldest item that could still have changed while it was away. */
     private suspend fun fetchItems(sessionId: String) {
         val task = state.value.selectedTask ?: return
-        if (task.revoked) return
+        if (task.revoked || !hasActiveSession(task.peer, sessionId)) return
         val k = key(task.peer, sessionId)
         val known = histories[k] ?: emptyList()
         val last = known.maxOfOrNull { it.optLong("seq") } ?: 0L
@@ -452,6 +481,7 @@ class StudioRepository(private val platform: Platform) {
         try {
             do {
                 val page = command(task.peer, "rt.items", JSONObject().put("sessionId", sessionId).put("since", since))
+                if (!hasActiveSession(task.peer, sessionId)) return
                 val rows = page.objects("items")
                 val before = since
                 for (row in rows) { collected[row.str("id")] = row; since = maxOf(since, row.optLong("seq")) }
@@ -499,14 +529,14 @@ class StudioRepository(private val platform: Platform) {
         if (state.value.selectedTask?.key == task.key && state.value.selectedSession?.id == session.id) fetchItems(session.id)
     }
     fun send(text: String) = sessionCommand("rt.send", JSONObject().put("text", text))
-    fun chatPresets(receive: (JSONObject) -> Unit) = mutate { val task = active(); val session = state.value.selectedSession ?: error("请先选择会话"); receive(command(task.peer, "rt.presets", JSONObject().put("sessionId", session.id))) }
-    fun teamPeople(receive: (JSONObject) -> Unit) = mutate {
+    fun chatPresets(receive: (JSONObject) -> Unit) = launch { val task = active(); val session = state.value.selectedSession ?: return@launch; val result = command(task.peer, "rt.presets", JSONObject().put("sessionId", session.id)); if (state.value.selectedTask?.key == task.key && state.value.selectedSession?.id == session.id) receive(result) }
+    fun teamPeople(receive: (JSONObject) -> Unit) = launch {
         val task = active(); val session = state.value.selectedSession ?: error("请先选择会话")
-        receive(command(task.peer, "rt.people", JSONObject().put("sessionId", session.id)))
+        val result = command(task.peer, "rt.people", JSONObject().put("sessionId", session.id)); if (state.value.selectedTask?.key == task.key && state.value.selectedSession?.id == session.id) receive(result)
     }
-    fun sessionChoices(all: Boolean = false, receive: (JSONObject) -> Unit) = mutate {
+    fun sessionChoices(all: Boolean = false, receive: (JSONObject) -> Unit) = launch {
         val task = active(); val session = state.value.selectedSession ?: error("请先选择会话")
-        receive(command(task.peer, "rt.choices", JSONObject().put("sessionId", session.id).put("all", all)))
+        val result = command(task.peer, "rt.choices", JSONObject().put("sessionId", session.id).put("all", all)); if (state.value.selectedTask?.key == task.key && state.value.selectedSession?.id == session.id) receive(result)
     }
     fun setSessionOptions(model: String, effort: String, permission: String, fast: Boolean? = null, receive: ((JSONObject) -> Unit)? = null) = mutate {
         val task = active(); val session = state.value.selectedSession ?: error("请先选择会话")
@@ -515,7 +545,7 @@ class StudioRepository(private val platform: Platform) {
         val result = command(task.peer, "rt.options", JSONObject().put("sessionId", session.id).put("options", options))
         receive?.invoke(result.optJSONObject("session")?.optJSONObject("options") ?: JSONObject())
     }
-    fun continueModel(profileId: String, model: String, draft: String, receive: () -> Unit) = mutate {
+    fun continueModel(profileId: String, model: String, draft: String, options: JSONObject? = null, receive: () -> Unit) = mutate {
         val task = active(); val oldSession = state.value.selectedSession ?: error("请先选择会话")
         val result = command(task.peer, "rt.continue", JSONObject().put("sessionId", oldSession.id).put("profileId", profileId).put("model", model))
         val row = result.optJSONObject("session") ?: error("电脑没有返回接续会话")
@@ -525,6 +555,7 @@ class StudioRepository(private val platform: Platform) {
         drafts.remove("draft-" + previousIdentity.encodeUtf8().sha256().hex())
         fetchTask(task.peer, task.id)
         if (state.value.selectedTask?.key == task.key) selectSession(state.value.sessions.find { it.id == row.str("id") } ?: session(row, null, task.project))
+        if (options != null) command(task.peer, "rt.options", JSONObject().put("sessionId", row.str("id")).put("options", options))
         receive()
     }
     fun approve(item: JSONObject, decision: String) = sessionCommand("rt.approve", JSONObject().put("approvalId", item.str("approvalId", item.str("id"))).put("decision", decision))
@@ -534,7 +565,8 @@ class StudioRepository(private val platform: Platform) {
     private fun push(peer: Peer, body: JSONObject) {
         val task = state.value.selectedTask
         when (body.str("type")) {
-            "revoked" -> update { s -> s.copy(tasks = s.tasks.map { if (it.id == body.str("taskId") && it.peer.identity == peer.identity) it.copy(revoked = true) else it }, selectedTask = s.selectedTask?.let { if (it.id == body.str("taskId") && it.peer.identity == peer.identity) it.copy(revoked = true) else it }, message = body.str("reason", "任务授权已撤回")).also { markTasks() } }
+            "revoked" -> discardTask(peer, body.str("taskId"))
+            "session-hidden" -> discardSession(peer, body.str("sessionId"))
             "granted" -> launch { fetchTask(peer, body.str("taskId")) }
             "request" -> {
                 val request = body.optJSONObject("request")
@@ -552,6 +584,7 @@ class StudioRepository(private val platform: Platform) {
             }
             "session" -> {
                 val row = body.optJSONObject("session") ?: return
+                if (archivedRow(row)) { discardSession(peer, row.str("id")); return }
                 val k = key(peer, row.str("taskId"))
                 val snapshot = snapshots[k]
                 val old = state.value.tasks.find { it.key == k }
@@ -567,6 +600,7 @@ class StudioRepository(private val platform: Platform) {
             }
             "item" -> {
                 val row = body.optJSONObject("item") ?: return
+                if (!hasActiveSession(peer, row.str("sessionId"))) return
                 val k = key(peer, row.str("sessionId"))
                 val open = task?.peer?.identity == peer.identity && !task.revoked && row.str("sessionId") == state.value.selectedSession?.id
                 if (!open && !histories.containsKey(k)) return
@@ -582,6 +616,7 @@ class StudioRepository(private val platform: Platform) {
             }
             "delta" -> {
                 val sessionId = body.str("sessionId")
+                if (!hasActiveSession(peer, sessionId)) return
                 if (task?.peer?.identity != peer.identity || task.revoked || sessionId != state.value.selectedSession?.id) return
                 val rows = state.value.items
                 val index = rows.indexOfFirst { it.str("id") == body.str("itemId") }
@@ -650,7 +685,7 @@ class StudioRepository(private val platform: Platform) {
     private suspend fun flush() {
         val c = cache ?: return
         val (tasksRoot, sessions) = pendingWrites()
-        withContext(Dispatchers.IO) { runCatching { tasksRoot?.let(c::saveTasks); sessions.forEach { (k, rows) -> c.saveSession(k, rows) } } }
+        withContext(Dispatchers.IO) { cacheWrites.withLock { runCatching { tasksRoot?.let(c::saveTasks); sessions.forEach { (k, rows) -> c.saveSession(k, rows) } } } }
     }
     private fun flushNow() {
         val c = cache ?: return
@@ -658,12 +693,13 @@ class StudioRepository(private val platform: Platform) {
         val (tasksRoot, sessions) = pendingWrites()
         if (tasksRoot == null && sessions.isEmpty()) return
         // Going away: written on a thread of its own, so leaving the app is not held up.
-        background.launch { runCatching { tasksRoot?.let(c::saveTasks); sessions.forEach { (k, rows) -> c.saveSession(k, rows) } } }
+        background.launch { cacheWrites.withLock { runCatching { tasksRoot?.let(c::saveTasks); sessions.forEach { (k, rows) -> c.saveSession(k, rows) } } } }
     }
     /** Called when the app goes to the background. */
     fun persist() = flushNow()
     private fun tasksJson(): JSONObject {
-        val root = JSONObject().put("version", 2)
+        cacheRevision = maxOf(cacheRevision + 1, now())
+        val root = JSONObject().put("version", 3).put("revision", cacheRevision)
         root.put("tasks", JSONArray(state.value.tasks.map { t -> JSONObject().put("id", t.id).put("revoked", t.revoked).put("account", t.peer.account).put("device", t.peer.device).put("name", t.peer.name).put("role", t.peer.role) }))
         root.put("snapshots", JSONObject(snapshots.toMap()))
         return root
@@ -673,6 +709,7 @@ class StudioRepository(private val platform: Platform) {
         val c = HistoryCache(platform.fileSystem, cacheRoot, account); cache = c
         val root = withContext(Dispatchers.IO) { c.loadTasks() } ?: return
         if (epoch != generation || state.value.account != account || closed) return
+        cacheRevision = maxOf(cacheRevision, root.optLong("revision"))
         runCatching {
             root.optJSONObject("snapshots")?.let { o -> for (id in o.keys()) o.optJSONObject(id)?.let { snapshots[id] = it } }
             val tasks = root.objects("tasks").mapNotNull { t ->

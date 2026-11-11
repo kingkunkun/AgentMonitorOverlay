@@ -23,8 +23,12 @@ export class Cooperation {
   assertRemoteEnabled(): void { if (!this.host.remote.enabled()) throw new HostError("read_only", "远程已关闭"); }
   ownDevice(account: string): boolean { return !!this.host.teamLink.account && this.host.teamLink.account.name === account && readCooperation(this.env).syncOwnDevices; }
   taskAllowed(taskId: string): boolean {
-    const imported = this.host.store.db.prepare("SELECT value FROM kv WHERE key LIKE 'claude-adopted:%'").all() as Array<{ value: string }>;
-    return !this.host.store.listSessions({ taskId }).some((s) => imported.some((row) => row.value === s.id));
+    const imported = new Set((this.host.store.db.prepare("SELECT value FROM kv WHERE key LIKE 'claude-adopted:%'").all() as Array<{ value: string }>).map((r) => r.value));
+    return !this.host.store.listSessions({ taskId }).some((session) => {
+      const seen = new Set<string>(); let current = session;
+      while (!seen.has(current.id)) { if (imported.has(current.id)) return true; seen.add(current.id); const parent = current.parentId ? this.host.store.getSession(current.parentId) : undefined; if (!parent) break; current = parent; }
+      return false;
+    });
   }
   get env() { return this.host.teamLink.env; }
   initializePrivacy(): void {

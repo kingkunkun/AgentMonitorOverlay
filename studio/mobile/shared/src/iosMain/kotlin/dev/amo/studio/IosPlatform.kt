@@ -34,6 +34,7 @@ class IosPlatform : Platform {
 
     // As on Android: a ping every 15 s keeps the devices socket alive through NAT; 30 s for a request.
     override fun httpClient() = HttpClient(Darwin) {
+        followRedirects = false
         engine { configureRequest { setTimeoutInterval(30.0) } }
         install(WebSockets) { pingIntervalMillis = 15_000 }
     }

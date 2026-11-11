@@ -27,7 +27,7 @@ flowchart LR
 
 ## 提交和结果边界
 
-按 Jenkins Remote Access API 提交一次 `POST .../build?delay=0sec`，等待 201 的队列地址再轮询。队列和构建地址必须属于固定服务器及对应 Job；不跟随重定向。排队或执行时防重复提交。POST 超时可能已被接收，显示“结果未知”，不自动重试，请先核对 Jenkins 页面。Host 重启后可点“刷新结果”继续查询已知队列，不会重新提交。
+这两个 Job 均为参数化 Job，按 [Jenkins Remote Access API](https://www.jenkins.io/doc/book/using/remote-access-api/) 提交一次 `POST .../buildWithParameters?delay=0sec`，不提交参数值，由 Jenkins 使用 Job 配置的默认值；普通 `/build` 对这两个 Job 返回 HTTP 400。等待 201 的队列地址再轮询。队列和构建地址必须属于固定服务器及对应 Job；不跟随重定向。排队或执行时防重复提交。POST 超时可能已被接收，显示“结果未知”，不自动重试，请先核对 Jenkins 页面。Host 重启后可点“刷新结果”继续查询已知队列，不会重新提交。
 
 关闭合作模式会阻止手机下指令；关闭打包开关会停止新构建触发，已在 Jenkins 上运行的构建不受影响。电脑直接按钮触发若没有关联聊天，只在打包窗口显示结果。
 

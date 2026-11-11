@@ -42,10 +42,10 @@ internal fun AmoTextButton(onClick: () -> Unit, modifier: Modifier = Modifier, e
     ) { Icon(icon, contentDescription = null, tint = if (enabled) tint else tint.copy(alpha = 0.35f), modifier = Modifier.size(22.dp)) }
 }
 
-@Composable internal fun TopBar(title: String, subtitle: String? = null, back: (() -> Unit)? = null, actions: @Composable RowScope.() -> Unit = {}) {
+@Composable internal fun TopBar(title: String, subtitle: String? = null, back: (() -> Unit)? = null, navigationIcon: ImageVector = AmoIcons.Back, navigationLabel: String = "返回", actions: @Composable RowScope.() -> Unit = {}) {
     Column {
         Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = if (back == null) 16.dp else 4.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (back != null) IconAction(AmoIcons.Back, "返回", "back", onClick = back)
+            if (back != null) IconAction(navigationIcon, navigationLabel, "back", onClick = back)
             Column(Modifier.weight(1f).padding(vertical = 6.dp)) {
                 Text(title, style = MaterialTheme.typography.titleLarge.copy(fontSize = 17.sp, lineHeight = 24.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (!subtitle.isNullOrBlank()) Text(subtitle, style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, lineHeight = 16.sp), color = LocalAmoColors.current.dim, maxLines = 1, overflow = TextOverflow.Ellipsis)
