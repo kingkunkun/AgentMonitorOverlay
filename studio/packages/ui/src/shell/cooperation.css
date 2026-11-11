@@ -1,5 +1,6 @@
-.cooperation-modal { width: min(660px, calc(100vw - 28px)); max-width: 660px; padding: 0; overflow: hidden; }
-.cooperation-content { box-sizing: border-box; padding: 20px; width: 100%; max-height: min(82vh, 760px); overflow-y: auto; }
+.modal.cooperation-modal { display: block; width: min(660px, calc(100vw - 28px)); max-width: 660px; max-height: min(82dvh, calc(100dvh - 112px)); padding: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-app-region: no-drag; user-select: text; }
+.cooperation-content { box-sizing: border-box; padding: 20px; width: 100%; }
+.cooperation-header { position: sticky; top: 0; z-index: 2; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 0; margin-top: -12px; background: var(--panel); }
 .cooperation-content h2 { margin: 0; font-size: 20px; }
 .cooperation-content h3 { font-size: 15px; margin: 14px 0 8px; }
 .cooperation-content p { font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; margin: 8px 0; }
@@ -10,4 +11,6 @@
 .cooperation-content summary { cursor: pointer; font-weight: 600; font-size: 14px; }
 .phone-account-create { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(160px, 1fr); gap: 8px; margin: 12px 0; }
 .phone-account-row { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; margin: 10px 0; }
+.phone-account-management { scroll-margin-top: 64px; }
+.phone-addresses code { display: inline-block; padding: 3px 6px; background: var(--bg); border-radius: 4px; user-select: text; }
 @media (max-width: 600px) { .phone-account-create { grid-template-columns: 1fr; } }

@@ -10,7 +10,7 @@
 |---|---|
 | 开发目录 | `G:\PROJECT\AgentMonitorOverlay\studio`（桌面快捷方式「AMO Source」指这里的 `start-studio.cmd`） |
 | 分支 | `master` 是主线；旧版 AMO 在标签 `amo-legacy-final` |
-| kingkunkun fork | 本机 `D:\Codex\AgentMonitorOverlay`；origin 仅 `kingkunkun/AgentMonitorOverlay`，upstream 禁止推送。上游同步基线 `455720b4`。11-11 已加载独立手机远程和手机账号管理；团队账号仍连接 172.16.8.85:47120，不需退出。当前团队远程/中转/手机远程关闭，手机账号尚未创建。无运行会话时正常重启，47 任务/47 会话/7 工作目录 ID 和原 6818 条记录全保留；SQLite 在线备份 `.data/backup-before-newui-restart-20261111183131`。Jenkins 凭据与设置保留。连接的 MI 8 已保留数据覆盖安装并启动 WorkStudio 0.2.1 / build 5；IPA 仍须 Mac 构建签名。 |
+| kingkunkun fork | 本机 `D:\Codex\AgentMonitorOverlay`；origin 仅 `kingkunkun/AgentMonitorOverlay`，upstream 禁止推送。上游同步基线 `455720b4`。11-11 已加载独立手机远程和手机账号管理；团队账号仍连接 172.16.8.85:47120，不需退出。当前团队远程/中转关闭，手机远程已由用户开启并允许 LAN，手机账号仍待创建。合作弹窗滚动与账号管理直达修复已编译打包；用户 Esc 停止窗口操作后，实际界面加载待用户 Ctrl+R 确认。此修复不重启 Host 和手机服务。无运行会话时正常重启，47 任务/47 会话/7 工作目录 ID 和原 6818 条记录全保留；SQLite 在线备份 `.data/backup-before-newui-restart-20261111183131`。Jenkins 凭据与设置保留。连接的 MI 8 已保留数据覆盖安装并启动 WorkStudio 0.2.1 / build 5；IPA 仍须 Mac 构建签名。 |
 | Work中转 / 合作模式（本机集成） | 顶栏团队账号、团队远程、中转和手机远程独立。手机账号在本机创建/改密/停用/删除，独立数据库和设备授权，可接管本机聊天及模型、权限、Fast、# 提示词；团队来信创建待回复聊天，按手机账号勾选同步，不自动执行。原生导入禁止、外发逐次确认，见 `docs/cooperation-privacy-lan.md`。手机名字和原创头像已同步 Android/iOS；APK `D:\Codex\WorkStudio-builds\WorkStudio-PhoneRemote-0.2.1-20261111-debug.apk`，真实手机已安装启动，账号登录配对仍待用户在本机创建账号后验收。 |
 | 常设 worktree | 都是 master 的 detached worktree：值守目录 `G:\PROJECT\AgentMonitorOverlay-duty`（值守修问题、`release land`）、打包目录 `G:\PROJECT\AgentMonitorOverlay-release`（自动打包跑 `release auto --if-due`）。别的 worktree 是各任务自己的（`git worktree list` 看） |
 | 用户在用的 Studio | 平台装的版本（`D:\TOOLS\AMO Platform\apps\studio\<版本>`），不是这个开发目录：在这里改代码、build 都不影响它；提交进 master 且写了「下一版」的会被自动打包发到测试通道，用户自己选装 |

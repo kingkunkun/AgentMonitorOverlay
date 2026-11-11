@@ -23,9 +23,10 @@ export function CooperationMenu({ link, onRemote }: { link: HostLink; onRemote()
   const loginMissing = !server.trim() ? "请先填写或选择服务器地址" : !name.trim() ? "请输入账号" : !password ? "请输入密码" : "";
   return <>
     <button type="button" className="tb-btn" data-testid="cooperation-open" onClick={() => setOpen(true)} title={`账号：${state?.account?.name ?? "未登录"}；远程：${state?.remoteEnabled ? "开" : "关"}；中转：${state?.relayEnabled ? "开" : "关"}`}>合作模式 · {active ? `团队${state?.remoteEnabled ? "开" : "关"} / 中转${state?.relayEnabled ? "开" : "关"} / 手机${state?.server.running ? "开" : "关"}` : "已关闭"}{!!state?.transfers.length && " · 待确认"}</button>
-    {open && <Modal label="合作模式" className="cooperation-modal" onClose={() => setOpen(false)} busy={busy}>
+    {/* Electron's draggable titlebar swallows scrollbar drags; the dialog must live outside it. */}
+    {open && <Modal label="合作模式" className="cooperation-modal" portal onClose={() => setOpen(false)} busy={busy}>
       <div className="cooperation-content">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}><h2>合作模式</h2><button className="btn-ghost" onClick={() => setOpen(false)}>收起窗口</button></div>
+        <div className="cooperation-header"><h2>合作模式</h2><button className="btn-ghost" onClick={() => setOpen(false)}>收起窗口</button></div>
         <p className="muted">团队账号、团队远程、中转和手机远程分别管理。收起窗口不会关闭功能。</p>
         <button className="btn-ghost danger" data-testid="cooperation-off" disabled={busy} onClick={() => void run(() => call(link, "POST /api/cooperation/off"))}>一键关闭合作模式并退出账号</button>
         {error && <p role="alert">{error}</p>}
