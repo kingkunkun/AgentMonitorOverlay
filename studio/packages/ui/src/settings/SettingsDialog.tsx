@@ -19,8 +19,6 @@ import { FolderAccessSection } from "./FolderAccessSection.js";
 import { setScrollOnSend, setTranscriptView, TRANSCRIPT_VIEW_HINTS, TRANSCRIPT_VIEW_LABELS, useScrollOnSend, useTranscriptView, type TranscriptView } from "../chat/prefs.js";
 import { useChatSettings } from "../chat/cli/chatSettings.js";
 import { defaultFolder, setDefaultFolder } from "../lib/profiles.js";
-import { BotArt, MascotArt, ReaderArt } from "../focus/PixelBot.js";
-import { PET_SKINS, usePetSkin, writePetSkin, type PetSkin } from "../focus/petSkin.js";
 import { pickDirectory } from "../folders/FolderPicker.js";
 import { HashPresetSettings } from "../attach/HashPresets.js";
 import { useTopicsVisible, setTopicsVisible } from "../lib/topicsVisible.js";
@@ -157,7 +155,7 @@ export function SettingsDialog({ link, state, settings, page: startPage, onClose
                 </div>
                 <span className="settings-hint">只影响这台电脑上的 Studio；Focus 悬浮窗会一起切换。</span>
                 <div className="settings-row"><label><input type="checkbox" checked={topicsOn} onChange={(e) => setTopicsVisible(e.target.checked)} /> 显示专题与画布</label><span className="settings-hint">默认隐藏，已有专题和任务数据保留。</span></div>
-                <PetSkinRow />
+                <BreakReminderRow />
                 {window.amo?.uiScale && <UiScaleRow />}
                 <div className="settings-row">
                   <span className="settings-label">工作步骤展示</span>
@@ -372,30 +370,16 @@ function UiScaleRow() {
   );
 }
 
-/** Focus 桌宠 (2026-10-15 evening): who pops up on Focus when something needs the person, and flies about when ignored. */
-function PetSkinRow() {
-  const skin = usePetSkin();
-  return (
-    <>
-      <div className="settings-row">
-        <span className="settings-label">Focus 桌宠</span>
-        <div role="radiogroup" aria-label="Focus 桌宠" className="chips">
-          {(Object.keys(PET_SKINS) as PetSkin[]).map((k) => (
-            <button key={k} type="button" role="radio" className="chip" aria-checked={skin === k} aria-pressed={skin === k} onClick={() => writePetSkin(k)} data-testid={`pet-skin-${k}`}>
-              {PET_SKINS[k]}
-            </button>
-          ))}
-        </div>
-        <span className="settings-pet-preview" data-testid="pet-skin-preview">
-          {skin === "reader" ? <ReaderArt mood="calm" /> : skin === "mascot" ? <MascotArt mood="calm" /> : <BotArt mood="calm" />}
-        </span>
-      </div>
-      <span className="settings-hint">有事时在 Focus 上冒出来提醒你；放着 5 分钟不管会生气、满屏乱飞。只影响这台电脑。</span>
-      {skin === "mascot" && (
-        <span className="settings-hint" data-testid="pet-skin-mascot-hint">
-          选了 AMO 娘，左上角和窗口（标题栏、任务栏）的图标也换成她，并跟着换表情：出错或等你审批是「待命」，没额度是「睿智」，有会话在跑是「认真」，只剩等你审核是「开心」，什么都没有是她的头像。
-        </span>
-      )}
-    </>
-  );
+function BreakReminderRow() {
+  const [on, setOn] = useState<boolean | null>(null);
+  useEffect(() => { void window.amo?.breakReminder?.get().then(setOn); }, []);
+  return <>
+    <div className="settings-row">
+      <span className="settings-label">活动提醒</span>
+      <label><input type="checkbox" aria-label="每15分钟提醒活动" checked={on === true} disabled={on === null} onChange={(e) => { const value = e.target.checked; setOn(value); void window.amo?.breakReminder?.set(value).then(setOn).catch(() => setOn(!value)); }} /> 每 15 分钟提醒站起来活动</label>
+      <button type="button" className="btn-ghost small" disabled={!on} onClick={() => void window.amo?.breakReminder?.preview()}>预览提醒</button>
+      <button type="button" className="btn-ghost small" onClick={() => void window.amo?.breakReminder?.dismiss()}>收起提醒</button>
+    </div>
+    <span className="settings-hint">使用你的图片移动提醒，高度约为屏幕的一半；展示 30 秒自动收起，不抢焦点、不阻挡鼠标。关闭后保持关闭。</span>
+  </>;
 }

@@ -53,6 +53,12 @@ electron.contextBridge.exposeInMainWorld("amo", {
     pick: (): Promise<string | null> => electron.ipcRenderer.invoke("amo:setup-pick"),
     done: (dataDir: string): Promise<unknown> => electron.ipcRenderer.invoke("amo:setup-done", dataDir),
   },
+  breakReminder: {
+    get: (): Promise<boolean> => electron.ipcRenderer.invoke("amo:break-get"),
+    set: (on: boolean): Promise<boolean> => electron.ipcRenderer.invoke("amo:break-set", on),
+    preview: (): Promise<void> => electron.ipcRenderer.invoke("amo:break-preview"),
+    dismiss: (): Promise<void> => electron.ipcRenderer.invoke("amo:break-dismiss"),
+  },
   focus: {
     get: (): Promise<boolean> => electron.ipcRenderer.invoke("amo:focus-get"),
     set: (on: boolean): Promise<void> => electron.ipcRenderer.invoke("amo:focus-set", on),

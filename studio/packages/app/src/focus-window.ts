@@ -127,6 +127,7 @@ interface PrefsData {
   uiScale?: number;
   /** 拖拽调整大小 (2026-11-06): Focus's size, at 界面大小 100%. */
   focusSize?: Size;
+  breakReminder?: boolean;
 }
 
 /** Shell preferences that belong to this machine's windows rather than to the Host: Focus on/off and window places. */
@@ -150,6 +151,9 @@ export class ShellPrefs {
   setFocus(on: boolean): void {
     this.save({ focus: on });
   }
+
+  breakReminder(): boolean { return this.data.breakReminder !== false; }
+  setBreakReminder(on: boolean): void { this.save({ breakReminder: on }); }
 
   focusPos(): Point | null {
     return this.data.focusPos ?? null;

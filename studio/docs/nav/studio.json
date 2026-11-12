@@ -558,17 +558,18 @@
     {
       "id": "ui.focus",
       "label": "Focus 窗口（浮窗）",
-      "aliases": ["Focus", "FocusApp", "置顶", "pin", "机器人", "bot", "等你"],
+      "aliases": ["Focus", "FocusApp", "置顶", "pin", "机器人", "bot", "等你", "桌宠", "活动提醒", "休息", "15分钟"],
       "category": "ui",
-      "purpose": "常驻的小浮窗：哪些会话在跑、哪些在等人（审批、提问、确认），置顶一个任务，机器人形象。",
+      "purpose": "常驻的小浮窗：运行、审批和置顶任务；旧桌宠已关闭。另有每15分钟的独立本地活动提醒，可在界面设置关闭和预览。",
       "anchors": [
         { "label": "Focus 界面", "path": "studio/packages/ui/src/focus/FocusApp.tsx", "anchor": "export function FocusApp" },
-        { "label": "进行中", "path": "studio/packages/ui/src/focus/FocusWorking.tsx" },
+        { "label": "活动提醒", "path": "studio/packages/app/src/break-reminder.ts", "anchor": "export function setupBreakReminder" },
+          { "label": "进行中", "path": "studio/packages/ui/src/focus/FocusWorking.tsx" },
         { "label": "置顶", "path": "studio/packages/ui/src/focus/pins.ts" },
         { "label": "Focus 窗口", "path": "studio/packages/app/src/focus-window.ts", "anchor": "export function createFocusWindow" }
       ],
       "related": ["app.shell", "studio.relays"],
-      "next": ["studio/plans/done/stage-14.md"]
+      "next": ["studio/plans/done/stage-14.md", "studio/docs/break-reminder.md"]
     },
     {
       "id": "ui.newTask",

@@ -37,6 +37,7 @@ declare global {
       theme?(): Promise<"light" | "dark" | "system">;
       setTheme?(theme: "light" | "dark" | "system"): Promise<void>;
       /** The Focus window (Electron). */
+      breakReminder?: { get(): Promise<boolean>; set(on: boolean): Promise<boolean>; preview(): Promise<void>; dismiss(): Promise<void> };
       focus?: {
         get(): Promise<boolean>;
         set(on: boolean): Promise<void>;

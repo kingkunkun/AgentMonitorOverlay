@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import type { Session, SessionItem, StateSnapshot, Task, Workspace } from "@amo-studio/protocol";
 import { launchStudio, screenshot, windowState, type Studio } from "../support/studio.js";
+import type {} from "../../packages/ui/src/host/client.js";
 
 let studio: Studio | undefined;
 
@@ -94,7 +95,7 @@ test("Focus shows a Codex async question at once, while the model is still worki
   await expect(focus.getByTestId("focus-needs")).toHaveText("需要你 1");
 });
 
-test("Focus: the robot dances until looked at; 「Focus 设置」 moves, locks, lets clicks through and hides it (S14-J/K)", async () => {
+test("Focus: status reminders stay in the panel; 「Focus 设置」 moves, locks, lets clicks through and hides it (S14-J/K)", async () => {
   studio = await launchStudio();
   const { page, app } = studio;
   const ws = await studio.api<Workspace>("POST", "/api/workspaces", { path: studio.workspace("alpha") });
@@ -105,25 +106,16 @@ test("Focus: the robot dances until looked at; 「Focus 设置」 moves, locks, 
   await expect(focus.getByTestId("focus-needs")).toHaveText("没有待处理", { timeout: 30_000 });
   await expect(focus.getByTestId("focus-bot")).toHaveCount(0);
 
-  // Something needs the person: the panel glows and the robot pops up above it.
+  // Pending approvals remain available without any pet or animated window.
   await studio.api<{ task: Task; session: Session }>("POST", "/api/tasks", {
-    title: "机器人提醒",
-    workspaceId: ws.id,
+    title: "机器人提醒", workspaceId: ws.id,
     firstSession: { profileId: "codex-mock", text: "[[shell: cmd /c echo bot]]" },
   });
   await expect(focus.getByTestId("focus-needs")).toHaveText("需要你 1", { timeout: 30_000 });
-  const bot = focus.getByTestId("focus-bot");
-  await expect(bot).toBeVisible();
-  await expect(bot).toContainText("1 件事");
-  await expect(bot).not.toContainText("完成待审核");
-  await expect(bot).toHaveClass(/alert/);
+  await expect(focus.getByTestId("focus-bot")).toHaveCount(0);
   await expect(focus.getByTestId("focus-panel")).toHaveClass(/alerting/);
-  await screenshot(app, "stage-14", "S14-J-focus-robot", focus, "focus");
-
-  // The robot opens what needs the person, and leaves: it has been seen (it still needs them).
-  await bot.click();
+  await focus.getByRole("button", { name: "在工作台打开", exact: true }).click();
   await expect(page.getByTestId("task-title")).toHaveText("机器人提醒");
-  await expect(bot).toHaveCount(0);
   await expect(focus.getByTestId("focus-panel")).not.toHaveClass(/alerting/);
   await expect(focus.getByTestId("focus-needs")).toHaveText("需要你 1");
 
@@ -158,8 +150,8 @@ test("Focus: the robot dances until looked at; 「Focus 设置」 moves, locks, 
   await focus.getByTestId("focus-entry").click({ button: "right" });
   const menu = focus.getByTestId("focus-menu");
   await expect(menu).toBeVisible();
-  await expect(menu.locator(".focus-pop-row")).toHaveCount(9);
-  for (const label of ["移动位置", "拖拽调整大小", "锁定位置", "点击穿透", "收起成一行", "机器人动作测试", "打开 Studio 主窗口", "隐藏 Focus"]) await expect(menu).toContainText(label);
+  await expect(menu.locator(".focus-pop-row")).toHaveCount(8);
+  for (const label of ["移动位置", "拖拽调整大小", "锁定位置", "点击穿透", "收起成一行", "打开 Studio 主窗口", "隐藏 Focus"]) await expect(menu).toContainText(label);
   await expect.poll(async () => (await shape()).reduce((a, r) => a + r.width * r.height, 0)).toBeGreaterThan(panelOnly);
   await screenshot(app, "stage-14", "S14-J-focus-menu", focus, "focus");
   await focus.getByTestId("focus-menu-close").click();
@@ -317,124 +309,52 @@ test("Focus: a click Chromium dropped (it came with WM_MOUSEACTIVATE, the page n
   await expect.poll(async () => (await studio!.api<StateSnapshot>("GET", "/api/state")).sessions.find((s) => s.id === created.session.id)?.status, { timeout: 30_000 }).not.toBe("awaiting-approval");
 });
 
-test("Focus: 「机器人动作测试」 plays the robot's moods; the angry one flies in its own window until clicked (2026-10-15)", async () => {
+test("Focus: desktop pets stay disabled after long waits and stale flight requests", async () => {
   studio = await launchStudio();
   const { page, app } = studio;
-  const opened = app.waitForEvent("window");
-  await page.getByRole("button", { name: /^Focus/ }).click();
-  const focus = await opened;
-  await expect(focus.getByTestId("focus-needs")).toHaveText("没有待处理", { timeout: 30_000 });
-  const flight = () => app.evaluate(() => (globalThis as { __amoBotFlight?: { flying: boolean; message: string } }).__amoBotFlight ?? { flying: false, message: "" });
-
-  await focus.getByTestId("focus-settings-toggle").click();
-  await focus.getByTestId("focus-menu-bot").click();
-  const bot = focus.getByTestId("focus-bot");
-  await expect(bot).toHaveClass(/alert/);
-  await expect(bot).toContainText("1 件事（测试）");
-  await screenshot(app, "stage-14", "bot-light", focus, "focus");
-  await expect(bot).toHaveClass(/calm/, { timeout: 5000 });
-  // Angry: it leaves Focus and flies in a window of its own.
-  const botWindow = app.waitForEvent("window");
-  await expect(bot).toHaveCount(0, { timeout: 5000 });
-  const flying = await botWindow;
-  await expect.poll(flight).toEqual({ flying: true, message: "生气了！（测试，点我停下）" });
-  const angry = flying.getByTestId("focus-bot");
-  await expect(angry).toHaveClass(/angry/);
-  await expect(angry).toContainText("生气了！");
-  await screenshot(app, "stage-14", "bot-angry", flying, "focus");
-  // Caught: it lands and the test ends.
-  await angry.click();
-  await expect.poll(flight).toMatchObject({ flying: false });
-  await expect(focus.getByTestId("focus-bot")).toHaveCount(0);
-});
-
-test("Focus 桌宠: the robot by default; 「看书的 Claude 娘」 picked in 设置 → 界面 shows on Focus and flies (2026-10-15)", async () => {
-  studio = await launchStudio();
-  const { page, app } = studio;
-  const opened = app.waitForEvent("window");
-  await page.getByRole("button", { name: /^Focus/ }).click();
-  const focus = await opened;
-  await expect(focus.getByTestId("focus-needs")).toHaveText("没有待处理", { timeout: 30_000 });
-
-  // The robot by default.
-  await page.getByRole("button", { name: "设置" }).click();
+  await page.evaluate(() => localStorage.setItem("amo.focusPet", "mascot"));
+  await page.getByRole("button", { name: "设置", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "设置" });
-  await dialog.getByRole("tab", { name: "界面" }).click();
-  await expect(dialog.getByTestId("pet-skin-robot")).toHaveAttribute("aria-checked", "true");
-  await expect(dialog.getByTestId("pet-skin-preview").locator("svg")).toHaveCount(1);
-  await dialog.getByTestId("pet-skin-reader").click();
-  await expect(dialog.getByTestId("pet-skin-reader")).toHaveAttribute("aria-checked", "true");
-  await expect(dialog.getByTestId("reader-art")).toBeVisible();
-  await screenshot(app, "stage-14", "pet-skin-setting", page);
+  await dialog.getByRole("tab", { name: "界面", exact: true }).click();
+  await expect(dialog.getByRole("radiogroup", { name: "Focus 桌宠" })).toHaveCount(0);
+  await expect(dialog.getByTestId("pet-skin-preview")).toHaveCount(0);
+  await screenshot(app, "studio", "settings-without-desktop-pets", page);
   await page.keyboard.press("Escape");
-
-  // Focus follows at once: she pops up for 「机器人动作测试」, and she is the one who flies off angry.
-  await focus.getByTestId("focus-settings-toggle").click();
-  await focus.getByTestId("focus-menu-bot").click();
-  const bot = focus.getByTestId("focus-bot");
-  await expect(bot).toHaveClass(/skin-reader/);
-  await expect(bot.getByTestId("reader-art")).toBeVisible();
-  await screenshot(app, "stage-14", "pet-reader-focus", focus, "focus");
-  const flyingOpened = app.waitForEvent("window");
-  await expect(bot).toHaveCount(0, { timeout: 8000 });
-  const flying = await flyingOpened;
-  const angry = flying.getByTestId("focus-bot");
-  await expect(angry).toHaveClass(/skin-reader/);
-  await expect(angry).toHaveClass(/angry/);
-  // 2026-10-16: she looked cut off while flying. The window's shape leaves room round her for the shake and her shadow.
-  const slot = await angry.locator(".pixel-bot-slot").boundingBox();
-  const zoom = await flying.evaluate(() => window.outerWidth / window.innerWidth);
-  await expect
-    .poll(async () => {
-      const shape = await app.evaluate(() => (globalThis as { __amoBotShape?: Array<{ x: number; y: number; width: number; height: number }> }).__amoBotShape ?? []);
-      const s = { x: slot!.x * zoom, y: slot!.y * zoom, r: (slot!.x + slot!.width) * zoom, b: (slot!.y + slot!.height) * zoom };
-      return shape.some((r) => r.x <= s.x - 12 && r.y <= s.y - 12 && r.x + r.width >= s.r + 12 && r.y + r.height >= s.b + 12);
-    })
-    .toBe(true);
-  await screenshot(app, "stage-14", "pet-reader-angry", flying, "focus");
-  await angry.click();
-});
-
-test("Focus 桌宠 「AMO 娘」: her faces on Focus, and the top-left and window icons are hers and follow the work; another pet puts them back (2026-10-26)", async () => {
-  studio = await launchStudio();
-  const { page, app } = studio;
-  const appIcon = () => app.evaluate(() => (globalThis as { __amoAppIcon?: string }).__amoAppIcon ?? "");
   const opened = app.waitForEvent("window");
   await page.getByRole("button", { name: /^Focus/ }).click();
   const focus = await opened;
   await expect(focus.getByTestId("focus-needs")).toHaveText("没有待处理", { timeout: 30_000 });
-  await page.getByRole("button", { name: "设置" }).click();
-  const dialog = page.getByRole("dialog", { name: "设置" });
-  await dialog.getByRole("tab", { name: "界面" }).click();
-  await dialog.getByTestId("pet-skin-mascot").click();
-  await expect(dialog.getByTestId("mascot-art")).toBeVisible();
-  await expect(dialog.getByTestId("pet-skin-mascot-hint")).toContainText("任务栏");
-  await screenshot(app, "stage-18", "S18-pet-mascot-setting", page);
-  await page.keyboard.press("Escape");
-  // Nothing going on: her icon.
-  await expect(page.getByTestId("brand-mark")).toHaveAttribute("src", "./mascot/icon.png");
-  await expect.poll(appIcon).toMatch(/mascot[\\/]icon\.png$/);
-
-  // Waiting for approval: 待命, everywhere; the pet pops up on Focus with that face.
   const ws = await studio.api<Workspace>("POST", "/api/workspaces", { path: studio.workspace("alpha") });
-  await studio.api<{ task: Task; session: Session }>("POST", "/api/tasks", { title: "表情", workspaceId: ws.id, firstSession: { profileId: "codex-mock", text: "[[shell: cmd /c echo mascot]]" } });
-  await expect(page.getByTestId("brand-mark")).toHaveAttribute("src", "./mascot/01-idle.png", { timeout: 30_000 });
-  await expect.poll(appIcon).toMatch(/mascot[\\/]01-idle\.png$/);
-  await expect(focus.getByTestId("focus-bot").getByTestId("mascot-art")).toHaveAttribute("src", "./mascot/01-idle.png");
-  await screenshot(app, "stage-18", "S18-pet-mascot-focus", focus, "focus");
+  await studio.api("POST", "/api/tasks", { title: "长期待处理", workspaceId: ws.id, firstSession: { profileId: "codex-mock", text: "[[shell: echo wait]]" } });
+  await expect(focus.getByTestId("focus-needs")).toHaveText("需要你 1", { timeout: 30_000 });
+  await focus.clock.install(); await focus.clock.fastForward(10 * 60_000);
+  await focus.evaluate(() => window.amo?.focus?.fly?.("legacy renderer request"));
+  await expect.poll(() => app.evaluate(() => (globalThis as { __amoBotFlight?: { flying: boolean } }).__amoBotFlight?.flying)).toBe(false);
+  await expect(focus.getByTestId("focus-bot")).toHaveCount(0);
+  expect(app.windows().filter((w) => w.url().endsWith("#bot"))).toHaveLength(0);
+  await screenshot(app, "studio", "focus-without-desktop-pets", focus, "focus");
+  await focus.getByTestId("focus-settings-toggle").click();
+  await expect(focus.getByTestId("focus-menu-bot")).toHaveCount(0);
+});
 
-  // Approved, it finishes: only finished work to look at — 开心.
-  await focus.getByTestId("focus-entry").getByRole("button", { name: "批准", exact: true }).click();
-  await expect(page.getByTestId("brand-mark")).toHaveAttribute("src", "./mascot/02-happy.png", { timeout: 30_000 });
-  await expect.poll(appIcon).toMatch(/mascot[\\/]02-happy\.png$/);
-
-  // Another pet: the icons are the app's again.
-  await page.getByRole("button", { name: "设置" }).click();
-  await dialog.getByRole("tab", { name: "界面" }).click();
-  await dialog.getByTestId("pet-skin-robot").click();
-  await page.keyboard.press("Escape");
-  await expect(page.getByTestId("brand-mark")).toHaveAttribute("src", "./icon.svg");
-  await expect.poll(appIcon).toMatch(/assets[\\/]icon\.png$/);
+test("Activity reminder previews the supplied artwork at half-screen height without stealing focus", async () => {
+  studio = await launchStudio(); const { page, app } = studio;
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "设置" });
+  await dialog.getByRole("tab", { name: "界面", exact: true }).click();
+  await expect(dialog.getByRole("checkbox", { name: "每15分钟提醒活动" })).toBeChecked();
+  const opened = app.waitForEvent("window"); await dialog.getByRole("button", { name: "预览提醒", exact: true }).click();
+  const reminder = await opened; await expect(reminder.locator(".text")).toContainText("站起来，活动下");
+  const layout = await reminder.evaluate(() => ({ viewport: innerHeight, image: document.querySelector("img")!.getBoundingClientRect().height, loaded: (document.querySelector("img") as HTMLImageElement).naturalWidth > 0 }));
+  expect(layout.loaded).toBe(true); expect(layout.image).toBeCloseTo(layout.viewport / 2, 0);
+  const state = await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows().find((w) => w.getTitle() === "WorkStudio 活动提醒")!; return { focused: w.isFocused(), focusable: w.isFocusable(), onTop: w.isAlwaysOnTop() }; });
+  expect(state).toEqual({ focused: false, focusable: false, onTop: true });
+  await reminder.locator(".tip").evaluate((el) => { for (const a of el.getAnimations()) { a.pause(); a.currentTime = 1000; } });
+  await reminder.screenshot({ path: "screenshots/studio/activity-reminder.png" });
+  await dialog.getByRole("checkbox", { name: "每15分钟提醒活动" }).uncheck();
+  await expect.poll(() => reminder.isClosed()).toBe(true);
+  await page.reload(); await page.getByRole("button", { name: "设置", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: "每15分钟提醒活动" })).not.toBeChecked();
 });
 
 test("Focus: 「我知道了」 counts a 完成待审核 entry as reviewed without going back to the workbench (2026-10-17)", async () => {

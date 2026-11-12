@@ -18,6 +18,7 @@ import { installCanvasWindow } from "./canvas-window.js";
 import { installPlanWindows } from "./plan-window.js";
 import { ResizeTrace } from "./resize-trace.js";
 import { setupBotFlight } from "./bot-window.js";
+import { setupBreakReminder } from "./break-reminder.js";
 import { installFolderIpc } from "./folders.js";
 
 // Electron main process: single instance, connects to (or starts) the resident Host, and opens the workbench window.
@@ -89,8 +90,9 @@ const focusMouseSet = new WeakMap<Electron.WebContents, boolean>();
 /** 界面大小 one step (Ctrl + = / - / 0), set up with the IPC handlers. */
 let stepUiScaleRef: (dir: 1 | -1 | 0) => void = () => undefined;
 const prefs = new ShellPrefs(dataDir);
+const breakReminder = setupBreakReminder({ image: join(here, "..", "assets", "break-reminder.png"), testMode, enabled: () => prefs.breakReminder(), owner: () => mainWindow });
 const reviews = setupReviewWindows({ url: () => (host ? (process.env.AMO_STUDIO_DEV_URL ?? `${host.url}/`) : null), preload: join(here, "preload.cjs"), icon: APP_ICON, testMode });
-// The angry robot that flies about the screen when something waited too long (2026-10-15 evening).
+// Compatibility with retired pet IPC; no idle-triggered flying windows are created.
 const bot = setupBotFlight({
   url: () => (host ? (process.env.AMO_STUDIO_DEV_URL ?? `${host.url}/`) : null),
   preload: join(here, "preload.cjs"),
@@ -463,6 +465,13 @@ if (!app.requestSingleInstanceLock() || quitAsked(process.argv)) {
     if (focusWindow && event.sender === focusWindow.webContents) bot.land();
   });
   ipcMain.handle("amo:bot-message", () => bot.message());
+  ipcMain.handle("amo:break-get", () => prefs.breakReminder());
+  ipcMain.handle("amo:break-set", (event, on: unknown) => {
+    if (event.sender !== mainWindow?.webContents || typeof on !== "boolean") return prefs.breakReminder();
+    prefs.setBreakReminder(on); breakReminder.start(); return on;
+  });
+  ipcMain.handle("amo:break-preview", async (event) => { if (event.sender === mainWindow?.webContents) await breakReminder.show(); });
+  ipcMain.handle("amo:break-dismiss", (event) => { if (event.sender === mainWindow?.webContents) breakReminder.hide(); });
   ipcMain.on("amo:bot-shape", (event, rects: unknown) => {
     if (Array.isArray(rects)) bot.setShape(event.sender, rects as Array<{ x: number; y: number; width: number; height: number }>);
   });
@@ -621,11 +630,13 @@ if (!app.requestSingleInstanceLock() || quitAsked(process.argv)) {
       });
       watchRemoteUse();
       mainWindow = createMainWindow(host);
+      breakReminder.start();
       mainWindow.on("closed", () => {
         mainWindow = null;
         // Focus, the review and the viewer windows live with the workbench window.
         focusWindow?.destroy();
         bot.destroy();
+        breakReminder.stop();
         reviews.closeAll();
         viewers.closeAll();
       });
@@ -724,6 +735,7 @@ if (!app.requestSingleInstanceLock() || quitAsked(process.argv)) {
     void stopHost(host).finally(() => app.quit());
   });
   app.on("will-quit", () => {
+    breakReminder.stop();
     trace?.mark("quit", "will-quit");
     removeShellFile();
     tray?.destroy();

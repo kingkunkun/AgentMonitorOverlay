@@ -11,10 +11,8 @@ import { RelayCard, useRelays } from "../relays/Relays.js";
 import { TeamSendCard, useTeamSends } from "../teamrelay/TeamRelay.js";
 import { useWaitingQuestionList } from "../canvas/useCallouts.js";
 import { useSettings } from "../settings/useSettings.js";
-import { ANGRY_AFTER_MS, attentionKeys, longestWait, PASSTHROUGH_INTERACTIVE, pruneSeen, trackFirstSeen, readFocusLocked, readFocusPassthrough, shouldAlert, writeFocusLocked, writeFocusPassthrough } from "./attention.js";
-import { PixelBot, type BotMood } from "./PixelBot.js";
-import { usePetSkin } from "./petSkin.js";
-import { FocusEntry, isToReview, summary, TO_REVIEW } from "./FocusEntry.js";
+import { attentionKeys, PASSTHROUGH_INTERACTIVE, pruneSeen, readFocusLocked, readFocusPassthrough, shouldAlert, writeFocusLocked, writeFocusPassthrough } from "./attention.js";
+import { FocusEntry, isToReview, TO_REVIEW } from "./FocusEntry.js";
 import { PinButton, PinnedEntry, WAITING_SUBS, WorkingEntry } from "./FocusWorking.js";
 import { StatusWord } from "./StatusWord.js";
 import { ALSO_MINE_KEY, PINNED_KEY, pinnedSession, SUBS_OPEN_KEY } from "./pins.js";
@@ -33,15 +31,7 @@ export { isToReview, latestSnippet, summary } from "./FocusEntry.js";
 
 // The Focus window: "what needs me right now". Lists sessions waiting for approval or review, newest first; one entry
 // opens to show its latest content, approvals can be granted in place, everything else goes back to the workbench.
-// S14-J: while something new needs the person the panel glows and a pixel robot dances above it until they look.
-// 2026-10-15: the window takes clicks wherever Focus draws (it tells the main process its shape); 「Focus 设置」 (the
-// gear, or a right-click) is a small box with × — 移动位置 / 锁定位置 / 点击穿透 / 收起 / 打开 Studio / 隐藏.
-// 2026-10-15 evening: also sessions whose reply ended (「回复完了」) or that failed since the person last looked at them
-// in the main window (lib/sessionSeen.ts); clicking one here counts as looking too.
-// Later that evening: two kinds only — 事 (approvals, questions, decisions, proposals, failures) and 完成待审核 (a reply
-// that ended unseen, or a session waiting for review). The robot says how many of each; it is green when all that is
-// new is finished work. Left unacknowledged for 5 minutes it gets angry and flies about the screen in a window of its
-// own (app/src/bot-window.ts) until clicked or dealt with; 「Focus 设置」→「机器人动作测试」 plays every mood once.
+// Focus keeps its normal status/approval list. Desktop pets and unattended flying reminders are disabled.
 
 export function needsMe(state: StateSnapshot): Session[] {
   return state.sessions
@@ -105,7 +95,6 @@ export function FocusApp() {
     .sort((a, b) => a.first.createdAt.localeCompare(b.first.createdAt));
 
   useWindowShape();
-  const skin = usePetSkin();
   // Each press the page sees, so the main process knows no click was dropped (app/src/focus-clicks.ts).
   useEffect(() => {
     const pressed = () => window.amo?.focus?.pressed?.();
@@ -203,43 +192,8 @@ export function FocusApp() {
   const reviewKeys = new Set(attentionKeys(toReview, [], []));
   // Green when everything new is finished work to look at.
   const calm = alerting && keys.every((k) => seen.has(k) || reviewKeys.has(k));
-  const things = waiting.length + finished.length + asks.length + proposals.length + plans.length + relays.length + teamSends.length + canvasAsks.length + pairAsks.length + taskAsks.length - toReview.length;
-
-  // How long the oldest unacknowledged thing has waited; the clock ticks while something does.
-  const firstSeen = useRef<Map<string, number>>(new Map());
-  firstSeen.current = trackFirstSeen(firstSeen.current, keys, Date.now());
-  const [now, setNow] = useState(Date.now);
-  useEffect(() => {
-    if (!alerting) return;
-    setNow(Date.now());
-    const t = setInterval(() => setNow(Date.now()), 10_000);
-    return () => clearInterval(t);
-  }, [alerting]);
-  const waited = longestWait(keys, seen, firstSeen.current, now);
-  // 「机器人动作测试」: alert, calm, then angry and flying, a few seconds each.
-  const [demo, setDemo] = useState<BotMood | null>(null);
-  useEffect(() => {
-    if (!demo) return;
-    const t = setTimeout(() => setDemo(demo === "alert" ? "calm" : demo === "calm" ? "angry" : null), demo === "angry" ? 10_000 : 2500);
-    return () => clearTimeout(t);
-  }, [demo]);
-  const flyMessage = moving
-    ? ""
-    : demo
-      ? demo === "angry"
-        ? "生气了！（测试，点我停下）"
-        : ""
-      : alerting && waited >= ANGRY_AFTER_MS
-        ? `${summary(things, toReview.length)}，等你 ${Math.floor(waited / 60_000)} 分钟了！`
-        : "";
-  useEffect(() => {
-    if (flyMessage) window.amo?.focus?.fly?.(flyMessage);
-    else window.amo?.focus?.land?.();
-  }, [flyMessage]);
-  useEffect(() => () => window.amo?.focus?.land?.(), []);
-  // The flying robot was clicked: it landed; open what needs the person (or end the test).
-  const caught = useRef(() => {});
-  useEffect(() => window.amo?.focus?.onBotCaught?.(() => caught.current()), []);
+  // Retire any flight started by a renderer from before this upgrade, including on renderer reload.
+  useEffect(() => { window.amo?.focus?.land?.(); return () => window.amo?.focus?.land?.(); }, []);
   const acknowledge = () => setSeen(new Set(keys));
 
   const togglePassthrough = () => {
@@ -297,21 +251,6 @@ export function FocusApp() {
     goTo(sessionId, taskId);
   };
 
-  /** The robot's click: the first thing that needs the person, in the workbench. */
-  const openFirst = () => {
-    acknowledge();
-    const s = list[0];
-    const d = asks[0];
-    if (s) goToDeal(s.id, s.taskId);
-    else if (d) goToDeal(d.sessionId, d.taskId);
-    else if (pairAsks.length || taskAsks.length) void window.amo?.openInWorkbench?.({ settings: "remote" });
-    else void window.amo?.openInWorkbench?.({ taskId: "" });
-  };
-  caught.current = () => (demo ? setDemo(null) : openFirst());
-  const slotMood: BotMood = demo && demo !== "angry" ? demo : calm ? "calm" : "alert";
-  const slotSay = demo === "alert" ? "1 件事（测试）" : demo === "calm" ? "1 个完成待审核（测试）" : summary(things, toReview.length);
-  const rootCalm = demo ? demo === "calm" : calm;
-
   const panelClass = ["focus-panel", locked ? "locked" : "", moving ? "moving" : "", sizing ? "sizing" : "", alerting ? "alerting" : "", passthrough ? "passthrough" : ""].filter(Boolean).join(" ");
   /** The grip's drag: the main process reads the pointer itself; moves go at most once a frame. */
   const grip = {
@@ -339,12 +278,7 @@ export function FocusApp() {
     },
   };
   return (
-    <div className={rootCalm ? "focus-root calm" : "focus-root"}>
-      {(alerting || demo) && !moving && !flyMessage && (
-        <div className="focus-bot-slot">
-          <PixelBot mood={slotMood} skin={skin} message={slotSay} onClick={demo ? () => setDemo(null) : openFirst} />
-        </div>
-      )}
+    <div className={calm ? "focus-root calm" : "focus-root"}>
       {pop && (
         <FocusSettings
           onClose={() => setPop(false)}
@@ -354,7 +288,6 @@ export function FocusApp() {
             { label: "锁定位置", icon: ICON.lock, checked: locked, hint: "锁定后标题栏不能拖动", onPick: toggleLock, testId: "focus-menu-lock" },
             { label: "点击穿透", icon: ICON.through, checked: passthrough, hint: "点在 Focus 上会落到下面的窗口，只有按钮能点", onPick: togglePassthrough, testId: "focus-menu-through" },
             { label: compact ? "展开会话列表" : "收起成一行", icon: compact ? ICON.expand : ICON.collapse, close: true, onPick: () => setCompact(!compact), testId: "focus-menu-compact" },
-            { label: "机器人动作测试", icon: ICON.bot, hint: "跳舞、变绿、生气乱飞各演一遍", close: true, onPick: () => setDemo("alert"), testId: "focus-menu-bot" },
             { label: "打开 Studio 主窗口", icon: ICON.window, close: true, onPick: () => void window.amo?.openInWorkbench?.({ show: true }), testId: "focus-menu-open" },
             { label: "主窗口回到屏幕中央", icon: ICON.center, hint: "主窗口拖到屏幕外找不到时：放回 Focus 所在屏幕的正中", close: true, onPick: () => void window.amo?.focus?.centerMain?.(), testId: "focus-menu-center" },
             { label: "隐藏 Focus", icon: ICON.hide, hint: "主窗口顶栏的 Focus 按钮可以再打开", close: true, onPick: () => void window.amo?.focus?.set(false), testId: "focus-menu-hide" },
@@ -418,7 +351,7 @@ export function FocusApp() {
         )}
         {!compact && (needs > 0 || working.length > 0 || pinned.length > 0) && (
           <div className="focus-list" onClickCapture={acknowledge} onClick={(e) => revealOpened(e.currentTarget, e.target)} data-testid="focus-list">
-            {/* A click here acknowledges the alert, on click rather than on press: the robot going away lets the panel
+            {/* A click acknowledges the alert, on click rather than on press: changing the panel
                 grow, which moved the buttons between press and release and lost the click (2026-10-20). */}
             {/* On top: Focus grows upwards from the bottom of the screen, so what starts and stops working here does not
                 move the buttons below it (2026-10-20: a decision's buttons jumped as a session finished). */}
