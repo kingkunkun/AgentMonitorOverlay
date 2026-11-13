@@ -13,6 +13,12 @@ export async function uploadAttachment(link: HostLink, file: Blob, name = (file 
   return request<Attachment>(link, "POST", `/api/attachments?${query.toString()}`, file);
 }
 
+/** Any file, not only pictures (work attachments): kept as `<id>-<name>` so an agent reading the path sees its name. */
+export async function uploadFile(link: HostLink, file: Blob, name = (file as File).name ?? "file"): Promise<Attachment> {
+  const query = new URLSearchParams({ name: name || "file" });
+  return request<Attachment>(link, "POST", `/api/attachments/file?${query.toString()}`, file);
+}
+
 /** A URL an <img> can load (the token rides in the query; the Host only accepts that for attachments). */
 export function attachmentUrl(link: HostLink, id: string): string {
   return `${link.url}/api/attachments/${encodeURIComponent(id)}?token=${encodeURIComponent(link.token)}`;

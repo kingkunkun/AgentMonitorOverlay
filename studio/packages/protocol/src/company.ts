@@ -84,6 +84,8 @@ export interface CompanySnapshot { agents: CompanyAgent[]; rooms: CompanyRoom[];
 
 export type CompanyWorkPriority = "low" | "medium" | "high";
 export type CompanyWorkStatus = "queued" | "dispatching" | "running" | "blocked" | "done" | "cancelled";
+/** A picture or file handed over with the objective; agents read it by its local path. */
+export interface CompanyWorkAttachment { id: Id; name: string; mime: string; size: number; path: string }
 export interface CompanyWork {
   id: Id;
   title: string;
@@ -102,9 +104,13 @@ export interface CompanyWork {
   clientId: string;
   manualStart?: boolean;
   outcomeUnknown?: boolean;
+  /** Pictures and files sent along with the objective; the dispatch lists each path. */
+  attachments?: CompanyWorkAttachment[];
+  /** `agent`: the Agent's own bound conversation (default). `new`: a fresh chat task for this work. */
+  sessionMode?: "agent" | "new";
 }
-export interface CompanyWorkInput { title: string; description?: string; acceptance?: string; priority: CompanyWorkPriority; agentId: Id; roomId: Id; clientId: string }
-export interface CompanyWorkUpdate { title?: string; description?: string; acceptance?: string; priority?: CompanyWorkPriority; agentId?: Id }
+export interface CompanyWorkInput { title: string; description?: string; acceptance?: string; priority: CompanyWorkPriority; agentId: Id; roomId: Id; clientId: string; attachments?: CompanyWorkAttachment[]; sessionMode?: "agent" | "new" }
+export interface CompanyWorkUpdate { title?: string; description?: string; acceptance?: string; priority?: CompanyWorkPriority; agentId?: Id; attachments?: CompanyWorkAttachment[]; sessionMode?: "agent" | "new" }
 export interface CompanyWorkAction { action: "start" | "retry" | "cancel"; confirmUnknown?: boolean }
 export interface CompanyWorkReport { action: "progress" | "done" | "blocked" | "handoff"; report: string; agentId?: Id; clientMessageId: string }
 export interface CompanyEvolution { id: Id; agentId: Id; before: string; after: string; version: number; reason: string; workId: Id | null; actorId: Id; createdAt: string }

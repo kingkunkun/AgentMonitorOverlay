@@ -271,5 +271,26 @@
   .company-agent-detail { width: auto; overflow: visible; border-left: 0; border-top: 1px solid var(--border); }
   .company-agent-grid { grid-template-columns: repeat(2, minmax(160px, 1fr)); }
   .company-agent-card { min-height: 205px; padding: 16px; }
-  .company-org-notes { grid-template-columns: 1fr; gap: 18px; }
+.company-org-notes { grid-template-columns: 1fr; gap: 18px; }
 }
+
+/* 添加工作：输入聚焦走边框提示，不再出现红色描边 */
+.company-form-scroll :is(input, textarea, select):focus-visible { outline: none; border-color: var(--border-strong); box-shadow: 0 0 0 3px var(--chip); }
+.modal.company-editor { width: min(760px, calc(100vw - 48px)); }
+.company-form-scroll textarea.company-work-body { min-height: 220px; }
+.company-attach-drop { border: 1px dashed var(--border); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; background: var(--bg); transition: border-color .15s ease, background .15s ease; }
+.company-attach-drop[data-dragging] { border-color: var(--border-strong); background: var(--selected); }
+.company-attach-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; }
+.company-attach-pick { position: relative; display: inline-flex; align-items: center; padding: 5px 10px; border: 1px solid var(--border); border-radius: 7px; font-size: 11px; cursor: pointer; background: var(--panel-raised); }
+.company-attach-pick:hover { border-color: var(--border-strong); }
+.company-attach-pick input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.company-attach-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.company-attach-chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-raised); font-size: 11px; max-width: 100%; }
+.company-attach-chip img { width: 30px; height: 30px; object-fit: cover; border-radius: 5px; }
+.company-attach-name { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.company-attach-chip small { color: var(--text-dim); font-size: 10px; }
+.company-attach-remove { border: 0; background: transparent; color: var(--text-dim); font-size: 13px; line-height: 1; padding: 2px 4px; border-radius: 5px; cursor: pointer; }
+.company-attach-remove:hover { background: var(--chip); color: var(--text); }
+.company-work-files { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 11px; }
+.company-work-files li { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); }
+.company-work-files small { color: var(--text-dim); font-size: 10px; overflow-wrap: anywhere; }

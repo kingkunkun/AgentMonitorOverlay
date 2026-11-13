@@ -666,6 +666,8 @@ export interface HostRoutes
   "DELETE /api/claude-accounts/:id": { req: void; res: ClaudeAccountsState };
   /** Raw bytes in the body (not JSON), the type in `content-type`, the file name in `?name=`. */
   "POST /api/attachments": { req: void; res: Attachment };
+  /** Any file (not only pictures): raw bytes in the body, the file name in `?name=`. Used by work attachments. */
+  "POST /api/attachments/file": { req: void; res: Attachment };
   /** The file itself; also accepts `?token=` so an <img> can load it. */
   "GET /api/attachments/:id": { req: void; res: Blob };
   /** `commonDir`: moves the common space to this folder (created if missing; it must not be a registered project). */

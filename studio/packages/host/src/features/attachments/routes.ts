@@ -11,6 +11,11 @@ export function attachmentsRoutes(service: HostService): Route[] {
       { rawBody: MAX_ATTACHMENT_BYTES },
     ),
     route(
+      "POST /api/attachments/file",
+      ({ body, query }) => service.attachments.saveFile(bytes(body), query.get("name") ?? "file"),
+      { rawBody: MAX_ATTACHMENT_BYTES },
+    ),
+    route(
       "GET /api/attachments/:id",
       ({ params }) => {
         const a = service.attachments.get(params.id!);
