@@ -40,8 +40,10 @@ class MobileRefreshUiTest {
         for ((tag, value) in listOf("login-server" to credentials.getString("server"), "login-name" to credentials.getString("name"), "login-password" to credentials.getString("password"))) compose.onNodeWithTag(tag).performScrollTo().performTextReplacement(value)
         hideKeyboard(); compose.onNodeWithTag("login-submit").performScrollTo().performClick()
         wait(hasTestTag("tasks"))
-        compose.waitUntil(60_000) { exists(hasTestTag("peer-available")) || exists(hasTestTag("task-row")) }
+        compose.waitUntil(60_000) { exists(hasTestTag("peer-available")) || exists(hasTestTag("folder-row")) }
         if (exists(hasTestTag("peer-available"))) compose.onAllNodesWithTag("peer-available")[0].performClick()
+        wait(hasTestTag("folder-row"))
+        compose.onNode(hasTestTag("folder-row") and hasText("Android fixture project")).performClick()
         wait(hasTestTag("task-row")); screenshot("mobile-home")
         compose.onNode(hasTestTag("task-row") and hasText("Android integration fixture")).performClick()
         // One tap opens the actual composer, never a session-item interstitial.

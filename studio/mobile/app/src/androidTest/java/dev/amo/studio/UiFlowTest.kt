@@ -149,6 +149,9 @@ class UiFlowTest {
         }
         phase("waiting for paired fixture host online")
         waitFor(online)
+        waitFor(hasTestTag("folder-row"))
+        screenshot("home-folders-light")
+        compose.onNode(hasTestTag("folder-row") and hasText("Android fixture project")).performClick()
         waitFor(hasTestTag("task-row"))
         screenshot("home-light")
         waitEnabled("task-create")
