@@ -52,6 +52,13 @@ APP_ID=$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier'
 [ "$APP_ID" = "$APP_ID_EXPECTED" ] || fail "描述文件的 App ID 是 $APP_ID，不是 $APP_ID_EXPECTED"
 IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/^ *[0-9]*) \([0-9A-F]\{40\}\) "Apple Distribution: .*(D39JR23NC7)"$/\1/p' | head -n 1)
 [ -n "$IDENTITY" ] || fail "登录钥匙串里没有 Apple Distribution (D39JR23NC7)"
+# 从 ssh 进来时钥匙串是锁着的，codesign 会报 errSecInternalComponent；密码只放在这台机器的 ~/.workstudio 里。
+KEYCHAIN_PASSWORD_FILE=$HOME/.workstudio/keychain-password
+if [ -f "$KEYCHAIN_PASSWORD_FILE" ]; then
+  KC_PASSWORD=$(cat "$KEYCHAIN_PASSWORD_FILE")
+  security unlock-keychain -p "$KC_PASSWORD" "$HOME/Library/Keychains/login.keychain-db" >>"$LOG" 2>&1 || fail "登录钥匙串解不开"
+  security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PASSWORD" "$HOME/Library/Keychains/login.keychain-db" >>"$LOG" 2>&1 || true
+fi
 say "  $PROFILE_NAME、$APP_ID、签名身份都在"
 
 step 3 kotlin "编译共用 Kotlin（Shared.framework）"
@@ -108,8 +115,20 @@ if [ -f "$CONFIG" ]; then
 fi
 HAVE_KEY=0
 if [ -n "$ASC_KEY_ID" ] && [ -n "$ASC_ISSUER_ID" ] && [ -f "$HOME/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8" ]; then HAVE_KEY=1; fi
-if [ $HAVE_KEY = 1 ]; then
-  run xcrun altool --validate-app -f "$IPA" -t ios --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+HAVE_APPLE_ID=0
+ASC_CREDENTIALS=$HOME/.workstudio/asc-credential
+ASC_PROVIDER_ID=${ASC_PROVIDER_ID:-8cc1e07d-d16a-4d06-b718-224309a4d511}
+if [ -f "$ASC_CREDENTIALS" ]; then
+  ASC_USER=$(cut -f1 "$ASC_CREDENTIALS" 2>/dev/null)
+  ASC_PASSWORD=$(cut -f2 "$ASC_CREDENTIALS" 2>/dev/null)
+  if [ -n "$ASC_USER" ] && [ -n "$ASC_PASSWORD" ]; then HAVE_APPLE_ID=1; fi
+fi
+if [ $HAVE_KEY = 1 ] || [ $HAVE_APPLE_ID = 1 ]; then
+  if [ $HAVE_KEY = 1 ]; then
+    run xcrun altool --validate-app -f "$IPA" -t ios --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+  else
+    run xcrun altool --validate-app -f "$IPA" -t ios -u "$ASC_USER" -p "$ASC_PASSWORD" --provider-public-id "$ASC_PROVIDER_ID"
+  fi
   say "  通过"
 else
   say "  跳过：还没有 App Store Connect API Key"
@@ -117,13 +136,19 @@ fi
 
 step 7 upload "上传到 TestFlight"
 : >"$LOG"
-if [ $UPLOAD = 1 ] && [ $HAVE_KEY = 1 ]; then
-  run xcrun altool --upload-app -f "$IPA" -t ios --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+HAVE_UPLOAD_CREDENTIAL=0
+if [ $HAVE_KEY = 1 ] || [ $HAVE_APPLE_ID = 1 ]; then HAVE_UPLOAD_CREDENTIAL=1; fi
+if [ $UPLOAD = 1 ] && [ $HAVE_UPLOAD_CREDENTIAL = 1 ]; then
+  if [ $HAVE_KEY = 1 ]; then
+    run xcrun altool --upload-app -f "$IPA" -t ios --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+  else
+    run xcrun altool --upload-app -f "$IPA" -t ios -u "$ASC_USER" -p "$ASC_PASSWORD" --provider-public-id "$ASC_PROVIDER_ID"
+  fi
   say "  已上传：$VERSION ($BUILD)"
 else
   if [ $UPLOAD = 0 ]; then say "  跳过：--no-upload"; else say "  跳过：还没有 App Store Connect API Key"; fi
 fi
 cat >"$RUN/build.json" <<EOF
-{"version":"$VERSION","build":"$BUILD","ipa":"$IPA","uploaded":$([ "$UPLOAD" = 1 ] && [ "$HAVE_KEY" = 1 ] && echo true || echo false),"finishedAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+{"version":"$VERSION","build":"$BUILD","ipa":"$IPA","uploaded":$([ "$UPLOAD" = 1 ] && [ "$HAVE_UPLOAD_CREDENTIAL" = 1 ] && echo true || echo false),"finishedAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
 say "✓ iOS $VERSION ($BUILD) 完成"
