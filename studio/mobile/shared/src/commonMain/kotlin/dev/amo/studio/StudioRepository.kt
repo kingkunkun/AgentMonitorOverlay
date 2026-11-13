@@ -73,7 +73,7 @@ class StudioRepository(private val platform: Platform) {
     private val background = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val client: HttpClient = platform.httpClient()
     private val device = prefs.string("device") ?: ("d_" + Uuid.random().toHexString().take(24)).also { prefs.put("device", it) }
-    private val mutable = MutableStateFlow(StudioState(deviceName = platform.deviceName, theme = prefs.string("theme-v2") ?: "codex", pinnedTasks = prefs.string("chat-pins").orEmpty().split('\n').filter { it.isNotBlank() }.toSet(), resumeLast = prefs.boolean("resume-last", true)))
+    private val mutable = MutableStateFlow(StudioState(deviceName = platform.deviceName, theme = prefs.string("theme-v2") ?: "codex", pinnedTasks = prefs.string("chat-pins").orEmpty().split('\n').filter { it.isNotBlank() }.toSet(), resumeLast = prefs.boolean("resume-last", true), recentServers = savedServers()))
     val state: StateFlow<StudioState> = mutable.asStateFlow()
     private var socket: DefaultClientWebSocketSession? = null
     private var socketJob: Job? = null
@@ -101,6 +101,11 @@ class StudioRepository(private val platform: Platform) {
     private var syncAgain = false
     private var lastSync = 0L
     private fun key(peer: Peer, id: String) = "${peer.identity}/$id"
+    /** 登录过的服务器地址（2026-11-13）：只存地址，不存账号和口令；退出登录也保留。 */
+    private fun savedServers(): List<String> {
+        val saved = prefs.string("recent-servers") ?: return emptyList()
+        return runCatching { val a = JSONArray(saved); (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() } }.getOrDefault(emptyList())
+    }
     private fun update(f: (StudioState) -> StudioState) = mutable.update(f)
     private fun message(text: String?) = update { it.copy(message = text) }
     private class OperationEpoch(val value: Int) : AbstractCoroutineContextElement(Key) { companion object Key : CoroutineContext.Key<OperationEpoch> }
@@ -140,9 +145,11 @@ class StudioRepository(private val platform: Platform) {
             if (epoch != generation || closed) return@launch
             val account = Account(base, answer.getString("name"), answer.getString("key"))
             val encrypted = platform.encrypt(account.key)
+            val recent = (listOf(base) + state.value.recentServers).distinct().take(3)
             disconnect(); snapshots.clear(); histories.clear(); saveJob?.cancel()
             prefs.put("account", JSONObject().put("server", base).put("name", account.name).put("token", encrypted).toString())
-            update { StudioState(account = account, deviceName = it.deviceName, theme = it.theme, pinnedTasks = it.pinnedTasks, resumeLast = it.resumeLast) }; restoreCache(account); connect()
+            prefs.put("recent-servers", JSONArray(recent).toString())
+            update { StudioState(account = account, deviceName = it.deviceName, theme = it.theme, pinnedTasks = it.pinnedTasks, resumeLast = it.resumeLast, recentServers = recent) }; restoreCache(account); connect()
         } finally { update { it.copy(busy = false) } }
     }
 
@@ -189,7 +196,7 @@ class StudioRepository(private val platform: Platform) {
         runCatching { updater.openInstaller(file) }.onFailure { e -> setUpdate { it.copy(note = "打不开安装界面：${e.message}") } }
     }
 
-    fun logout() { flushNow(); disconnect(); snapshots.clear(); histories.clear(); cache = null; prefs.remove("account", "last"); update { StudioState(deviceName = it.deviceName, theme = it.theme, pinnedTasks = it.pinnedTasks, resumeLast = it.resumeLast) } }
+    fun logout() { flushNow(); disconnect(); snapshots.clear(); histories.clear(); cache = null; prefs.remove("account", "last"); update { StudioState(deviceName = it.deviceName, theme = it.theme, pinnedTasks = it.pinnedTasks, resumeLast = it.resumeLast, recentServers = it.recentServers) } }
     fun setTheme(theme: String) { if (theme !in listOf("codex", "light", "dark", "system")) return; prefs.put("theme-v2", theme); update { it.copy(theme = theme) } }
     fun pinTask(task: RemoteTask) { val pins = state.value.pinnedTasks.let { if (task.key in it) it - task.key else it + task.key }; prefs.put("chat-pins", pins.joinToString("\n")); update { it.copy(pinnedTasks = pins) } }
     fun renameTask(task: RemoteTask, title: String) = mutate { check(title.isNotBlank()) { "聊天名称不能为空" }; command(task.peer, "rt.rename", JSONObject().put("taskId", task.id).put("title", title.trim())); fetchTask(task.peer, task.id) }

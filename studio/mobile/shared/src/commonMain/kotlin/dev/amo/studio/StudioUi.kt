@@ -343,8 +343,9 @@ private fun taskTone(t: RemoteTask): Tone {
 // ---- 登录
 
 @Composable private fun Login(state: StudioState, repo: StudioRepository) {
-    // Empty, no team server's address (2026-11-05, the user: the source is public now, people run their own relay).
-    var server by rememberSaveable { mutableStateOf("") }
+    // 记住登录过的地址（2026-11-13）：局域网和 Tailscale 可以来回切，不用每次重新记 IP。
+    val known = state.recentServers.map { it.removePrefix("http://").removePrefix("https://").trimEnd('/') }
+    var server by rememberSaveable { mutableStateOf(known.firstOrNull().orEmpty()) }
     var name by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 32.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -353,6 +354,12 @@ private fun taskTone(t: RemoteTask): Tone {
         Text("登录保存在此设备并加密，覆盖安装无需重新输入；不要卸载或清除应用数据。", color = LocalAmoColors.current.dim, style = MaterialTheme.typography.bodySmall)
         Spacer(Modifier.height(4.dp))
         Field(server, { server = it }, "服务器地址", "login-server", hint = "比如 192.168.1.20:47950")
+        if (known.isNotEmpty()) {
+            Text("最近用过", color = LocalAmoColors.current.dim, style = MaterialTheme.typography.bodySmall)
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                known.forEach { address -> Chip(address, server.trim().trimEnd('/') == address, null) { server = address } }
+            }
+        }
         Field(name, { name = it }, "账号", "login-name")
         OutlinedTextField(password, { password = it }, label = { Text("密码") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth().testTag("login-password"))
         PrimaryButton(if (state.busy) "正在登录…" else "登录", "login-submit", !state.busy && server.isNotBlank() && name.isNotBlank() && password.isNotBlank(), Modifier.fillMaxWidth()) { repo.login(server.trim(), name.trim(), password); password = "" }

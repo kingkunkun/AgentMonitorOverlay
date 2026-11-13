@@ -69,6 +69,8 @@ data class StudioState(
     val update: AppUpdate = AppUpdate(),
     /** Open the last conversation when the app starts (设置). */
     val resumeLast: Boolean = true,
+    /** 登录过的服务器地址，新的在前（2026-11-13：填过一次，下次登录不用再记 IP）。 */
+    val recentServers: List<String> = emptyList(),
 )
 data class ViewedFile(val name: String, val kind: String, val mime: String, val bytes: ByteArray, val path: String)
 
