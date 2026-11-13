@@ -1,7 +1,7 @@
 import type { codex } from "@amo-studio/protocol";
 import type { CodexRpcClient } from "./rpc-client.js";
 
-const REQUIRED = ["company_group_read", "company_message_send"] as const;
+const REQUIRED = ["company_group_read", "company_message_send", "company_work_read", "company_work_report", "company_self_improve"] as const;
 const RPC_TIMEOUT_MS = 10_000;
 
 /** Preparation failed before any user input reached Codex. The inbox may offer an ordinary retry. */

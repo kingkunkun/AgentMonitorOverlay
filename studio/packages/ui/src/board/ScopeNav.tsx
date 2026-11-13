@@ -63,7 +63,7 @@ interface ScopeNavProps {
    * out while it is turned off. While it is in front no scope row is current.
    */
   panorama?: { current: boolean; open(): void };
-  company?: { current?: "rooms" | "agents" | "org"; open(tab: "rooms" | "agents" | "org"): void };
+  company?: { current?: "rooms" | "agents" | "org" | "work"; open(tab: "rooms" | "agents" | "org" | "work"): void };
 }
 
 const isCurrent = (a: Scope, b: Scope) => a.kind === b.kind && (a.kind === "all" || (b.kind !== "all" && a.id === b.id));
@@ -416,7 +416,7 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
   if (collapsed)
     return (
       <nav className="scope-nav collapsed" aria-label="范围">
-        {company && (["rooms", "agents", "org"] as const).map((tab) => <button key={tab} className="fold-btn" aria-label={{ rooms: "工作群", agents: "Agent 管理", org: "组织架构" }[tab]} title={{ rooms: "工作群", agents: "Agent 管理", org: "组织架构" }[tab]} aria-current={company.current === tab ? "page" : undefined} onClick={() => company.open(tab)}><CompanyIcon kind={tab} /></button>)}
+        {company && (["rooms", "agents", "org", "work"] as const).map((tab) => <button key={tab} className="fold-btn" aria-label={{ rooms: "工作群", agents: "Agent 管理", org: "组织架构", work: "工作列表" }[tab]} title={{ rooms: "工作群", agents: "Agent 管理", org: "组织架构", work: "工作列表" }[tab]} aria-current={company.current === tab ? "page" : undefined} onClick={() => company.open(tab)}><CompanyIcon kind={tab} /></button>)}
         <span className="spacer" />
         {onSettings && (
           <button type="button" className="fold-btn nav-settings-folded" onClick={onSettings} aria-label="设置" title="设置">
@@ -438,7 +438,7 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
       <div className="nav-top">
         <button type="button" className="nav-row nav-new-chat" onClick={() => onNewChat?.()} data-testid="nav-new-chat">✎ <span>新聊天</span></button>
         {row(null, null, { kind: "all" }, "全部聊天", liveTasks.length, "scope-all")}
-        {company && <div className="company-nav" aria-label="公司工作台">{(["rooms", "agents", "org"] as const).map((tab) => <button key={tab} type="button" className="nav-row" aria-current={company.current === tab ? "page" : undefined} onClick={() => company.open(tab)} data-testid={`nav-company-${tab}`}><CompanyIcon kind={tab} /><span className="name">{{ rooms: "工作群", agents: "Agent 管理", org: "组织架构" }[tab]}</span></button>)}</div>}
+        {company && <div className="company-nav" aria-label="公司工作台">{(["rooms", "agents", "org", "work"] as const).map((tab) => <button key={tab} type="button" className="nav-row" aria-current={company.current === tab ? "page" : undefined} onClick={() => company.open(tab)} data-testid={`nav-company-${tab}`}><CompanyIcon kind={tab} /><span className="name">{{ rooms: "工作群", agents: "Agent 管理", org: "组织架构", work: "工作列表" }[tab]}</span></button>)}</div>}
         {panorama && (
           <div className="nav-item">
             <button type="button" className="nav-row" aria-current={panorama.current} onClick={panorama.open} data-testid="nav-panorama" title="全景：所有专题和任务画在一张图上（测试功能）">

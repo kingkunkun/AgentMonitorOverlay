@@ -25,6 +25,8 @@ type CompanyActive = { itemId: Id; seq: number; observed: boolean };
 type InboxDelivery = { itemId: Id; state: "sending" | "delivered" | "failed" | "unknown"; error?: string };
 
 export class SessionInbox extends Feature {
+  /** Resolve an Agent's selected model only when its held company job is about to enter a new turn. */
+  prepareCompany?: (sessionId: Id, itemId: Id) => Promise<void>;
   private companyActiveCache: Record<Id, CompanyActive> | null = null;
   private deliveryListeners = new Set<(event: InboxDelivery) => void>();
 
@@ -198,6 +200,12 @@ export class SessionInbox extends Feature {
       startedCompany = current.raw?.method === "user/company-inbox";
       try {
         if (!rt.resend) throw Object.assign(new Error("this Host cannot send a held message"), { deliveryNotAttempted: true });
+        if (startedCompany && this.prepareCompany) {
+          try { await this.prepareCompany(sessionId, current.id); }
+          catch (err) { throw Object.assign(err instanceof Error ? err : new Error(String(err)), { deliveryNotAttempted: true }); }
+        }
+        // Model discovery can await I/O. A human may start a turn or stop the session during that wait.
+        if (startedCompany && (!free(this.requireSession(sessionId)) || this.paused.has(sessionId))) break;
         this.store.transaction(() => {
           if (startedCompany) { this.companyActive()[sessionId] = { itemId: current.id, seq: current.seq, observed: false }; this.rememberCompany(); }
           this.delivery({ itemId: current.id, state: "sending" });

@@ -25,6 +25,10 @@ export interface CompanyAgent {
   workspaceId: Id | null;
   taskId: Id | null;
   sessionId: Id | null;
+  model?: string | null;
+  autonomous?: boolean;
+  allowEvolution?: boolean;
+  instructionsVersion?: number;
   /** Display/documentation only. It is never interpreted as a shell command or a connection target. */
   machine: { label: string; address: string; capacity: "high" | "low" | "other" } | null;
   /** One conversation at a time; incoming work waits behind an existing turn. */
@@ -36,7 +40,7 @@ export interface CompanyAgent {
   updatedAt: string;
 }
 
-export type CompanyAgentInput = Partial<Pick<CompanyAgent, "name" | "role" | "managerId" | "description" | "instructions" | "profileId" | "workspaceId" | "taskId" | "sessionId" | "machine" | "enabled">>;
+export type CompanyAgentInput = Partial<Pick<CompanyAgent, "name" | "role" | "managerId" | "description" | "instructions" | "profileId" | "workspaceId" | "taskId" | "sessionId" | "machine" | "enabled" | "model" | "autonomous" | "allowEvolution">> & { expectedInstructionsVersion?: number };
 export interface CompanyRoom {
   id: Id;
   name: string;
@@ -56,6 +60,8 @@ export interface CompanyDelivery {
 }
 export interface CompanyMessage {
   id: Id;
+  /** Host-created work report receipt; clients cannot set it through group send. */
+  workId?: Id;
   roomId: Id;
   senderId: Id;
   text: string;
@@ -76,6 +82,34 @@ export interface CompanyMessageInput {
 export interface CompanyMessagePage { messages: CompanyMessage[]; hasMore: boolean }
 export interface CompanySnapshot { agents: CompanyAgent[]; rooms: CompanyRoom[]; bootstrapWarnings?: string[] }
 
+export type CompanyWorkPriority = "low" | "medium" | "high";
+export type CompanyWorkStatus = "queued" | "dispatching" | "running" | "blocked" | "done" | "cancelled";
+export interface CompanyWork {
+  id: Id;
+  title: string;
+  description: string;
+  acceptance: string;
+  priority: CompanyWorkPriority;
+  agentId: Id;
+  roomId: Id;
+  status: CompanyWorkStatus;
+  report: string;
+  messageId: Id | null;
+  attempt: number;
+  handoffs: number;
+  createdAt: string;
+  updatedAt: string;
+  clientId: string;
+  manualStart?: boolean;
+  outcomeUnknown?: boolean;
+}
+export interface CompanyWorkInput { title: string; description?: string; acceptance?: string; priority: CompanyWorkPriority; agentId: Id; roomId: Id; clientId: string }
+export interface CompanyWorkUpdate { title?: string; description?: string; acceptance?: string; priority?: CompanyWorkPriority; agentId?: Id }
+export interface CompanyWorkAction { action: "start" | "retry" | "cancel"; confirmUnknown?: boolean }
+export interface CompanyWorkReport { action: "progress" | "done" | "blocked" | "handoff"; report: string; agentId?: Id; clientMessageId: string }
+export interface CompanyEvolution { id: Id; agentId: Id; before: string; after: string; version: number; reason: string; workId: Id | null; actorId: Id; createdAt: string }
+export interface CompanyEvolutionInput { workId: Id; instructions: string; reason: string; expectedVersion: number }
+
 export interface CompanyRoutes {
   "GET /api/company": { req: void; res: CompanySnapshot };
   "POST /api/company/agents": { req: CompanyAgentInput; res: CompanyAgent };
@@ -85,6 +119,12 @@ export interface CompanyRoutes {
   "GET /api/company/rooms/:id/messages": { req: void; res: CompanyMessagePage };
   "POST /api/company/rooms/:id/messages": { req: CompanyMessageInput; res: CompanyMessage };
   "POST /api/company/rooms/:id/messages/:messageId/retry": { req: { agentId: Id; confirmUnknown?: boolean }; res: CompanyMessage };
+  "GET /api/company/work": { req: void; res: CompanyWork[] };
+  "POST /api/company/work": { req: CompanyWorkInput; res: CompanyWork };
+  "PATCH /api/company/work/:id": { req: CompanyWorkUpdate; res: CompanyWork };
+  "POST /api/company/work/:id/action": { req: CompanyWorkAction; res: CompanyWork };
+  "GET /api/company/agents/:id/evolution": { req: void; res: CompanyEvolution[] };
+  "POST /api/company/agents/:id/evolution/:revisionId/rollback": { req: { expectedVersion: number }; res: CompanyAgent };
 }
 
 /** Explicit local one-time handoff; no runtime ever searches native conversation directories. */
@@ -95,6 +135,7 @@ export interface CompanyBootstrap {
     name?: string;
     profileId?: Id;
     workspaceId?: Id;
+    model?: string;
     matchTaskId?: Id;
     matchSessionId?: Id;
     archives?: CompanyArchive[];

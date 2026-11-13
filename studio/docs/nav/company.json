@@ -3,13 +3,14 @@
   "topics": [
     {
       "id": "studio.company",
-      "label": "公司组织、Agent 管理和工作群",
-      "aliases": ["组织架构", "CEO", "CTO", "产品Agent", "高配打包Agent", "低配打包Agent", "工作群", "群聊", "@分工", "Agent管理"],
+      "label": "公司组织、Agent 管理、工作群和工作列表",
+      "aliases": ["组织架构", "CEO", "CTO", "产品Agent", "高配打包Agent", "低配打包Agent", "中台工具Agent", "工作群", "群聊", "@分工", "Agent管理", "工作列表", "优先级", "自主接活", "自我进化", "模型选择"],
       "category": "host",
       "purpose": "本机长期 Agent 身份、汇报关系、工作会话绑定及群聊。明确 @ 才投递，繁忙会话排队；指定历史仅作为本机资料，不恢复原生 thread、不自动共享。",
       "steps": [
         "协议及约束在 protocol/src/company.ts；Agent 身份与 session 分开，工作会话必须通过已有 WorkStudio 校验。",
-        "组织、群、消息由 features/company 持久化；群工具从调用会话映射发送者，成员与回复链检查在 Host 完成。",
+        "组织、群、消息、工作队列和规范版本由 features/company 持久化；群工具从调用会话映射发送者，成员与回复链检查在 Host 完成。",
+        "work.ts 按优先级串行派工，等待真实回合结束；done/blocked/handoff 汇报与群消息同一事务，未知结果不自动重放。型号在新群回合前核对和应用，规范改进有已完成工作与版本校验。",
         "界面入口在 ui/src/company/view.tsx，加入统一 VIEWS 与 ScopeNav；普通项目聊天保持原有入口。",
         "指定历史导出用 scripts/agent-history-export.py，原文和本机初始化包不进 Git。company-bootstrap.json 只加载明确列出的 company-archives 清单与校验结果。"
       ],
@@ -18,11 +19,14 @@
         { "label": "默认角色与群", "path": "studio/packages/host/src/features/company/defaults.ts", "anchor": "export function companyDefaults" },
         { "label": "本机资料校验", "path": "studio/packages/host/src/features/company/bootstrap.ts", "anchor": "export function validateCompanyArchive" },
         { "label": "组织群聊存储", "path": "studio/packages/host/src/features/company/repository.ts", "anchor": "export class CompanyRepository" },
+        { "label": "工作队列与汇报", "path": "studio/packages/host/src/features/company/work.ts", "anchor": "export class CompanyWorkManager" },
+        { "label": "Agent 工作规范改进", "path": "studio/packages/host/src/features/company/service.ts", "anchor": "  evolve(sessionId:" },
+        { "label": "工作列表界面", "path": "studio/packages/ui/src/company/WorkList.tsx", "anchor": "export function WorkList" },
         { "label": "公司界面入口", "path": "studio/packages/ui/src/company/view.tsx" },
         { "label": "群成员提及与消息合并", "path": "studio/packages/ui/src/company/logic.ts", "anchor": "export function recipients" }
       ],
       "related": ["ui.shell", "studio.collab", "studio.sessions", "studio.tasks"],
-      "next": ["studio/plans/done/agent-company.md"]
+      "next": ["studio/plans/done/agent-company.md", "studio/plans/done/agent-work-autonomy.md"]
     }
   ]
 }

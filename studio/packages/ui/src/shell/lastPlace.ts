@@ -13,7 +13,7 @@ type CompanyPlace = Extract<View, { kind: "company" }>;
 type Back = { kind: "board" } | { kind: "canvas" } | { kind: "panorama" } | CompanyPlace;
 type SavedView = Back | { kind: "new" } | { kind: "task"; taskId: string; back?: Back };
 
-const isBack = (v: unknown): v is Back => !!v && typeof v === "object" && ((v as Back).kind === "board" || (v as Back).kind === "canvas" || (v as Back).kind === "panorama" || ((v as CompanyPlace).kind === "company" && ["rooms", "agents", "org"].includes((v as CompanyPlace).tab)));
+const isBack = (v: unknown): v is Back => !!v && typeof v === "object" && ((v as Back).kind === "board" || (v as Back).kind === "canvas" || (v as Back).kind === "panorama" || ((v as CompanyPlace).kind === "company" && ["rooms", "agents", "org", "work"].includes((v as CompanyPlace).tab)));
 const saveBack = (v: Back): Back => v.kind === "company" ? { kind: "company", tab: v.tab, ...(typeof v.roomId === "string" ? { roomId: v.roomId } : {}), ...(typeof v.agentId === "string" ? { agentId: v.agentId } : {}) } : { kind: v.kind };
 
 const readJson = readStoredJson;

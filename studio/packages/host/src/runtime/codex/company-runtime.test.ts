@@ -17,7 +17,7 @@ async function setup(ready: boolean) {
   const handle = await servers.ensure("profile"), request = handle.client.request.bind(handle.client), calls: string[] = [];
   handle.client.request = ((method, params, options) => {
     calls.push(method);
-    if (method === "mcpServerStatus/list") return Promise.resolve({ data: [{ name: "amo", runtimeStatus: "connected", toolsError: null, tools: ready ? { company_group_read: { name: "company_group_read" }, company_message_send: { name: "company_message_send" } } : {} }], nextCursor: null });
+    if (method === "mcpServerStatus/list") return Promise.resolve({ data: [{ name: "amo", runtimeStatus: "connected", toolsError: null, tools: ready ? { company_group_read: { name: "company_group_read" }, company_message_send: { name: "company_message_send" }, company_work_read: { name: "company_work_read" }, company_work_report: { name: "company_work_report" }, company_self_improve: { name: "company_self_improve" } } : {} }], nextCursor: null });
     if (method === "config/mcpServer/reload") { ready = true; return Promise.resolve({}); }
     return request(method, params, options);
   }) as CodexRpcClient["request"];

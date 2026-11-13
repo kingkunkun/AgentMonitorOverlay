@@ -19,4 +19,11 @@ describe("company navigation preserves existing project work", () => {
     store.set("amo.lastPlace", JSON.stringify({ view: { kind: "company", tab: "invalid" } }));
     expect(readPlace().view).toEqual({ kind: "board" });
   });
+  it("restores the work list and returns to it from an assigned work session", () => {
+    const origin = { kind: "company", tab: "work" } as const;
+    savePlace(origin, { kind: "workspace", id: "project" });
+    expect(readPlace()).toMatchObject({ view: origin, scope: { kind: "workspace", id: "project" } });
+    const task = withOrigin({ kind: "task", taskId: "assigned-work" }, origin);
+    expect(backTo(task.kind === "task" ? task.back : undefined).view).toEqual(origin);
+  });
 });

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { CodexCompanyTools } from "./company-tools.js";
 import type { CodexRpcClient } from "./rpc-client.js";
 
-const catalog = (ready: boolean) => ({ data: [{ name: "amo", runtimeStatus: "connected", toolsError: null, tools: ready ? { company_group_read: { name: "company_group_read" }, company_message_send: { name: "company_message_send" } } : {} }], nextCursor: null });
+const catalog = (ready: boolean) => ({ data: [{ name: "amo", runtimeStatus: "connected", toolsError: null, tools: ready ? { company_group_read: { name: "company_group_read" }, company_message_send: { name: "company_message_send" }, company_work_read: { name: "company_work_read" }, company_work_report: { name: "company_work_report" }, company_self_improve: { name: "company_self_improve" } } : {} }], nextCursor: null });
 const mockClient = (request: ReturnType<typeof vi.fn>) => ({ request }) as unknown as CodexRpcClient;
 
 describe("Codex company MCP compatibility", () => {

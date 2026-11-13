@@ -1,10 +1,11 @@
-import { inTurn, type CompanyAgent, type CompanyAgentInput, type CompanyDelivery, type CompanyMessage, type CompanyMessagePage, type CompanyRoom, type CompanySnapshot, type Id, type Session } from "@amo-studio/protocol";
+import { inTurn, type CompanyAgent, type CompanyAgentInput, type CompanyDelivery, type CompanyEvolution, type CompanyMessage, type CompanyMessagePage, type CompanyRoom, type CompanySnapshot, type Id, type Session } from "@amo-studio/protocol";
 import { Feature } from "../../core/feature.js";
 import { HostError, isRemoteCopy } from "../../core/shared.js";
 import { newId } from "../../store/store.js";
 import { companyDefaults, CEO_ID } from "./defaults.js";
 import { CompanyRepository } from "./repository.js";
 import { readCompanyBootstrap, validateCompanyArchive } from "./bootstrap.js";
+import { CompanyWorkManager } from "./work.js";
 
 const now = () => new Date().toISOString();
 function bad(text: string): never { throw new HostError("bad_request", text); }
@@ -19,6 +20,7 @@ export class CompanyFeature extends Feature<"sessions" | "tasks"> {
   private bootstrapSeen = "";
   private bootstrapWarnings: string[] = [];
   private queues = new Map<Id, Promise<unknown>>();
+  readonly work = new CompanyWorkManager(this.host, this);
   private get repo(): CompanyRepository { return new CompanyRepository(this.store); }
 
   private ensure(): void {
@@ -29,6 +31,13 @@ export class CompanyFeature extends Feature<"sessions" | "tasks"> {
           const defaults = companyDefaults(now());
           defaults.agents.forEach((a) => this.repo.putAgent(a));
           defaults.rooms.forEach((r) => this.repo.putRoom(r));
+        }
+        if (!this.store.getKv("company.platform-agent.v1")) {
+          const platform = companyDefaults(now()).agents.find((a) => a.id === "company-platform")!;
+          if (!this.repo.agent(platform.id)) this.repo.putAgent(platform);
+          const room = this.repo.room("company-room-all");
+          if (room && !room.memberIds.includes(platform.id)) this.repo.putRoom({ ...room, memberIds: [...room.memberIds, platform.id] });
+          this.store.setKv("company.platform-agent.v1", now());
         }
       });
       this.initialized = true;
@@ -71,7 +80,7 @@ export class CompanyFeature extends Feature<"sessions" | "tasks"> {
           if (!before || before.kind !== "agent") bad("初始化只能关联已存在的 Agent");
           const archives = (entry.archives ?? []).map((a) => validateCompanyArchive(handoff.root, a));
           const first = !this.store.getKv(`company.bootstrap-agent:${entry.id}`);
-          const patch: CompanyAgentInput = { ...(entry.name && first ? { name: entry.name } : {}), ...(entry.profileId && !before.profileId && first ? { profileId: entry.profileId } : {}), ...(entry.workspaceId && !before.workspaceId && first ? { workspaceId: entry.workspaceId } : {}), ...(entry.matchTaskId && first ? { taskId: entry.matchTaskId } : {}), ...(entry.matchSessionId && first ? { sessionId: entry.matchSessionId } : {}) };
+          const patch: CompanyAgentInput = { ...(entry.name && first ? { name: entry.name } : {}), ...(entry.model && first ? { model: entry.model } : {}), ...(entry.profileId && !before.profileId && first ? { profileId: entry.profileId } : {}), ...(entry.workspaceId && !before.workspaceId && first ? { workspaceId: entry.workspaceId } : {}), ...(entry.matchTaskId && first ? { taskId: entry.matchTaskId } : {}), ...(entry.matchSessionId && first ? { sessionId: entry.matchSessionId } : {}) };
           const agent = this.checkedAgent(before, patch);
           agent.archives = [...before.archives.filter((a) => !archives.some((b) => a.id === b.id)), ...archives];
           this.store.transaction(() => { this.repo.putAgent(agent); this.store.setKv(key, now()); this.store.setKv(`company.bootstrap-agent:${entry.id}`, now()); });
@@ -88,7 +97,7 @@ export class CompanyFeature extends Feature<"sessions" | "tasks"> {
   createAgent(input: unknown): CompanyAgent {
     this.ensure();
     const at = now();
-    const base: CompanyAgent = { id: newId("agent"), name: "新Agent", role: "执行", kind: "agent", managerId: CEO_ID, description: "", instructions: "", profileId: null, workspaceId: null, taskId: null, sessionId: null, machine: null, concurrency: 1, enabled: true, archives: [], status: "unconfigured", createdAt: at, updatedAt: at };
+    const base: CompanyAgent = { id: newId("agent"), name: "新Agent", role: "执行", kind: "agent", managerId: CEO_ID, description: "", instructions: "", instructionsVersion: 0, model: null, autonomous: true, allowEvolution: true, profileId: null, workspaceId: null, taskId: null, sessionId: null, machine: null, concurrency: 1, enabled: true, archives: [], status: "unconfigured", createdAt: at, updatedAt: at };
     const agent = this.checkedAgent(base, object(input));
     this.repo.putAgent(agent); this.changed();
     return this.withStatus(agent);
@@ -99,17 +108,23 @@ export class CompanyFeature extends Feature<"sessions" | "tasks"> {
     const patch = object(input), before = this.agent(id);
     if (this.queues.has(id)) throw new HostError("conflict", "Agent 正在接收分工，请稍后保存设置");
     const bound = before.sessionId ? this.store.getSession(before.sessionId) : undefined;
-    if (["sessionId", "profileId", "workspaceId", "taskId", "enabled"].some((key) => patch[key] !== undefined && patch[key] !== before[key as keyof CompanyAgent]) && (this.repo.hasOutstanding(id) || (bound && inTurn(bound.status)) || (bound && this.f.sessions.inbox.companyBusy(bound.id)))) throw new HostError("conflict", "Agent 还有运行或排队中的群任务，结束后才能修改工作绑定或停用");
+    if (["sessionId", "profileId", "workspaceId", "taskId", "model", "enabled"].some((key) => patch[key] !== undefined && patch[key] !== (key === "model" ? before.model ?? null : before[key as keyof CompanyAgent])) && (this.repo.hasOutstanding(id) || (bound && inTurn(bound.status)) || (bound && this.f.sessions.inbox.companyBusy(bound.id)))) throw new HostError("conflict", "Agent 还有运行或排队中的群任务，结束后才能修改模型、工作绑定或停用");
     const agent = this.checkedAgent(before, patch);
-    this.repo.putAgent(agent); this.changed();
+    this.store.transaction(() => {
+      if (agent.instructions !== before.instructions) this.recordRevision(before, agent, "人工调整工作规范", CEO_ID, null);
+      this.repo.putAgent(agent);
+    }); this.changed();
     return this.withStatus(agent);
   }
 
   private checkedAgent(before: CompanyAgent, input: CompanyAgentInput | Record<string, unknown>): CompanyAgent {
     const p = input as Record<string, unknown>;
-    const allowed = new Set(["name", "role", "managerId", "description", "instructions", "profileId", "workspaceId", "taskId", "sessionId", "machine", "enabled"]);
+    const allowed = new Set(["name", "role", "managerId", "description", "instructions", "profileId", "workspaceId", "taskId", "sessionId", "machine", "enabled", "model", "autonomous", "allowEvolution", "expectedInstructionsVersion"]);
     if (Object.keys(p).some((k) => !allowed.has(k))) bad("Agent 设置包含不支持的字段");
     const a: CompanyAgent = { ...before, updatedAt: now() };
+    if (p.expectedInstructionsVersion !== undefined && p.expectedInstructionsVersion !== (before.instructionsVersion ?? 0)) throw new HostError("conflict", "工作规范已有新版本，请刷新后再保存");
+    if (p.model !== undefined) a.model = nullableId(p.model, "模型");
+    for (const k of ["autonomous", "allowEvolution"] as const) if (p[k] !== undefined) { if (typeof p[k] !== "boolean") bad(`${k}必须是布尔值`); a[k] = p[k] as boolean; }
     for (const k of ["name", "role", "description", "instructions"] as const) if (p[k] !== undefined) a[k] = text(p[k], k, k === "instructions" ? 20_000 : k === "description" ? 4000 : 100, k === "description" || k === "instructions");
     for (const k of ["managerId", "profileId", "workspaceId", "taskId", "sessionId"] as const) if (p[k] !== undefined) a[k] = nullableId(p[k], k);
     if (p.enabled !== undefined) { if (typeof p.enabled !== "boolean") bad("enabled必须是布尔值"); a.enabled = p.enabled; }
@@ -117,7 +132,7 @@ export class CompanyFeature extends Feature<"sessions" | "tasks"> {
       if (p.machine === null) a.machine = null;
       else { const m = object(p.machine); if (!["high", "low", "other"].includes(String(m.capacity))) bad("机器规格无效"); a.machine = { label: text(m.label, "机器名称", 100), address: text(m.address, "机器地址", 300, true), capacity: m.capacity as "high" | "low" | "other" }; }
     }
-    if (a.kind === "human" && (!a.enabled || a.sessionId || a.profileId || a.workspaceId || a.taskId || a.managerId || a.machine)) bad("CEO 是人，只编辑姓名、职责与说明");
+    if (a.kind === "human" && (!a.enabled || a.sessionId || a.profileId || a.workspaceId || a.taskId || a.managerId || a.machine || a.model)) bad("CEO 是人，只编辑姓名、职责与说明");
     const seen = new Set([a.id]); let managerId = a.managerId;
     while (managerId) { if (seen.has(managerId)) bad("汇报关系不能形成循环"); seen.add(managerId); const manager = this.repo.agent(managerId); if (!manager) bad("汇报对象不存在"); managerId = manager.managerId; }
     if (a.sessionId) {
@@ -243,7 +258,8 @@ export class CompanyFeature extends Feature<"sessions" | "tasks"> {
           const made = await this.f.tasks.createTask({ title: `${a.name} · 工作会话`, workspaceId: a.workspaceId, column: "todo" });
           a = { ...a, taskId: made.task.id, updatedAt: now() }; this.repo.putAgent(a);
         }
-        const s = await this.f.tasks.addSession(a.taskId!, { profileId: a.profileId! });
+        if (a.model) await this.checkModel(a);
+        const s = await this.f.tasks.addSession(a.taskId!, { profileId: a.profileId!, options: a.model ? { model: a.model } : {} });
         a = this.checkedAgent(a, { sessionId: s.id });
         this.repo.putAgent(a); this.changed();
       }
@@ -259,6 +275,8 @@ export class CompanyFeature extends Feature<"sessions" | "tasks"> {
         `群：${room.name}（roomId: ${room.id}）；发送者：${sender.name}；消息ID：${m.id}。`,
         "这是一条明确 @ 你的群消息。请在当前工作会话内完成分工；不会打断之前的一轮任务。机器地址仅为说明，操作仍须遵守项目授权与构建规则。",
         "使用 company_group_read 获取当前群成员 agentId。完成或需要交接时使用 company_message_send 回复本群，replyTo 填本消息ID；mentions 只填需要接手的群成员 agentId。普通汇报可 mentions: []。不要用重复 @ 形成循环；最多自动转交4次。",
+        "有工作列表编号时，用 company_work_report 更新进度、完成验收或转交同事；成功交付后可用 company_self_improve 保存有依据的工作规范改进，带上 workId 和当前版本号。自主执行限于已分配目标和项目约定，不自行扩大权限或重复未知结果的操作。",
+        `工作规范版本：${a.instructionsVersion ?? 0}；允许自我改进：${a.allowEvolution !== false ? "是" : "否"}。`,
         "历史归档仅供本机人查看，未自动送入上下文；不得自行向其他会话或设备复制归档内容。", "", m.text,
       ].filter(Boolean).join("\n");
       await this.f.sessions.inbox.put(s.id, instruction, { separateTurn: true, onQueued: (inboxItemId) => this.updateDelivery(messageId, agentId, { status: "queued", inboxItemId }) });
@@ -268,9 +286,19 @@ export class CompanyFeature extends Feature<"sessions" | "tasks"> {
     }
   }
 
-  /** Subscribe without creating identities, touching existing sessions, or starting model work. */
+  /** Recover assigned work; only an explicit queued objective may start model work after the session is free. */
   watch(): void {
     this.recover();
+    this.f.sessions.inbox.prepareCompany = async (sessionId) => {
+      const a = this.repo.agents().find((a) => a.sessionId === sessionId);
+      if (!a?.model) return;
+      const s = this.localSession(sessionId);
+      if (inTurn(s.status)) throw new HostError("conflict", "Agent 忙碌，模型设置等待下一项任务");
+      const model = await this.checkModel(a);
+      const current = this.localSession(sessionId);
+      if (inTurn(current.status)) throw new HostError("conflict", "当前会话已开始另一项工作，等待空闲后再派发");
+      if (current.options.model !== a.model) await this.runtime.setOptions(s.id, { ...current.options, model: a.model, effort: model.efforts.includes(current.options.effort ?? "") ? current.options.effort : model.defaultEffort });
+    };
     this.f.sessions.inbox.onDelivery((delivery) => {
       for (const m of this.repo.forInboxItem(delivery.itemId)) for (const d of m.deliveries.filter((d) => d.inboxItemId === delivery.itemId)) {
         this.updateDelivery(m.id, d.agentId, { status: delivery.state, error: delivery.state === "unknown" ? `请求未确认，可能已送达，请先检查工作会话：${delivery.error ?? "连接中断"}` : delivery.error });
@@ -280,6 +308,42 @@ export class CompanyFeature extends Feature<"sessions" | "tasks"> {
       if (!this.initialized) return;
       if (event.type === "session.upserted" && this.repo.agents().some((a) => a.sessionId === event.session.id)) this.changed();
     });
+    this.work.watch();
+  }
+  private async checkModel(a: CompanyAgent) {
+    const choices = await this.runtime.choices(a.profileId!);
+    const model = choices.models.find((m) => m.id === a.model);
+    if (!model) bad("Agent 选择的模型当前不可用，请在 Agent 管理中重新选择");
+    return model;
+  }
+  identity(sessionId: Id): CompanyAgent { this.ensure(); return this.caller(sessionId); }
+  availableForWork(id: Id): boolean {
+    const a = this.agent(id);
+    return !this.queues.has(id) && !this.repo.hasOutstanding(id) && this.withStatus(a).status === "ready" && (!a.sessionId || !this.f.sessions.inbox.companyBusy(a.sessionId));
+  }
+  revisions(id: Id): CompanyEvolution[] { this.ensure(); this.agent(id); return this.repo.revisions(id); }
+  private recordRevision(before: CompanyAgent, after: CompanyAgent, reason: string, actorId: Id, workId: Id | null): void {
+    after.instructionsVersion = (before.instructionsVersion ?? 0) + 1;
+    this.repo.addRevision({ id: newId("evolution"), agentId: before.id, before: before.instructions, after: after.instructions, version: after.instructionsVersion, reason, actorId, workId, createdAt: now() });
+  }
+  evolve(sessionId: Id, input: unknown): CompanyAgent {
+    const a = this.identity(sessionId), p = object(input);
+    if (Object.keys(p).some((k) => !["workId", "instructions", "reason", "expectedVersion"].includes(k))) bad("只能改进自己的工作规范，不能修改身份或权限");
+    if (a.allowEvolution === false) throw new HostError("read_only", "这个 Agent 已关闭自我改进");
+    const w = this.repo.work(text(p.workId, "workId", 200));
+    if (!w || w.agentId !== a.id || w.status !== "done") bad("改进必须引用自己已完成的工作");
+    if (p.expectedVersion !== (a.instructionsVersion ?? 0)) throw new HostError("conflict", "工作规范已有新版本，请先读取自己的最新版本");
+    const next = { ...a, instructions: text(p.instructions, "工作规范", 20_000), updatedAt: now() };
+    if (next.instructions === a.instructions) return a;
+    const reason = text(p.reason, "改进依据", 4000);
+    this.store.transaction(() => { this.recordRevision(a, next, reason, a.id, w.id); this.repo.putAgent(next); }); this.changed(); return next;
+  }
+  rollback(id: Id, revisionId: Id, expectedVersion: unknown): CompanyAgent {
+    this.ensure(); const a = this.agent(id), revision = this.repo.revision(revisionId);
+    if (!revision || revision.agentId !== id) bad("改进版本不属于这个 Agent");
+    if (expectedVersion !== (a.instructionsVersion ?? 0)) throw new HostError("conflict", "版本已变化，请刷新后再撤回");
+    const next = { ...a, instructions: revision.before, updatedAt: now() };
+    this.store.transaction(() => { this.recordRevision(a, next, `撤回第 ${revision.version} 次改进`, CEO_ID, revision.workId); this.repo.putAgent(next); }); this.changed(); return next;
   }
   private updateDelivery(messageId: Id, agentId: Id, patch: Partial<CompanyDelivery>): void {
     const m = this.repo.message(messageId); if (!m) return;

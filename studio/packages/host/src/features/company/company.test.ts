@@ -38,7 +38,8 @@ function setup() {
     emitSession(store.updateSession(id, { status: "running" }));
     return { mode: "start" as const };
   });
-  const runtime = Object.assign(events, { startSession: start, resend, sendMessage: vi.fn(), choices: vi.fn(async () => ({ models: [], permissions: [] })) }) as unknown as SessionRuntimeApi;
+  const setOptions = vi.fn(async (id: string, options: Session["options"]) => { const s = store.updateSession(id, { options }); emitSession(s); return s; });
+  const runtime = Object.assign(events, { startSession: start, resend, sendMessage: vi.fn(), setOptions, choices: vi.fn(async () => ({ profileId: "p", models: [{ id: "test", label: "Test", efforts: ["high"], defaultEffort: "high" }, { id: "gpt-6.1-sol", label: "GPT-6.1 Sol", efforts: ["high"], defaultEffort: "high" }], permissions: [] })) }) as unknown as SessionRuntimeApi;
   service = new HostService(store, runtime, profiles, { commonDir: join(root, "common") });
   cleanup.push(() => { service.removeAllListeners(); service.duty.stop(); store.close(); });
   const workspace = store.addWorkspace({ name: "测试工程", path: root });
@@ -48,7 +49,7 @@ function setup() {
   };
   const bind = (agentId: string, s = makeSession()) => { service.company.updateAgent(agentId, { sessionId: s.id }); return s; };
   const send = (text: string, mentions: string[] = [], extra = {}) => service.company.send(ALL, { text, mentions, clientMessageId: `${text}-${Math.random()}`, ...extra });
-  return { service, company: service.company, store, root, workspace, makeSession, bind, start, resend, send, emitSession };
+  return { service, company: service.company, store, root, workspace, makeSession, bind, start, resend, send, emitSession, runtime, setOptions };
 }
 
 function archive(root: string): CompanyArchive {
@@ -60,12 +61,158 @@ function archive(root: string): CompanyArchive {
   return a;
 }
 
+function workFixture() {
+  const f = setup();
+  const high = f.bind(HIGH, f.makeSession({ status: "idle", options: { model: "test", permission: "full-auto", fast: true } }));
+  const low = f.bind(LOW, f.makeSession({ status: "idle" }));
+  const create = (title = "检查产物", priority: "low" | "medium" | "high" = "medium", agentId = HIGH) => f.company.work.create({ title, priority, agentId, roomId: ALL, acceptance: "提供验证结果", clientId: title });
+  const get = (id: string) => f.company.work.list().find((w) => w.id === id)!;
+  const finish = (s: Session) => {
+    f.store.appendItem({ id: randomUUID(), sessionId: s.id, createdAt: new Date().toISOString(), type: "turn", turnId: randomUUID(), state: "completed", startedAt: new Date().toISOString() });
+    f.emitSession(f.store.updateSession(s.id, { status: "completed" }));
+  };
+  const running = async (id: string) => vi.waitFor(() => expect(get(id).status).toBe("running"));
+  return { ...f, high, low, create, get, finish, running };
+}
+
+describe("工作列表、自主接活与规范改进", () => {
+  it("persists priority ordering, dispatches only one job, and waits for the real turn to end", async () => {
+    const f = workFixture();
+    f.emitSession(f.store.updateSession(f.high.id, { status: "running" }));
+    const low = f.create("低优先级", "low"), high = f.create("高优先级", "high"), mid = f.create("中优先级");
+    await f.company.work.pump(); expect(f.resend).not.toHaveBeenCalled();
+    expect(f.company.work.list().map((w) => w.id)).toEqual([high.id, mid.id, low.id]);
+    f.finish(f.high); await f.running(high.id);
+    expect(f.resend).toHaveBeenCalledTimes(1); expect(f.get(mid.id).status).toBe("queued");
+    await f.company.work.report(high.id, { action: "done", report: "验收通过，产物已核对", clientMessageId: "done-1" }, f.high.id);
+    await f.company.work.pump(); expect(f.resend).toHaveBeenCalledTimes(1);
+    f.finish(f.high); await f.running(mid.id);
+    expect(f.resend).toHaveBeenCalledTimes(2); expect(f.get(low.id).status).toBe("queued");
+    expect(f.company.messages(ALL).messages.some((m) => m.workId === high.id && m.text.includes("工作完成"))).toBe(true);
+  });
+
+  it("creates idempotently and keeps work private to the bound assignee", async () => {
+    const f = workFixture(), w = f.create();
+    expect(f.create().id).toBe(w.id); await f.running(w.id);
+    expect(f.company.work.readSelf(f.low.id).work).toHaveLength(0);
+    await expect(f.company.work.report(w.id, { action: "done", report: "伪造", clientMessageId: "other" }, f.low.id)).rejects.toThrow("分配给自己");
+    const report = { action: "done", report: "验证通过", clientMessageId: "done" } as const;
+    await f.company.work.report(w.id, report, f.high.id); await f.company.work.report(w.id, report, f.high.id);
+    expect(f.company.messages(ALL).messages.filter((m) => m.clientMessageId === "done")).toHaveLength(1);
+  });
+
+  it("honors manual start and applies the selected real model only before dispatch, preserving permissions", async () => {
+    const f = workFixture();
+    f.company.updateAgent(HIGH, { autonomous: false, model: "gpt-6.1-sol" });
+    const w = f.create(); await f.company.work.pump();
+    expect(f.resend).not.toHaveBeenCalled(); expect(f.setOptions).not.toHaveBeenCalled();
+    await f.company.work.action(w.id, { action: "start" }); await f.running(w.id);
+    expect(f.setOptions).toHaveBeenCalledWith(f.high.id, { model: "gpt-6.1-sol", permission: "full-auto", fast: true, effort: "high" });
+    expect(() => f.company.updateAgent(HIGH, { model: "test" })).toThrow("结束后");
+  });
+
+  it("rejects an unavailable model before sending any native input", async () => {
+    const f = workFixture(); f.company.updateAgent(HIGH, { model: "not-available" });
+    const w = f.create(); await vi.waitFor(() => expect(f.get(w.id).status).toBe("blocked"));
+    expect(f.resend).not.toHaveBeenCalled(); expect(f.get(w.id).report).toContain("模型当前不可用");
+  });
+
+  it("does not send into a human turn that starts during model preparation", async () => {
+    const f = workFixture(); f.company.updateAgent(HIGH, { model: "gpt-6.1-sol" });
+    vi.spyOn(f.runtime, "choices").mockImplementationOnce(async () => { f.emitSession(f.store.updateSession(f.high.id, { status: "running" })); return { profileId: "p", models: [{ id: "gpt-6.1-sol", label: "Sol", efforts: [] }], permissions: [], defaultPermission: "default", source: "cli" }; });
+    const w = f.create(); await vi.waitFor(() => expect(f.get(w.id).status).toBe("blocked"));
+    expect(f.resend).not.toHaveBeenCalled(); expect(f.setOptions).not.toHaveBeenCalled();
+  });
+
+  it("automatically hands a job to a peer, posts a report once, and rejects a fifth handoff", async () => {
+    const f = workFixture(), w = f.create(); await f.running(w.id);
+    const report = { action: "handoff", report: "请核对低配产物", agentId: LOW, clientMessageId: "handoff" } as const;
+    await f.company.work.report(w.id, report, f.high.id); await f.company.work.report(w.id, report, f.high.id);
+    await vi.waitFor(() => expect(f.get(w.id)).toMatchObject({ agentId: LOW, status: "running", handoffs: 1 }));
+    expect(f.resend).toHaveBeenCalledTimes(2);
+    const repo = new CompanyRepository(f.store); repo.putWork({ ...f.get(w.id), handoffs: 4 });
+    await expect(f.company.work.report(w.id, { ...report, agentId: HIGH, clientMessageId: "fifth" }, f.low.id)).rejects.toThrow("四次");
+    expect(f.company.messages(ALL).messages.filter((m) => m.clientMessageId === "handoff")).toHaveLength(1);
+  });
+
+  it("blocks on an ended turn without a completion receipt and publishes its final response", async () => {
+    const f = workFixture(), w = f.create(); await f.running(w.id);
+    f.store.appendItem({ id: randomUUID(), sessionId: f.high.id, type: "agent", createdAt: new Date().toISOString(), markdown: "缺少签名文件，需要补齐", streaming: false });
+    f.finish(f.high); await vi.waitFor(() => expect(f.get(w.id).status).toBe("blocked"));
+    expect(f.get(w.id).report).toContain("缺少签名文件");
+    expect(f.company.messages(ALL).messages.at(-1)?.text).toContain("工作受阻");
+    await f.company.work.pump(); expect(f.resend).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replay uncertain requests after recovery; explicit confirmation is required", async () => {
+    const f = workFixture(); f.resend.mockRejectedValueOnce(new Error("lost acknowledgement"));
+    const w = f.create(); await vi.waitFor(() => expect(f.get(w.id).status).toBe("blocked"));
+    await expect(f.company.work.action(w.id, { action: "retry" })).rejects.toThrow("明确确认");
+    await f.company.work.pump(); expect(f.resend).toHaveBeenCalledTimes(1);
+    await f.company.work.action(w.id, { action: "retry", confirmUnknown: true }); await f.running(w.id);
+    expect(f.resend).toHaveBeenCalledTimes(2); expect(f.get(w.id).attempt).toBe(2);
+  });
+
+  it("recovers an interrupted dispatch conservatively without inventing another model call", async () => {
+    const f = workFixture(); f.company.updateAgent(HIGH, { autonomous: false });
+    const w = f.create(); new CompanyRepository(f.store).putWork({ ...w, status: "dispatching", attempt: 1 });
+    await f.company.work.pump(); expect(f.get(w.id)).toMatchObject({ status: "blocked", report: expect.stringContaining("确认前中断") });
+    expect(f.resend).not.toHaveBeenCalled();
+  });
+
+  it("keeps queued work editable and cancellable without starting a model", async () => {
+    const f = workFixture(); f.company.updateAgent(HIGH, { autonomous: false });
+    const w = f.create(); expect(f.company.work.update(w.id, { priority: "high", title: "更新目标" })).toMatchObject({ priority: "high", title: "更新目标" });
+    await f.company.work.action(w.id, { action: "cancel" });
+    expect(f.get(w.id).status).toBe("cancelled"); expect(f.resend).not.toHaveBeenCalled();
+  });
+  it("does not dispatch a candidate cancelled while another Agent's acknowledgement was pending", async () => {
+    const f = workFixture();
+    let ack!: () => void;
+    const resend = f.resend.getMockImplementation()!;
+    f.resend.mockImplementationOnce(async (...args) => { await new Promise<void>((resolve) => { ack = resolve; }); return resend(...args); });
+    const first = f.create("先派发", "high"), cancelled = f.create("后来取消", "low", LOW);
+    await vi.waitFor(() => expect(ack).toBeTypeOf("function"));
+    await f.company.work.action(cancelled.id, { action: "cancel" }); ack(); await f.running(first.id);
+    await f.company.work.pump(); expect(f.get(cancelled.id).status).toBe("cancelled"); expect(f.resend).toHaveBeenCalledTimes(1);
+  });
+
+  it("records evidence-based self improvements with CAS and reversible history, without changing authority", async () => {
+    const f = workFixture(), w = f.create(); await f.running(w.id);
+    const input = { workId: w.id, instructions: "先核对签名，再验证产物和日志", reason: "本次发现签名步骤需要提前核对", expectedVersion: 0 };
+    expect(() => f.company.evolve(f.high.id, input)).toThrow("自己已完成");
+    await f.company.work.report(w.id, { action: "done", report: "验证通过", clientMessageId: "done" }, f.high.id);
+    const before = f.company.snapshot().agents.find((a) => a.id === HIGH)!;
+    const evolved = f.company.evolve(f.high.id, input);
+    expect(evolved).toMatchObject({ instructions: input.instructions, instructionsVersion: 1, model: before.model, profileId: before.profileId, sessionId: before.sessionId });
+    expect(() => f.company.evolve(f.high.id, input)).toThrow("已有新版本");
+    expect(() => f.company.evolve(f.low.id, input)).toThrow("自己已完成");
+    expect(() => f.company.evolve(f.high.id, { ...input, expectedVersion: 1, permission: "full-auto" })).toThrow("不能修改身份或权限");
+    const revision = f.company.revisions(HIGH)[0]!;
+    expect(revision).toMatchObject({ workId: w.id, actorId: HIGH, before: before.instructions, after: input.instructions, version: 1 });
+    expect(f.company.rollback(HIGH, revision.id, 1)).toMatchObject({ instructions: before.instructions, instructionsVersion: 2 });
+    expect(f.company.revisions(HIGH)).toHaveLength(2);
+    f.company.updateAgent(HIGH, { allowEvolution: false });
+    expect(() => f.company.evolve(f.high.id, { ...input, expectedVersion: 2 })).toThrow("关闭自我改进");
+  });
+  it("exposes the work tools through session identity without returning local archive paths", async () => {
+    const f = workFixture(), w = f.create(); await f.running(w.id);
+    const tools = companyTools(toolContext(f.service, { sessionId: f.high.id }));
+    const report = await tools.find((t) => t.name === "company_work_report")!.run({ workId: w.id, action: "done", report: "已完成验证", clientMessageId: "mcp-done" });
+    expect(report.isError).toBeUndefined(); expect(f.get(w.id).status).toBe("done");
+    const evolved = await tools.find((t) => t.name === "company_self_improve")!.run({ workId: w.id, instructions: "按验收条件逐项验证", reason: "本次验收确认有效", expectedVersion: 0 });
+    expect(evolved.isError).toBeUndefined(); expect(JSON.stringify(evolved)).not.toMatch(/manifestPath|transcriptPath|runtimeRef/);
+    const noCaller = companyTools(toolContext(f.service, null));
+    expect((await noCaller.find((t) => t.name === "company_work_read")!.run({})).isError).toBe(true);
+  });
+});
+
 describe("公司 Agent 与本机协作群", () => {
   it("seeds persistent identities and rooms without changing existing work or starting a turn", () => {
     const { company, store, makeSession, start, resend, service } = setup();
     const s = makeSession(), before = store.getSession(s.id);
     const snapshot = company.snapshot();
-    expect(snapshot.agents.map((a) => a.id)).toEqual(["company-ceo", "company-product", CTO, HIGH, LOW]);
+    expect(snapshot.agents.map((a) => a.id)).toEqual(["company-ceo", "company-product", CTO, HIGH, LOW, "company-platform"]);
     expect(snapshot.agents.find((a) => a.id === HIGH)?.managerId).toBe(CTO);
     expect(snapshot.rooms).toHaveLength(2);
     expect(new CompanyFeature(service).snapshot()).toEqual(snapshot);

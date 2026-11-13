@@ -2,6 +2,64 @@
 .company-nav .nav-row { gap: 10px; }
 .company-page { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; background: var(--panel); color: var(--text); container-type: inline-size; }
 .company-page button { font: inherit; }
+.company-work { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.company-work-summary { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 28px 30px 22px; }
+.company-work-summary h2 { font-size: 22px; font-weight: 620; margin: 7px 0 9px; }
+.company-work-summary p { color: var(--text-dim); margin: 0; font-size: 12px; }
+.company-work-counts { display: flex; gap: 10px; }
+.company-work-counts button { min-width: 78px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); color: var(--text); padding: 12px 14px; cursor: pointer; text-align: left; }
+.company-work-counts button[aria-pressed="true"] { border-color: #7194e9; background: color-mix(in srgb, #4979df 7%, var(--panel)); }
+.company-work-counts strong { display: block; font-size: 23px; font-weight: 600; margin-bottom: 4px; }
+.company-work-counts span { font-size: 11px; color: var(--text-dim); }
+.company-work-filters { display: flex; gap: 10px; padding: 0 30px 20px; }
+.company-work-filters input { flex: 1; min-width: 140px; }
+.company-work-filters select { max-width: 170px; }
+.company-work-content { display: flex; flex: 1; min-height: 0; border-top: 1px solid var(--border); }
+.company-work-table { flex: 1; min-width: 0; overflow: auto; }
+.company-work-columns, .company-work-row { display: grid; grid-template-columns: minmax(170px, 1fr) 92px minmax(150px, 190px) 100px; gap: 18px; align-items: center; padding: 17px 28px; text-align: left; }
+.company-work-columns { position: sticky; top: 0; z-index: 1; background: var(--bg); border-bottom: 1px solid var(--border); font-size: 11px; color: var(--text-dim); }
+.company-work-row { width: 100%; border: 0; border-bottom: 1px solid var(--border); color: var(--text); background: var(--panel); cursor: pointer; }
+.company-work-row:hover { background: var(--panel-raised); }
+.company-work-row[aria-current="true"] { background: color-mix(in srgb, #4979df 6%, var(--panel)); box-shadow: inset 3px 0 #4979df; }
+.company-work-row > div, .company-work-assignee > span { min-width: 0; }
+.company-work-row strong { display: block; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.company-work-row small { display: block; margin-top: 6px; font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.company-priority { width: fit-content; white-space: nowrap; border-radius: 5px; padding: 4px 8px; font-size: 11px; background: color-mix(in srgb, #929292 12%, var(--panel)); color: var(--text-dim); }
+.company-priority[data-priority="high"] { color: #cf5b44; background: color-mix(in srgb, #e16b52 10%, var(--panel)); }
+.company-priority[data-priority="medium"] { color: #a77a24; background: color-mix(in srgb, #d6a039 12%, var(--panel)); }
+.company-work-assignee { display: flex; align-items: center; gap: 9px; min-width: 0; font-size: 12px; }
+.company-work-assignee .company-avatar { flex-shrink: 0; }
+.company-work-status { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--text-dim); font-size: 12px; }
+.company-work-status[data-status="running"], .company-work-status[data-status="dispatching"] { color: #4979df; }
+.company-work-status[data-status="blocked"] { color: #c97e32; }
+.company-work-status[data-status="done"] { color: #38916b; }
+.company-work-detail { width: 310px; flex-shrink: 0; overflow: auto; border-left: 1px solid var(--border); padding: 24px; }
+.company-work-detail h2 { font-size: 16px; line-height: 1.5; margin: 0; flex: 1; }
+.company-work-tags { display: flex; gap: 14px; align-items: center; padding: 15px 0; }
+.company-work-detail section { margin: 22px 0; }
+.company-work-detail h3 { font-size: 12px; font-weight: 600; }
+.company-work-detail p { font-size: 12px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
+.company-work-detail footer { border-top: 1px solid var(--border); padding-top: 18px; }
+.company-work-detail footer > small { color: var(--text-dim); }
+.company-work-detail footer > div { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 12px; }
+.company-work-footnote { font-size: 11px; line-height: 1.6; color: var(--text-dim); margin: 0; padding: 14px 28px; border-top: 1px solid var(--border); }
+.company-autonomy-options { display: grid; gap: 12px; margin: 20px 0; }
+.company-form-scroll .company-autonomy-options .company-enabled { padding-top: 0; }
+.company-evolution details { border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin: 8px 0; }
+.company-evolution summary { cursor: pointer; font-size: 12px; line-height: 1.6; }
+.company-evolution details small { display: block; color: var(--text-dim); font-size: 10px; margin-top: 10px; overflow-wrap: anywhere; }
+.company-evolution details p { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.7; }
+.company-evolution h4 { margin-bottom: 4px; font-size: 11px; }
+@container (max-width: 1000px) {
+  .company-work-summary { padding: 20px; align-items: flex-start; }
+  .company-work-counts { gap: 6px; }
+  .company-work-counts button { min-width: 58px; padding: 10px; }
+  .company-work-filters { padding: 0 20px 16px; flex-wrap: wrap; }
+  .company-work-columns, .company-work-row { grid-template-columns: minmax(130px, 1fr) 76px minmax(120px, 155px) 80px; gap: 12px; padding: 16px; }
+  .company-work-detail { width: 270px; padding: 18px; }
+  .company-work-content:has(.company-work-detail) .company-work-table { display: none; }
+  .company-work-detail { flex: 1; width: auto; }
+}
 .company-header { display: flex; align-items: center; gap: 24px; flex-shrink: 0; padding: 18px 24px; border-bottom: 1px solid var(--border); }
 .company-brand { display: flex; align-items: center; gap: 10px; min-width: 145px; }
 .company-brand-symbol { width: 36px; height: 36px; border-radius: 11px; display: grid; place-items: center; color: #4979df; background: color-mix(in srgb, #4979df 12%, var(--panel)); }

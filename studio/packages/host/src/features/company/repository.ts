@@ -1,4 +1,4 @@
-import type { CompanyAgent, CompanyMessage, CompanyMessagePage, CompanyRoom } from "@amo-studio/protocol";
+import type { CompanyAgent, CompanyEvolution, CompanyMessage, CompanyMessagePage, CompanyRoom, CompanyWork } from "@amo-studio/protocol";
 import type { Store } from "../../store/store.js";
 
 type Row = { body: string };
@@ -35,4 +35,11 @@ export class CompanyRepository {
   replies(parentId: string, senderId: string): CompanyMessage[] {
     return this.store.db.prepare("SELECT body FROM company_messages WHERE sender_id=? AND json_extract(body, '$.replyTo')=?").all(senderId, parentId).map((r) => decode<CompanyMessage>(r)!);
   }
+  work(id: string): CompanyWork | undefined { return decode(this.store.db.prepare("SELECT body FROM company_work WHERE id=?").get(id)); }
+  workByClient(clientId: string): CompanyWork | undefined { return decode(this.store.db.prepare("SELECT body FROM company_work WHERE client_id=?").get(clientId)); }
+  works(): CompanyWork[] { return this.store.db.prepare("SELECT body FROM company_work ORDER BY rowid").all().map((r) => decode<CompanyWork>(r)!); }
+  putWork(w: CompanyWork): void { this.store.db.prepare("INSERT INTO company_work(id,client_id,body) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body").run(w.id, w.clientId, JSON.stringify(w)); }
+  revisions(agentId: string): CompanyEvolution[] { return this.store.db.prepare("SELECT body FROM company_evolution WHERE agent_id=? ORDER BY seq DESC LIMIT 100").all(agentId).map((r) => decode<CompanyEvolution>(r)!); }
+  revision(id: string): CompanyEvolution | undefined { return decode(this.store.db.prepare("SELECT body FROM company_evolution WHERE id=?").get(id)); }
+  addRevision(r: CompanyEvolution): void { this.store.db.prepare("INSERT INTO company_evolution(id,agent_id,body) VALUES (?,?,?)").run(r.id, r.agentId, JSON.stringify(r)); }
 }

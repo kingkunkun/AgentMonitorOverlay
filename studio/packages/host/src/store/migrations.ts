@@ -375,4 +375,10 @@ export const MIGRATIONS: readonly Migration[] = [
   );
   CREATE INDEX company_messages_room ON company_messages(room_id, seq);
   `,
+  // 27: local assigned work and reversible experience revisions; excluded from task/phone snapshots.
+  `
+  CREATE TABLE company_work (id TEXT PRIMARY KEY, client_id TEXT NOT NULL UNIQUE, body TEXT NOT NULL);
+  CREATE TABLE company_evolution (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, agent_id TEXT NOT NULL REFERENCES company_agents(id), body TEXT NOT NULL);
+  CREATE INDEX company_evolution_agent ON company_evolution(agent_id, seq);
+  `,
 ];
