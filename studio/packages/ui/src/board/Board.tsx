@@ -10,6 +10,7 @@ import { ArchivedTasks } from "./ArchivedTasks.js";
 import { KindIcon } from "./KindIcon.js";
 import { setGroupByTopic, useGroupByTopic } from "./prefs.js";
 import { dutyOfTask, useDuty } from "../duty/duty.js";
+import { RunIndicator } from "../lib/RunIndicator.js";
 
 /** What the board shows: everything, one topic's tasks, or one project's. Archived tasks are never on the board. */
 export type Scope = { kind: "all" } | { kind: "topic"; id: string } | { kind: "workspace"; id: string };
@@ -296,7 +297,7 @@ function TaskCard({
       <span className="card-status">
         {look ? (
           <>
-            <span className="dot" style={{ background: look.dot }} />
+            {status === "running" ? <RunIndicator status={status} /> : <span className="dot" style={{ background: look.dot }} />}
             <span style={{ color: look.text }}>{look.label}</span>
           </>
         ) : (

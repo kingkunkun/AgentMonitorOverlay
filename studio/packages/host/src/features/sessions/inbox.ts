@@ -20,8 +20,36 @@ const INBOX_KEY = "sessions.inbox";
 const PEER_QUEUE_KEY = "sessions.peer-queue";
 /** How long the next held message waits for the turn the first one started to show (see deliver). */
 const TURN_SEEN_MS = 3000;
+const COMPANY_ACTIVE_KEY = "sessions.company-active";
+type CompanyActive = { itemId: Id; seq: number; observed: boolean };
+type InboxDelivery = { itemId: Id; state: "sending" | "delivered" | "failed" | "unknown"; error?: string };
 
 export class SessionInbox extends Feature {
+  private companyActiveCache: Record<Id, CompanyActive> | null = null;
+  private deliveryListeners = new Set<(event: InboxDelivery) => void>();
+
+  /** Internal callbacks only, never the public Host/remote event stream. Success means the runtime call acknowledged. */
+  onDelivery(listener: (event: InboxDelivery) => void): () => void { this.deliveryListeners.add(listener); return () => { this.deliveryListeners.delete(listener); }; }
+  private delivery(event: InboxDelivery): void { for (const listener of this.deliveryListeners) listener(event); }
+  private companyActive(): Record<Id, CompanyActive> {
+    if (!this.companyActiveCache) {
+      try { this.companyActiveCache = JSON.parse(this.store.getKv(COMPANY_ACTIVE_KEY)?.value ?? "{}"); } catch { this.companyActiveCache = {}; }
+    }
+    return this.companyActiveCache!;
+  }
+  private rememberCompany(): void { this.store.setKv(COMPANY_ACTIVE_KEY, JSON.stringify(this.companyActive())); }
+  companyBusy(sessionId: Id): boolean { return !!this.companyActive()[sessionId]; }
+  /** Only an explicit, checked retry releases a job whose native outcome was unknown. */
+  releaseCompany(itemId: Id): void {
+    for (const [id, entry] of Object.entries(this.companyActive())) if (entry.itemId === itemId) delete this.companyActive()[id];
+    this.rememberCompany();
+  }
+  private settleCompany(s: Session): void {
+    const entry = this.companyActive()[s.id]; if (!entry) return;
+    if (inTurn(s.status)) { if (!entry.observed) { entry.observed = true; this.rememberCompany(); } return; }
+    const [turn] = this.store.findItems(s.id, "turn", {}, { newest: true, limit: 1 });
+    if (entry.observed || (turn && turn.seq > entry.seq && turn.type === "turn" && turn.state !== "running")) { delete this.companyActive()[s.id]; this.rememberCompany(); }
+  }
   constructor(
     host: FeatureHost,
     /** The feature the inbox is part of (it sends through it). */
@@ -70,7 +98,7 @@ export class SessionInbox extends Feature {
    * A message from an agent or from Studio into `sessionId`: shown at once, sent now when the session is free, else
    * when it is. `delivered`: it went in now; `waiting`: how many of the session's are still held.
    */
-  async put(sessionId: Id, text: string): Promise<{ delivered: boolean; waiting: number }> {
+  async put(sessionId: Id, text: string, options: { onQueued?: (itemId: Id) => void; separateTurn?: boolean } = {}): Promise<{ delivered: boolean; waiting: number; itemId?: Id }> {
     const s = this.requireSession(sessionId);
     if (s.archivedAt || s.writer === "archived") throw new HostError("read_only", "这个会话已归档，不能再往里发消息");
     if (s.kind === "sub") throw new HostError("read_only", "子 agent 不能单独接收消息");
@@ -80,13 +108,18 @@ export class SessionInbox extends Feature {
       return { delivered: true, waiting: 0 };
     }
     const role = this.sessions.roleUpdate(sessionId);
-    const item = this.append(s, this.sessions.withRole(text, role.lines));
-    role.told();
-    this.remember(sessionId);
+    // Company delivery records share this transaction, so a crash cannot lose the association and resend the work.
+    const item = this.store.transaction(() => {
+      const row = this.append(s, this.sessions.withRole(text, role.lines), options.separateTurn ? "user/company-inbox" : "user/inbox");
+      options.onQueued?.(row.id);
+      role.told();
+      this.remember(sessionId);
+      return row;
+    });
     if (this.paused.has(sessionId)) this.tellPaused(sessionId);
     await this.flush(sessionId);
     const now = this.store.getItem(item.id);
-    return { delivered: !(now?.type === "user" && now.delivery === "held"), waiting: this.held(sessionId).length };
+    return { delivered: !(now?.type === "user" && now.delivery === "held"), waiting: this.held(sessionId).length, itemId: item.id };
   }
 
   /** 立即发送 on a held row: it goes now — into the running turn as the person's would, which then gives way to it. */
@@ -102,8 +135,12 @@ export class SessionInbox extends Feature {
   watch(): void {
     this.migratePeerQueue();
     this.host.on("event", (e) => {
-      if (e.type === "session.upserted" && this.ids().has(e.session.id)) void this.flush(e.session.id).catch(() => undefined);
+      if (e.type === "session.upserted") {
+        this.settleCompany(e.session);
+        if (this.ids().has(e.session.id)) void this.flush(e.session.id).catch(() => undefined);
+      }
     });
+    for (const id of Object.keys(this.companyActive())) { const s = this.store.getSession(id); if (s) this.settleCompany(s); }
     for (const id of this.ids()) void this.flush(id).catch(() => undefined);
   }
 
@@ -138,6 +175,7 @@ export class SessionInbox extends Feature {
       return this.forget(sessionId);
     }
     if (this.paused.has(sessionId)) return;
+    if (this.companyActive()[sessionId]) return;
     if (!free(s) && !(withTurn && s.status === "running" && writable(s))) return;
     // Behind the person's message (2026-11-08): marked so the row says it goes in by itself (see `withPerson`). Not by
     // status: a Codex session shows `running` only once turn/started comes back, after the person's send has returned.
@@ -147,19 +185,33 @@ export class SessionInbox extends Feature {
     // the turn is seen to run: Codex tells it (turn/started) only after its turn/start, and a second turn/start before
     // that would not be a steer.
     let before: number | null = null;
+    let startedCompany = false;
     for (const it of held) {
       const current = this.store.getItem(it.id);
       if (current?.type !== "user" || current.delivery !== "held") continue;
+      // Company assignments are separate jobs. A second job waits for the turn just started to finish, even when
+      // generic inbox messages would normally be steered into that new turn together.
+      if (before !== null && (startedCompany || current.raw?.method === "user/company-inbox")) break;
+      if (current.raw?.method === "user/company-inbox" && inTurn(this.store.getSession(sessionId)?.status ?? "idle")) break;
       if (before !== null) await this.turnSeen(sessionId, before);
       before = current.seq;
+      startedCompany = current.raw?.method === "user/company-inbox";
       try {
-        if (!rt.resend) throw new Error("this Host cannot send a held message");
+        if (!rt.resend) throw Object.assign(new Error("this Host cannot send a held message"), { deliveryNotAttempted: true });
+        this.store.transaction(() => {
+          if (startedCompany) { this.companyActive()[sessionId] = { itemId: current.id, seq: current.seq, observed: false }; this.rememberCompany(); }
+          this.delivery({ itemId: current.id, state: "sending" });
+        });
         // Set before sending: the runtime keeps the item's other fields when it changes its delivery.
         if (behindPerson) this.publish({ type: "item.updated", item: this.store.replaceItem({ ...current, withPerson: true }) });
         await rt.resend(sessionId, it.id, []);
+        this.delivery({ itemId: current.id, state: "delivered" });
       } catch (err) {
         this.mark(it.id, "unsent");
         const why = err instanceof Error ? err.message : String(err);
+        const notAttempted = !!(err && typeof err === "object" && "deliveryNotAttempted" in err && err.deliveryNotAttempted);
+        if (startedCompany && notAttempted) this.releaseCompany(current.id);
+        this.delivery({ itemId: current.id, state: notAttempted ? "failed" : "unknown", error: why });
         this.publish({ type: "item.appended", item: this.store.appendItem(this.row(s, { type: "notice", level: "warning", message: `这条消息没能送进会话：${why}。可以点它下面的「重新发送」再试。` }, "inbox/failed")) });
       }
     }
@@ -181,8 +233,8 @@ export class SessionInbox extends Feature {
     }
   }
 
-  private append(s: Session, text: string): SessionItem {
-    const item = this.store.appendItem(this.row(s, { type: "user", text, delivery: "held" }, "user/inbox"));
+  private append(s: Session, text: string, method = "user/inbox"): SessionItem {
+    const item = this.store.appendItem(this.row(s, { type: "user", text, delivery: "held" }, method));
     this.publish({ type: "item.appended", item });
     return item;
   }

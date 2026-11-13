@@ -1,4 +1,6 @@
 import { expect, test } from "@playwright/test";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ProfileChoices, Session, Workspace } from "@amo-studio/protocol";
 import { launchStudio, screenshot } from "../support/studio.js";
 
@@ -36,7 +38,9 @@ test("Codex composer keeps prompts/files, changes actual model/effort/permission
     await page.keyboard.press("Home");
     await expect(page.getByTestId("effort-label")).toHaveText("低");
     await page.getByTestId("switch-model").click();
-    await panel.getByRole("button", { name: "思考强度：高", exact: true }).click();
+    const effort = panel.getByRole("slider", { name: "思考强度", exact: true });
+    await effort.focus();
+    await page.keyboard.press("ArrowRight");
     await expect(page.getByTestId("effort-label")).toHaveText("高");
     if (!(await panel.isVisible())) await page.getByTestId("switch-model").click();
     await panel.getByRole("button", { name: "选择模型", exact: true }).click();
@@ -51,8 +55,27 @@ test("Codex composer keeps prompts/files, changes actual model/effort/permission
     await expect(panel.getByTestId("fast-toggle")).toHaveAttribute("aria-pressed", "false");
     await panel.getByTestId("fast-toggle").click();
     await expect(page.getByTestId("options-note")).toContainText("Fast 已开");
+    await page.getByTestId("switch-model").click();
+    await expect(panel.getByTestId("fast-toggle").locator("svg")).toBeVisible();
+    await page.mouse.move(0, 0);
+    await expect(panel.getByTestId("fast-usage-hint")).not.toBeVisible();
+    await screenshot(app, "studio", "codex-compact-fast", page);
     await page.getByTestId("switch-permission").click();
     const permissions = page.getByRole("dialog", { name: "权限", exact: true });
+    await expect(permissions.locator(".composer-permission-option b")).toHaveText(["请求批准", "帮我批准", "完全访问权限"]);
+    await permissions.getByRole("button", { name: /请求批准 编辑外部/ }).click();
+    const sessionOptions = async () => (await studio.api<{ sessions: Session[] }>("GET", "/api/state")).sessions.find((s) => s.id === created.session.id)?.options;
+    await expect.poll(async () => (await sessionOptions())?.permission).toBe("workspace-write");
+    await page.getByTestId("switch-permission").click();
+    await permissions.getByRole("button", { name: /帮我批准/ }).click();
+    await expect.poll(async () => (await sessionOptions())?.permission).toBe("auto-review");
+    await page.getByTestId("switch-permission").click();
+    await permissions.getByRole("button", { name: /完全访问权限/ }).click();
+    await expect.poll(async () => (await sessionOptions())?.permission).toBe("full-auto");
+    await page.getByTestId("switch-permission").click();
+    await screenshot(app, "studio", "codex-permissions", page);
+    await permissions.getByRole("button", { name: "了解更多", exact: true }).click();
+    await permissions.getByRole("button", { name: /更多权限/ }).click();
     await permissions.getByRole("button", { name: /逐条询问/ }).click();
     await expect(page.getByTestId("switch-permission")).toContainText("逐条询问");
     await page.getByRole("button", { name: "更多工具", exact: true }).click();
@@ -78,6 +101,9 @@ test("Codex composer keeps prompts/files, changes actual model/effort/permission
     await page.getByTestId("switch-model").click();
     await expect(page.getByRole("slider", { name: "思考强度" })).toBeVisible();
     await page.keyboard.press("Escape");
+    await page.getByTestId("switch-permission").click();
+    await page.getByRole("dialog", { name: "权限", exact: true }).getByRole("button", { name: /完全访问权限/ }).click();
+    await expect(page.getByTestId("switch-permission")).toContainText("完全访问");
     await screenshot(app, "studio", "codex-new-composer", page);
   } finally { await studio.close(); }
 });
@@ -98,12 +124,56 @@ test("Claude can change model and permissions through the compact menus without 
     await page.getByRole("group", { name: "Mock Claude", exact: true }).getByRole("option", { name: second.label, exact: true }).click();
     await expect(page.getByTestId("switch-model")).toContainText(second.label);
     await page.getByTestId("switch-permission").click();
-    await page.getByRole("dialog", { name: "权限", exact: true }).getByRole("button", { name: /全部允许/ }).click();
+    await page.getByRole("dialog", { name: "权限", exact: true }).getByRole("button", { name: /完全访问权限/ }).click();
     await expect(page.getByTestId("switch-permission")).toContainText("完全访问");
     const composer = page.getByRole("textbox", { name: "输入消息", exact: true });
     await composer.fill("after model change");
     await composer.press("Enter");
     await expect(page.getByTestId("msg-agent").last()).toContainText("MOCK: after model change", { timeout: 30_000 });
     expect(studio.claudeMock!.requests.filter((r) => r.lastUserText === "after model change").some((r) => (r.body as { model: string }).model === second.id)).toBe(true);
+  } finally { await studio.close(); }
+});
+
+test("a single chat hides its session list and the file divider resizes both panes and remembers the ratio", async () => {
+  const studio = await launchStudio({ taskSidebar: false });
+  try {
+    const { page, app } = studio;
+    const dir = studio.workspace("layout");
+    const file = join(dir, "diagnosis.txt");
+    writeFileSync(file, "布局检查\n".repeat(90));
+    const ws = await studio.api<Workspace>("POST", "/api/workspaces", { path: dir });
+    await studio.api("POST", "/api/tasks", { title: "聊天与文件", workspaceId: ws.id, firstSession: { profileId: "codex-mock", text: `hello\n\n引用文件：\n- ${file}` } });
+    await page.getByTestId("task-card").first().click();
+    await expect(page.getByTestId("msg-agent").last()).toContainText("MOCK:", { timeout: 30_000 });
+    await expect(page.getByTestId("session-row")).toHaveCount(0);
+    await expect(page.getByTestId("sessions-toggle")).toHaveAttribute("aria-pressed", "false");
+    const openPreview = async () => { const chip = page.getByTestId("msg-user").getByTestId("msg-file"); await expect(chip).toHaveAttribute("data-file-link", ""); await chip.click({ button: "right" }); await page.getByRole("menuitem", { name: "在侧栏预览" }).click(); };
+    await openPreview();
+    const preview = page.getByTestId("file-preview");
+    const handle = page.getByTestId("preview-splitter");
+    const before = (await preview.boundingBox())!.width;
+    const threadBefore = (await page.locator(".thread-col").boundingBox())!.width;
+    const box = (await handle.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down(); await page.mouse.move(box.x - 85, box.y + box.height / 2, { steps: 12 }); await page.mouse.up();
+    const after = (await preview.boundingBox())!.width;
+    expect(after).toBeGreaterThan(before + 40);
+    expect((await page.locator(".thread-col").boundingBox())!.width).toBeLessThan(threadBefore - 40);
+    await screenshot(app, "studio", "codex-resizable-chat", page);
+    await preview.getByRole("button", { name: "关闭预览" }).click();
+    await openPreview();
+    expect(Math.abs((await preview.boundingBox())!.width - after)).toBeLessThan(3);
+    await handle.dblclick();
+    expect(Math.abs((await preview.boundingBox())!.width - before)).toBeLessThan(3);
+    await handle.focus(); await page.keyboard.press("ArrowLeft");
+    expect((await preview.boundingBox())!.width).toBeGreaterThan(before + 15);
+    await preview.getByRole("button", { name: "关闭预览" }).click();
+    await page.getByTestId("new-session-toggle").click();
+    await expect(page.getByRole("button", { name: "开始新会话" })).toBeVisible();
+    await expect(page.getByTestId("session-row")).toHaveCount(1);
+    await page.getByRole("button", { name: "开始新会话" }).click();
+    await expect(page.getByTestId("session-row")).toHaveCount(2);
+    await page.reload();
+    await expect(page.getByTestId("session-row")).toHaveCount(2);
   } finally { await studio.close(); }
 });

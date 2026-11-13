@@ -12,6 +12,7 @@ import type { ChannelRegistry } from "./runtime/channels.js";
 import type { DshRuntime } from "./runtime/dsh/dsh-runtime.js";
 import { DshFeature } from "./features/dsh/service.js";
 import { ProjectsFeature } from "./features/projects/service.js";
+import { CompanyFeature } from "./features/company/service.js";
 import { ConfigFeature } from "./features/config/service.js";
 import { ClaudeAccountsFeature } from "./features/claudeaccounts/service.js";
 import type { ClaudeAccounts } from "./runtime/claude/accounts.js";
@@ -60,6 +61,7 @@ export class HostService extends EventEmitter<HostServiceEvents> {
   /** Studio windows listening to the event socket (the HTTP server counts them): 外部打开 Review needs one. */
   liveWindows = 0;
   readonly projects: ProjectsFeature = new ProjectsFeature(this);
+  readonly company: CompanyFeature = new CompanyFeature(this);
   readonly config: ConfigFeature = new ConfigFeature(this);
   /** Claude 多账号 (2026-11-03): the Claude subscription's accounts, signing in and switching. */
   readonly claudeAccounts: ClaudeAccountsFeature = new ClaudeAccountsFeature(this);
@@ -143,6 +145,7 @@ export class HostService extends EventEmitter<HostServiceEvents> {
     router.on("log", (line) => this.log(line));
     this.config.watchClaudeAccounts();
     this.tasks.ensureStructure();
+    this.company.watch();
     this.sessions.watchReports();
     this.collab.watchAnswers();
     this.tasks.watchColumns();

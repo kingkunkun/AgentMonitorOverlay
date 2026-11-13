@@ -14,6 +14,7 @@ import { Mark } from "../chat/pickers.js";
 import { ArchiveIcon, formatDay } from "./Archived.js";
 import { useStoredIds } from "../lib/storedIds.js";
 import { dutyOfSession, useDuty } from "../duty/duty.js";
+import { RunIndicator } from "../lib/RunIndicator.js";
 
 const KIND = { main: "会话", fork: "分支", sub: "子 agent" } as const;
 
@@ -398,7 +399,7 @@ function TreeLevel({
                     {look.label}
                   </span>
                 ) : (
-                  <span className={`tree-dot ${s.status}`} style={{ background: s.status === "completed" ? "transparent" : look.dot }} title={look.label} aria-label={look.label} />
+                  s.status === "running" ? <RunIndicator status={s.status} /> : <span className={`tree-dot ${s.status}`} style={{ background: s.status === "completed" ? "transparent" : look.dot }} title={look.label} aria-label={look.label} />
                 )}
               </button>
               {hidden.length > 0 && (

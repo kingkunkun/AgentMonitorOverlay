@@ -141,6 +141,8 @@ export interface SessionOptions {
   model?: string;
   effort?: string;
   permission?: string;
+  /** Explicit Codex collaboration mode; applied through turn/start on the next turn. */
+  plan?: boolean;
   /**
    * Codex: run at the model's fast speed tier (stage 13, 「Fast」; `ModelOption.fast`). Absent = never chosen (the
    * person's own Codex config applies); false = chosen off (standard speed is sent). Ignored by other runtimes.

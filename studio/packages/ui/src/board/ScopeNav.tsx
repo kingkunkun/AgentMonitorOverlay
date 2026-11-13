@@ -29,6 +29,7 @@ const readNavFolded = (): boolean => readStored(NAV_FOLD_KEY) === "1";
 import { showToast } from "../lib/toast.js";
 import { useWaitingQuestions } from "../canvas/useCallouts.js";
 import { pickFolder } from "../lib/profiles.js";
+import { CompanyIcon } from "../company/CompanyIcon.js";
 
 /** A project or topic about to be archived from its right-click menu. */
 type Archiving = { kind: "workspace" | "topic"; id: string; name: string };
@@ -62,6 +63,7 @@ interface ScopeNavProps {
    * out while it is turned off. While it is in front no scope row is current.
    */
   panorama?: { current: boolean; open(): void };
+  company?: { current?: "rooms" | "agents" | "org"; open(tab: "rooms" | "agents" | "org"): void };
 }
 
 const isCurrent = (a: Scope, b: Scope) => a.kind === b.kind && (a.kind === "all" || (b.kind !== "all" && a.id === b.id));
@@ -77,7 +79,7 @@ function readFolded(): Record<PinKind, boolean> {
  * pinned (they come first, here and wherever they are picked) and each section folds down to its pinned entries. The
  * lists scroll between the fixed top and the Host / usage footer.
  */
-export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope, live, onScope, onSettings, panorama, onOpenChat, onNewChat, currentChat }: ScopeNavProps) {
+export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope, live, onScope, onSettings, panorama, company, onOpenChat, onNewChat, currentChat }: ScopeNavProps) {
   const [adding, setAdding] = useState(false);
   const [newTopic, setNewTopic] = useState<string | null>(null);
   const [path, setPath] = useState("");
@@ -187,7 +189,7 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
           endDrag();
         }}
       >
-        <button type="button" className="nav-row" aria-current={!panorama?.current && isCurrent(scope, target)} aria-expanded={kind === "project" && id ? expandedProjects.has(id) : undefined} onClick={() => { if (kind === "project" && id) { if (!expandedProjects.has(id) || !currentChat && scope.kind === "workspace" && scope.id === id) expandedProjects.toggle(id); } onScope(target); }} onContextMenu={onMenu} data-testid={testId}
+        <button type="button" className="nav-row" aria-current={!panorama?.current && !company?.current && isCurrent(scope, target)} aria-expanded={kind === "project" && id ? expandedProjects.has(id) : undefined} onClick={() => { if (kind === "project" && id) { if (!expandedProjects.has(id) || !currentChat && scope.kind === "workspace" && scope.id === id) expandedProjects.toggle(id); } onScope(target); }} onContextMenu={onMenu} data-testid={testId}
           draggable={!!kind && !!id}
           title={kind ? [title, "拖动排序；Alt ↑ / ↓ 调整顺序（置顶项在前）"].filter(Boolean).join("\n") : title}
           onDragStart={(e) => { if (kind && id) startDrag(e, { type: "item", kind, id }); }}
@@ -226,7 +228,7 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
             </svg>
           </button>
         )}
-        {kind === "project" && id && expandedProjects.has(id) && <ProjectChats link={link} tasks={liveTasks.filter((t) => t.workspaceId === id)} current={currentChat} onOpen={onOpenChat} />}
+        {kind === "project" && id && expandedProjects.has(id) && <ProjectChats link={link} sessions={sessions} tasks={liveTasks.filter((t) => t.workspaceId === id)} current={currentChat} onOpen={onOpenChat} />}
       </div>
     );
   };
@@ -414,6 +416,7 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
   if (collapsed)
     return (
       <nav className="scope-nav collapsed" aria-label="范围">
+        {company && (["rooms", "agents", "org"] as const).map((tab) => <button key={tab} className="fold-btn" aria-label={{ rooms: "工作群", agents: "Agent 管理", org: "组织架构" }[tab]} title={{ rooms: "工作群", agents: "Agent 管理", org: "组织架构" }[tab]} aria-current={company.current === tab ? "page" : undefined} onClick={() => company.open(tab)}><CompanyIcon kind={tab} /></button>)}
         <span className="spacer" />
         {onSettings && (
           <button type="button" className="fold-btn nav-settings-folded" onClick={onSettings} aria-label="设置" title="设置">
@@ -435,6 +438,7 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
       <div className="nav-top">
         <button type="button" className="nav-row nav-new-chat" onClick={() => onNewChat?.()} data-testid="nav-new-chat">✎ <span>新聊天</span></button>
         {row(null, null, { kind: "all" }, "全部聊天", liveTasks.length, "scope-all")}
+        {company && <div className="company-nav" aria-label="公司工作台">{(["rooms", "agents", "org"] as const).map((tab) => <button key={tab} type="button" className="nav-row" aria-current={company.current === tab ? "page" : undefined} onClick={() => company.open(tab)} data-testid={`nav-company-${tab}`}><CompanyIcon kind={tab} /><span className="name">{{ rooms: "工作群", agents: "Agent 管理", org: "组织架构" }[tab]}</span></button>)}</div>}
         {panorama && (
           <div className="nav-item">
             <button type="button" className="nav-row" aria-current={panorama.current} onClick={panorama.open} data-testid="nav-panorama" title="全景：所有专题和任务画在一张图上（测试功能）">
@@ -445,7 +449,7 @@ export function ScopeNav({ link, workspaces, topics, tasks, sessions = [], scope
       </div>
 
       <div className="nav-scroll">
-        <ProjectChats link={link} tasks={liveTasks} current={currentChat} onOpen={onOpenChat} pinnedOnly />
+        <ProjectChats link={link} sessions={sessions} tasks={liveTasks} current={currentChat} onOpen={onOpenChat} pinnedOnly />
         {sectionRows.filter((kind) => topicsOn || kind !== "topic").map((kind) => kind === "topic" ? (
         <section key="topic" className="nav-section-box" aria-label="专题" {...sectionDrop("topic")}>
           {head("topic", "专题", liveTopics.length, () => setNewTopic(""), "新专题")}

@@ -60,7 +60,7 @@ describe("/ commands over HTTP", () => {
   it("puts Studio's commands first, /review only in a git project", async () => {
     const plain = await session("plain");
     const list = (await api<SlashCommandList>("GET", `/api/sessions/${plain.id}/commands`)).data;
-    expect(list.commands.map((c) => `${c.group}:${c.name}`)).toEqual(["studio:compact", "runtime:code-review", "skill:release-notes"]);
+    expect(list.commands.map((c) => `${c.group}:${c.name}`)).toEqual(["studio:compact", "runtime:plan", "runtime:code-review", "skill:release-notes"]);
     const repo = await session("repo");
     const inRepo = (await api<SlashCommandList>("GET", `/api/sessions/${repo.id}/commands`)).data;
     expect(inRepo.commands.slice(0, 2)).toMatchObject([{ name: "compact" }, { name: "review", local: "open-review" }]);

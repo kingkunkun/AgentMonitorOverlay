@@ -9,10 +9,12 @@ const PLACE_KEY = "amo.lastPlace";
 const SESSIONS_KEY = "amo.lastSessions";
 const MAX_SESSIONS = 100;
 
-type Back = { kind: "board" } | { kind: "canvas" } | { kind: "panorama" };
-type SavedView = { kind: "board" } | { kind: "canvas" } | { kind: "panorama" } | { kind: "new" } | { kind: "task"; taskId: string; back?: Back };
+type CompanyPlace = Extract<View, { kind: "company" }>;
+type Back = { kind: "board" } | { kind: "canvas" } | { kind: "panorama" } | CompanyPlace;
+type SavedView = Back | { kind: "new" } | { kind: "task"; taskId: string; back?: Back };
 
-const isBack = (v: unknown): v is Back => !!v && typeof v === "object" && ((v as Back).kind === "board" || (v as Back).kind === "canvas" || (v as Back).kind === "panorama");
+const isBack = (v: unknown): v is Back => !!v && typeof v === "object" && ((v as Back).kind === "board" || (v as Back).kind === "canvas" || (v as Back).kind === "panorama" || ((v as CompanyPlace).kind === "company" && ["rooms", "agents", "org"].includes((v as CompanyPlace).tab)));
+const saveBack = (v: Back): Back => v.kind === "company" ? { kind: "company", tab: v.tab, ...(typeof v.roomId === "string" ? { roomId: v.roomId } : {}), ...(typeof v.agentId === "string" ? { agentId: v.agentId } : {}) } : { kind: v.kind };
 
 const readJson = readStoredJson;
 const writeJson = writeStoredJson;
@@ -38,6 +40,7 @@ export function readPlace(): { view: View; scope: Scope } {
     return { view: { kind: "task", taskId: v.taskId, ...(typeof sessionId === "string" ? { sessionId } : {}), ...(isBack(v.back) ? { back: v.back } : {}) }, scope };
   }
   if (v?.kind === "canvas" || v?.kind === "panorama" || v?.kind === "new") return { view: { kind: v.kind }, scope };
+  if (v?.kind === "company" && isBack(v)) return { view: saveBack(v), scope };
   return { view: { kind: "board" }, scope };
 }
 
@@ -45,7 +48,8 @@ export function readPlace(): { view: View; scope: Scope } {
 export function savePlace(view: View, scope: Scope): void {
   const saved: SavedView =
     view.kind === "task"
-      ? { kind: "task", taskId: view.taskId, ...(isBack(view.back) ? { back: { kind: view.back.kind } } : {}) }
+      ? { kind: "task", taskId: view.taskId, ...(isBack(view.back) ? { back: saveBack(view.back) } : {}) }
+      : view.kind === "company" ? saveBack(view)
       : view.kind === "canvas" || view.kind === "panorama" || view.kind === "new"
         ? { kind: view.kind }
         : { kind: "board" };

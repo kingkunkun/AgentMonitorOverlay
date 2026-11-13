@@ -21,6 +21,7 @@ const GRAPH: Record<string, string[]> = {
   canvasreview: ["canvas", "sessions", "tasks"],
   cli: ["gitreview"],
   collab: ["sessions"],
+  company: ["sessions", "tasks"],
   config: ["claudeaccounts", "scratchpad"],
   datamgmt: ["attachments", "projects"],
   duty: ["sessions", "tasks"],

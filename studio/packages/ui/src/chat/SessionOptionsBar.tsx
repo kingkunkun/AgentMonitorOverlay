@@ -8,8 +8,10 @@ import { rememberPick } from "../lib/recents.js";
 import { nextEffort, pickLabel } from "./pickers.js";
 import { FastUsageHint } from "./FastUsageHint.js";
 import { ComposerModelPicker } from "./ComposerModelPicker.js";
+import { PermissionIcon, PermissionMenu, permissionView } from "./PermissionPicker.js";
 import { DSH_FULL_ACCESS, SandboxHint } from "../settings/SandboxHint.js";
 import { SessionMcpTray, useSessionMcp } from "../mcp/SessionMcp.js";
+import { CodexAddMenu } from "./CodexAddMenu.js";
 
 // Under the composer: what the session runs with — model, effort, permissions — each one click away
 // (design/ui-directions/new-task.html, "会话中切换"). Clicking the model or the permissions opens that group above the
@@ -26,6 +28,7 @@ export function SessionOptionsBar({
   disabled,
   profiles = [],
   onContinued,
+  onFiles, onSketch, onSkill,
 }: {
   link: HostLink;
   session: Session;
@@ -34,6 +37,9 @@ export function SessionOptionsBar({
   disabled: boolean;
   profiles?: readonly ModelProfile[];
   onContinued?(session: Session): void;
+  onFiles?(): void;
+  onSketch?(): void;
+  onSkill?(name: string): void;
 }) {
   const { choices } = useProfileChoices(link, session.profileId);
   const [tray, setTray] = useState<Tray>(null);
@@ -132,18 +138,23 @@ export function SessionOptionsBar({
   const label = pickLabel(profile, model?.id ?? session.options.model ?? null, choices?.models);
   const permission = choices?.permissions.find((p) => p.id === (session.options.permission ?? choices.defaultPermission));
 
-  const fullAccess = /full|bypass|danger/i.test(permission?.id ?? "") || /全部允许|完全访问|完全允许/.test(permission?.label ?? "");
+  const permissionDisplay = permission && permissionView(permission, choices?.permissions.some((p) => p.id === "auto-review"));
   return (
     <div className="session-options codex-session-options" ref={box} data-testid="session-options" title={optionsSummary(choices, session.options)}>
-      <button type="button" className="composer-permission" data-full-access={fullAccess || undefined} aria-label="权限" aria-expanded={tray === "permission"} data-testid="switch-permission" disabled={disabled || busy || !choices} onClick={() => setTray(tray === "permission" ? null : "permission")}><span aria-hidden="true">⛨</span>{fullAccess ? "完全访问" : permission?.label ?? "默认权限"}</button>
+      <button type="button" className="composer-permission" data-full-access={permissionDisplay?.kind === "full" || undefined} aria-label="权限" aria-expanded={tray === "permission"} data-testid="switch-permission" disabled={disabled || busy || !choices} onClick={() => setTray(tray === "permission" ? null : "permission")}><PermissionIcon kind={permissionDisplay?.kind} />{permissionDisplay?.caption ?? "默认权限"}</button>
       <button type="button" className="composer-tools-trigger" aria-label="更多工具" title="更多工具与预设" aria-expanded={tray === "tools"} data-testid="composer-tools" onClick={() => setTray(tray === "tools" ? null : "tools")}>+</button>
       {tray === "permission" && choices && <div className="composer-popover composer-permission-menu" role="dialog" aria-label="权限" data-testid="options-tray">
-        <div className="composer-popover-heading">权限</div>
-        {choices.permissions.map((p) => <button type="button" className="composer-permission-option" key={p.id} disabled={busy || !!p.unavailable} aria-pressed={permission?.id === p.id} onClick={() => setPermission(p.id)} title={p.unavailable ?? p.description}><span><b>{p.label}</b><small>{p.unavailable ?? p.description}</small></span><span aria-hidden="true">{permission?.id === p.id ? "✓" : ""}</span></button>)}
+        <PermissionMenu permissions={choices.permissions} value={permission?.id} disabled={disabled || busy} onPick={setPermission} />
         <SandboxHint link={link} workspaceId={session.workspaceId} active={session.runtime === "dsh" && (session.options.permission ?? choices.defaultPermission) === "workspace-write"} onUseFull={() => setPermission(DSH_FULL_ACCESS)} />
-        <p className="composer-popover-note">文件外发仍须本机逐次确认。{when}。</p>
       </div>}
-      {tray === "tools" && <div className="composer-popover composer-tools-menu" role="dialog" aria-label="更多工具">
+      {session.runtime === "codex" && <CodexAddMenu key={session.id} link={link} session={session} open={tray === "tools"} disabled={disabled} onClose={() => setTray(null)} onFiles={onFiles} onSketch={onSketch} onSkill={onSkill}>
+        <div className="composer-popover-heading">工具</div>
+        <button type="button" data-testid="switch-mcp" onClick={() => { mcp.refresh(); setTray("mcp"); }}>MCP{mcp.state ? ` · ${mcpOn} 个已启用` : ""}<span aria-hidden="true">›</span></button>
+        {mine.map((p) => <button type="button" key={p.id} disabled={disabled || busy} onClick={() => void apply(p.options, `已换成预设「${p.name}」`)}>{p.name}</button>)}
+      </CodexAddMenu>}
+      {tray === "tools" && session.runtime !== "codex" && <div className="composer-popover composer-tools-menu" role="dialog" aria-label="更多工具">
+        {onFiles && <button type="button" disabled={disabled} onClick={() => { setTray(null); onFiles(); }}>文件和文件夹</button>}
+        {onSketch && <button type="button" disabled={disabled} onClick={() => { setTray(null); onSketch(); }}>绘图</button>}
         {session.runtime !== "remote" && <button type="button" data-testid="switch-mcp" onClick={() => { mcp.refresh(); setTray("mcp"); }}>MCP{mcp.state ? ` · ${mcpOn} 个已启用` : ""}<span aria-hidden="true">›</span></button>}
         {mine.length > 0 && <div className="composer-popover-heading">常用预设</div>}
         {mine.map((p) => <button type="button" key={p.id} data-testid="preset-chip" aria-pressed={sameOptions(p.options, session.options)} disabled={disabled || busy} title={optionsSummary(choices, p.options)} onClick={() => void apply(p.options, `已换成预设「${p.name}」`)}>{p.name}<span aria-hidden="true">{sameOptions(p.options, session.options) ? "✓" : ""}</span></button>)}

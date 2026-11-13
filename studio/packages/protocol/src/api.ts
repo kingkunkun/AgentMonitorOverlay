@@ -18,6 +18,7 @@ import type { RemoteRoutes } from "./remote.js";
 import type { CooperationRoutes } from "./cooperation.js";
 import type { BuildJobRoutes } from "./build-job.js";
 import type { ChatPresetRoutes } from "./chat-presets.js";
+import type { CompanyRoutes } from "./company.js";
 import type { ViewPackRoutes } from "./viewpacks.js";
 
 export const HOST_DEFAULT_PORT = 47900;
@@ -561,6 +562,7 @@ export interface CredentialStatus {
  */
 export interface HostRoutes
   extends BuildJobRoutes,
+    CompanyRoutes,
     ChatPresetRoutes,
     CanvasRoutes,
     ChannelRoutes,
@@ -826,6 +828,7 @@ export type HostErrorCode = "bad_request" | "not_found" | "conflict" | "read_onl
 
 /** Events on `ws://127.0.0.1:<port>/api/events?since=<eventSeq>`. `seq` is global and monotonic. */
 export type HostEvent = { seq: number } & (
+  | { type: "company.changed" }
   | { type: "workspace.upserted"; workspace: Workspace }
   | { type: "workspace.removed"; workspaceId: Id }
   | { type: "task.upserted"; task: Task }

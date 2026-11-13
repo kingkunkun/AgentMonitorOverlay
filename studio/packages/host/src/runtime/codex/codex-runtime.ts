@@ -13,6 +13,7 @@ import { CodexAsks } from "./asks.js";
 import { CodexEvents } from "./events.js";
 import { newSessionState, type CodexCore, type SessionState } from "./state.js";
 import { mcpSkippedNotice } from "../mcp-launch.js";
+import { CodexCompanyTools, companyToolsUnavailable } from "./company-tools.js";
 
 export { codexRetry, codexUsage, fastTier, reviewTarget } from "./account.js";
 export { describePlan, describeReview, describeTool, inputQuestions } from "./describe.js";
@@ -69,6 +70,8 @@ export class CodexRuntime extends RuntimeBase {
   private readonly listingModels = new Map<string, Promise<ModelOption[]>>();
   /** skills/list per profile and folder. */
   private readonly skillCache = new Map<string, { at: number; skills: CodexSkill[] }>();
+  private readonly companyTools = new CodexCompanyTools();
+  private readonly startingTurns = new Map<Id, number>();
   private readonly asks: CodexAsks;
   private readonly events: CodexEvents;
 
@@ -159,6 +162,9 @@ export class CodexRuntime extends RuntimeBase {
     const session = this.writable(sessionId);
     const handle = await this.handleFor(session.profileId);
     const st = this.sessionState(sessionId);
+    // Capability discovery may have yielded while the person started work. A company assignment must never
+    // become a steer into that turn; also cover turn/start before its turn/started notification arrives.
+    if (again && this.store.getItem(again)?.raw?.method === "user/company-inbox" && (st.activeTurnId || inTurn(this.store.getSession(sessionId)!.status) || this.startingTurns.has(sessionId))) throw companyToolsUnavailable("当前会话已开始另一项任务，公司群消息尚未发送，请空闲后重试。");
     const input: codex.v2.UserInput[] = [...(text ? [{ type: "text" as const, text, text_elements: [] }] : []), ...images.map((a) => ({ type: "localImage" as const, path: a.path })), ...extra];
     if (!session.title) this.updateSession(sessionId, { title: (text || "图片").slice(0, 60) });
     // The person's next message is the answer to request_user_input_async (the card, or typed by hand).
@@ -201,14 +207,19 @@ export class CodexRuntime extends RuntimeBase {
     }
     // Status and the active turn come from turn/started and turn/completed: a short turn can finish before this
     // response arrives, so setting them here would leave the session stuck in "running".
+    this.startingTurns.set(sessionId, (this.startingTurns.get(sessionId) ?? 0) + 1);
     try {
-      await handle.client.request("turn/start", { threadId: session.runtimeRef!, input, ...(clientId ? { clientUserMessageId: clientId } : {}), ...this.turnOptions(session.options), ...(await this.serviceTier(session)) });
+      await handle.client.request("turn/start", { threadId: session.runtimeRef!, input, ...(clientId ? { clientUserMessageId: clientId } : {}), ...this.turnOptions(session.options), ...(await this.collaborationMode(session)), ...(await this.serviceTier(session)) });
     } catch (err) {
       if (row && clientId) {
         st.sent.delete(clientId);
         setDelivery(row, "unsent");
       }
       throw err;
+    } finally {
+      const remaining = (this.startingTurns.get(sessionId) ?? 1) - 1;
+      if (remaining) this.startingTurns.set(sessionId, remaining);
+      else this.startingTurns.delete(sessionId);
     }
     return { mode: "start" };
   }
@@ -229,10 +240,21 @@ export class CodexRuntime extends RuntimeBase {
 
   /** 重新发送 (2026-11-02): a message Codex never read goes again, as the same row; also a held one of Studio's inbox. */
   async resend(sessionId: Id, itemId: Id, images: readonly Attachment[] = [], options: SendOptions = {}): Promise<{ mode: "start" | "steer" }> {
-    this.writable(sessionId);
+    const session = this.writable(sessionId);
     const item = this.store.getItem(itemId);
     if (item?.type !== "user" || item.sessionId !== sessionId) throw Object.assign(new Error(`message ${itemId} not found`), { code: "not_found" });
     if (item.delivery !== "unsent" && item.delivery !== "held") return { mode: this.sessionState(sessionId).activeTurnId ? "steer" : "start" };
+    if (item.raw?.method === "user/company-inbox") {
+      try {
+        const handle = await this.handleFor(session.profileId);
+        const idle = () => { const current = this.store.getSession(sessionId); return !!current && !inTurn(current.status) && !this.sessionState(sessionId).activeTurnId && !this.startingTurns.has(sessionId); };
+        const profileIdle = () => !this.store.listSessions().some((s) => s.runtime === "codex" && s.profileId === session.profileId && !s.archivedAt && (inTurn(s.status) || this.state.get(s.id)?.activeTurnId || this.startingTurns.has(s.id)));
+        await this.companyTools.ensure(handle.client, session.runtimeRef!, idle, profileIdle);
+      } catch (err) {
+        if (err && typeof err === "object" && "deliveryNotAttempted" in err) throw err;
+        throw companyToolsUnavailable("Codex 连接尚未就绪，本条公司群任务没有启动，请稍后重试。");
+      }
+    }
     return this.send(sessionId, item.text, images, [], options, itemId);
   }
 
@@ -261,7 +283,7 @@ export class CodexRuntime extends RuntimeBase {
     let handle: CodexServerHandle;
     try {
       handle = await this.handleFor(session.profileId);
-      await handle.client.request("turn/start", { threadId: session.runtimeRef, input: first.input, clientUserMessageId: firstId, ...this.turnOptions(session.options), ...(await this.serviceTier(session)) });
+      await handle.client.request("turn/start", { threadId: session.runtimeRef, input: first.input, clientUserMessageId: firstId, ...this.turnOptions(session.options), ...(await this.collaborationMode(session)), ...(await this.serviceTier(session)) });
     } catch (err) {
       this.emit("log", `could not send the unread messages of ${sessionId}: ${String(err)}`);
       for (const [clientId] of left) st.sent.delete(clientId);
@@ -445,7 +467,19 @@ export class CodexRuntime extends RuntimeBase {
    */
   async listCommands(sessionId: Id): Promise<SlashCommandList> {
     const session = this.requireSession(sessionId);
+    const native: NonNullable<SlashCommandList["codex"]> = { plan: session.options.plan === true, apps: [], unavailable: [] };
+    const handle = await this.handleFor(session.profileId);
+    const [goal, apps] = await Promise.allSettled([
+      handle.client.request("thread/goal/get", { threadId: session.runtimeRef! }, { timeoutMs: 8000 }),
+      handle.client.request("app/installed", { threadId: session.runtimeRef! }, { timeoutMs: 8000 }),
+    ]);
+    if (goal.status === "fulfilled") native.goal = (goal.value as codex.v2.ThreadGoalGetResponse).goal;
+    else native.unavailable.push(`目标暂不可用：${String(goal.reason)}`);
+    if (apps.status === "fulfilled") native.apps = (apps.value as codex.v2.AppsInstalledResponse).apps.filter((a) => a.enabled && a.callable).map((a) => ({ id: a.id, name: a.runtimeName || a.id }));
+    else native.unavailable.push(`应用暂不可用：${String(apps.reason)}`);
     const commands: SlashCommand[] = [
+      { name: "plan", description: "切换 Codex 原生计划模式", argumentHint: "[on | off]", group: "runtime" },
+      ...(native.goal !== undefined ? [{ name: "goal", description: "设置 Codex 持续追求的目标", argumentHint: "<目标>", group: "runtime" as const }] : []),
       {
         name: "code-review",
         description: "让 Codex 审查改动：默认审查未提交的改动，也可以写 base <分支>、commit <提交> 或你的审查要求",
@@ -455,12 +489,12 @@ export class CodexRuntime extends RuntimeBase {
     ];
     try {
       for (const skill of await this.skills(session)) {
-        commands.push({ name: skill.name, description: (skill.shortDescription || skill.description).replace(/\s+/g, " ").trim(), group: "skill" });
+        commands.push({ name: skill.name, ...(skill.interface?.displayName ? { displayName: skill.interface.displayName } : {}), ...(skill.pluginId ? { pluginId: skill.pluginId } : {}), description: (skill.interface?.shortDescription || skill.shortDescription || skill.description).replace(/\s+/g, " ").trim(), group: "skill" });
       }
-      return { commands };
+      return { commands, codex: native };
     } catch (err) {
       this.emit("log", `skills/list failed for ${sessionId}: ${String(err)}`);
-      return { commands, note: `读不到 Codex 的 skills：${String((err as Error).message ?? err)}` };
+      return { commands, codex: native, note: `读不到 Codex 的 skills：${String((err as Error).message ?? err)}` };
     }
   }
 
@@ -485,6 +519,35 @@ export class CodexRuntime extends RuntimeBase {
   async runCommand(sessionId: Id, name: string, args: string): Promise<SlashCommandResult> {
     const session = this.writable(sessionId);
     const st = this.sessionState(sessionId);
+    if (["plan", "goal", "goal-set", "goal-pause", "goal-resume", "goal-clear"].includes(name)) {
+      if (st.activeTurnId || inTurn(session.status)) throw Object.assign(new Error("请等待当前回复或审批结束后切换模式或目标"), { code: "conflict" });
+      if (name === "plan") {
+        if (args && args !== "on" && args !== "off") throw Object.assign(new Error("计划模式参数只能是 on 或 off"), { code: "bad_request" });
+        const on = args ? args === "on" : session.options.plan !== true;
+        this.updateSession(session.id, { options: { ...session.options, plan: on } });
+        return { mode: "done" };
+      }
+      const handle = await this.handleFor(session.profileId);
+      if (name === "goal-clear") await handle.client.request("thread/goal/clear", { threadId: session.runtimeRef! });
+      else if (name === "goal-pause" || name === "goal-resume") await handle.client.request("thread/goal/set", { threadId: session.runtimeRef!, origin: "user", status: name === "goal-pause" ? "paused" : "active" });
+      else {
+        const value = name === "goal-set" ? JSON.parse(args) as { objective?: unknown; tokenBudget?: unknown } : { objective: args };
+        if (!value || typeof value.objective !== "string" || !value.objective.trim() || value.objective.length > 4000) throw Object.assign(new Error("请输入 1–4000 字的目标"), { code: "bad_request" });
+        const budget = value.tokenBudget;
+        if (budget !== undefined && (!Number.isSafeInteger(budget) || Number(budget) <= 0)) throw Object.assign(new Error("Token 预算必须是正整数"), { code: "bad_request" });
+        await handle.client.request("thread/goal/set", { threadId: session.runtimeRef!, origin: "user", objective: value.objective.trim(), status: "active", ...(budget === undefined ? {} : { tokenBudget: Number(budget) }) });
+      }
+      return { mode: "done" };
+    }
+    if (name === "app") {
+      const { id, text } = JSON.parse(args) as { id: string; text: string };
+      if (typeof id !== "string" || typeof text !== "string" || !text.trim()) throw Object.assign(new Error("请选择应用并填写要求"), { code: "bad_request" });
+      const handle = await this.handleFor(session.profileId);
+      const installed = await handle.client.request("app/installed", { threadId: session.runtimeRef! }) as codex.v2.AppsInstalledResponse;
+      const app = installed.apps.find((a) => a.id === id && a.enabled && a.callable);
+      if (!app) throw Object.assign(new Error("这个应用当前不可用"), { code: "bad_request" });
+      return this.send(sessionId, text, [], [{ type: "mention", name: app.runtimeName || id, path: `app://${id}` }]);
+    }
     if (name === "compact" || name === "code-review") {
       if (st.activeTurnId) throw Object.assign(new Error("回复还在生成，这一轮结束后再运行这个命令"), { code: "conflict" });
       const handle = await this.handleFor(session.profileId);
@@ -539,6 +602,8 @@ export class CodexRuntime extends RuntimeBase {
     // One message Studio cannot handle stays a line in its session (and the log); the server and other sessions go on.
     handle.client.on("notification", (n) => {
       try {
+        if (n.method === "mcpServer/startupStatus/updated" && n.params.name === "amo") this.companyTools.invalidate(handle.client, n.params.threadId);
+        if (n.method === "thread/closed") this.companyTools.invalidate(handle.client, n.params.threadId);
         this.events.onNotification(handle, n);
       } catch (err) {
         this.events.handlerFailed(n.method, (n.params as { threadId?: string } | undefined)?.threadId, err);
@@ -609,6 +674,15 @@ export class CodexRuntime extends RuntimeBase {
    * effort (they stick for later turns too), and reasoning summaries — models that keep their thinking private (GPT)
    * still show what they thought about.
    */
+  private async collaborationMode(session: Session) {
+    if (session.options.plan === undefined) return {};
+    const choices = await this.choices(session.profileId);
+    const model = choices.models.find((m) => m.id === session.options.model) ?? choices.models.find((m) => m.isDefault) ?? choices.models[0];
+    if (!model) throw new Error("读不到 Codex 模型，无法设置计划模式");
+    // Experimental field omitted by the stable protocol generator; passed through as a typed object spread.
+    return { collaborationMode: { mode: session.options.plan ? "plan" : "default", settings: { model: model.id, reasoning_effort: session.options.effort ?? model.defaultEffort ?? null, developer_instructions: null } } };
+  }
+
   private turnOptions(options: SessionOptions) {
     const { approvalPolicy, sandbox, reviewer } = this.permissionOf(options);
     const sandboxPolicy: codex.v2.SandboxPolicy =

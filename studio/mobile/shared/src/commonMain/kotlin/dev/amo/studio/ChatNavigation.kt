@@ -38,6 +38,6 @@ internal fun latestChat(task: RemoteTask): RemoteSession? = task.sessions.filter
 @Composable private fun DrawerChat(task: RemoteTask, state: StudioState, select: (RemoteTask) -> Unit) {
     Row(Modifier.fillMaxWidth().background(if (state.selectedTask?.key == task.key) LocalAmoColors.current.selected else MaterialTheme.colorScheme.surfaceVariant).clickable { select(task) }.padding(horizontal = 20.dp, vertical = 13.dp).testTag("drawer-chat"), verticalAlignment = Alignment.CenterVertically) {
         Text(task.title.ifBlank { "新聊天" }, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
-        if (task.sessions.any { it.state == "running" }) { Spacer(Modifier.width(8.dp)); StatusDot(Tone.Running) }
+        if (task.sessions.any { it.state == "running" }) { Spacer(Modifier.width(8.dp)); StatusDot(Tone.Running, animate = true) }
     }
 }

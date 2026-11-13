@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelProfile, SessionItem, Workspace } from "@amo-studio/protocol";
 import { Store } from "../../store/store.js";
 import { CodexRuntime, codexRetry, describeTool, reviewTarget } from "./codex-runtime.js";
@@ -91,6 +91,7 @@ describe("Codex CLI features", () => {
     const s = await start();
     const { commands } = await runtime.listCommands(s.id);
     expect(commands).toEqual([
+      expect.objectContaining({ name: "plan", group: "runtime" }),
       expect.objectContaining({ name: "code-review", group: "runtime" }),
       { name: "release-notes", description: "写发布说明", group: "skill" },
     ]);
@@ -102,6 +103,71 @@ describe("Codex CLI features", () => {
       { type: "skill", name: "release-notes", path: "C:/sandbox/ws\\.agents\\skills\\release-notes\\SKILL.md" },
     ]);
     await expect(runtime.runCommand(s.id, "nope", "")).rejects.toThrow(/没有 \/nope/);
+  });
+
+  it("applies native plan mode on turns and explicitly resets it when switched off", async () => {
+    const s = await start();
+    await runtime.runCommand(s.id, "plan", "on");
+    await runtime.sendMessage(s.id, "make a plan");
+    await until(() => replied(s.id, "FAKE: make a plan"));
+    const fake = servers.fakes.get("p-ds")!;
+    expect(fake.calls.filter((c) => c.method === "turn/start").at(-1)?.params).toMatchObject({ collaborationMode: { mode: "plan", settings: { developer_instructions: null } } });
+    await runtime.runCommand(s.id, "plan", "off");
+    await runtime.sendMessage(s.id, "implement it");
+    await until(() => replied(s.id, "FAKE: implement it"));
+    expect(fake.calls.filter((c) => c.method === "turn/start").at(-1)?.params).toMatchObject({ collaborationMode: { mode: "default" } });
+    await expect(runtime.runCommand(s.id, "plan", "wrong")).rejects.toThrow(/on 或 off/);
+  });
+
+  it("starts a new conversation in plan mode and preserves it in stored session options", async () => {
+    const s = await runtime.startSession({ taskId, topicId: null, profileId: "p-ds", workspace, text: "first plan", options: { plan: true } });
+    await until(() => replied(s.id, "FAKE: first plan"));
+    expect(store.getSession(s.id)?.options.plan).toBe(true);
+    expect(servers.fakes.get("p-ds")!.calls.find((c) => c.method === "turn/start")?.params).toMatchObject({ collaborationMode: { mode: "plan", settings: { model: "ds-model" } } });
+  });
+
+  it("uses native goal requests, validates budgets and never invents an objective", async () => {
+    const s = await start();
+    const client = servers.handles.get("p-ds")!.client;
+    const request = client.request.bind(client);
+    const spy = vi.spyOn(client, "request").mockImplementation((method, params, options) => {
+      if (method === "thread/goal/set" || method === "thread/goal/clear") return Promise.resolve({}) as never;
+      return request(method, params, options) as never;
+    });
+    await runtime.runCommand(s.id, "goal-set", JSON.stringify({ objective: "finish the user's task", tokenBudget: 12000 }));
+    expect(spy).toHaveBeenCalledWith("thread/goal/set", { threadId: s.runtimeRef, origin: "user", objective: "finish the user's task", status: "active", tokenBudget: 12000 });
+    await runtime.runCommand(s.id, "goal-pause", "");
+    expect(spy).toHaveBeenLastCalledWith("thread/goal/set", { threadId: s.runtimeRef, origin: "user", status: "paused" });
+    await runtime.runCommand(s.id, "goal-clear", "");
+    expect(spy).toHaveBeenLastCalledWith("thread/goal/clear", { threadId: s.runtimeRef });
+    const count = spy.mock.calls.length;
+    await expect(runtime.runCommand(s.id, "goal", "")).rejects.toThrow(/目标/);
+    await expect(runtime.runCommand(s.id, "goal-set", '{"objective":"x","tokenBudget":-1}')).rejects.toThrow(/正整数/);
+    expect(spy.mock.calls).toHaveLength(count);
+  });
+
+  it("does not change a live turn's mode or goal", async () => {
+    const s = await start("[[slow]]");
+    await until(() => store.getSession(s.id)!.status === "running");
+    await expect(runtime.runCommand(s.id, "plan", "on")).rejects.toThrow(/当前回复/);
+    await expect(runtime.runCommand(s.id, "goal", "finish this")).rejects.toThrow(/当前回复/);
+    expect(servers.fakes.get("p-ds")!.calls.some((c) => c.method === "thread/goal/set")).toBe(false);
+  });
+
+  it("only attaches callable apps and sends a native mention", async () => {
+    const s = await start();
+    const client = servers.handles.get("p-ds")!.client;
+    const request = client.request.bind(client);
+    vi.spyOn(client, "request").mockImplementation((method, params, options) => {
+      if (method === "app/installed") return Promise.resolve({ apps: [{ id: "test-app", runtimeName: "Test App", enabled: true, callable: true }, { id: "blocked", enabled: false, callable: false }] }) as never;
+      if (method === "thread/goal/get") return Promise.resolve({ goal: null }) as never;
+      return request(method, params, options) as never;
+    });
+    expect((await runtime.listCommands(s.id)).codex).toMatchObject({ goal: null, apps: [{ id: "test-app", name: "Test App" }] });
+    await expect(runtime.runCommand(s.id, "app", JSON.stringify({ id: "blocked", text: "hello" }))).rejects.toThrow(/不可用/);
+    await runtime.runCommand(s.id, "app", JSON.stringify({ id: "test-app", text: "use this app" }));
+    await until(() => replied(s.id, "FAKE: use this app"));
+    expect(servers.fakes.get("p-ds")!.calls.find((c) => c.method === "turn/start")?.params).toMatchObject({ input: [{ type: "text", text: "use this app" }, { type: "mention", name: "Test App", path: "app://test-app" }] });
   });
 
   it("shows retries on the turn, not as rows, and clears them once the model answers", async () => {

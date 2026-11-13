@@ -11,6 +11,9 @@ import { useSettings } from "../settings/useSettings.js";
 import { nextEffort, pickLabel } from "../chat/pickers.js";
 import { FastUsageHint } from "../chat/FastUsageHint.js";
 import { ComposerModelPicker } from "../chat/ComposerModelPicker.js";
+import { PermissionPicker } from "../chat/PermissionPicker.js";
+import { SketchDialog } from "../chat/SketchDialog.js";
+import { AddFilesDialog } from "../attach/AddFilesDialog.js";
 import { DSH_FULL_ACCESS, SandboxHint } from "../settings/SandboxHint.js";
 import { draftText, submitDraft, useTaskDraft } from "./draft.js";
 import { ModelRow, tilePicks } from "./ModelRow.js";
@@ -78,6 +81,16 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
   const projects = rows.projects;
   const [drawer, setDrawer] = useState(false);
   const [modelPopup, setModelPopup] = useState(false);
+  const [addMenu, setAddMenu] = useState(false);
+  const [addingFiles, setAddingFiles] = useState(false);
+  const [sketching, setSketching] = useState(false);
+  const addBox = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!addMenu) return;
+    const close = (e: Event) => { if (e instanceof KeyboardEvent ? e.key === "Escape" : !addBox.current?.contains(e.target as Node)) setAddMenu(false); };
+    window.addEventListener("mousedown", close); window.addEventListener("keydown", close);
+    return () => { window.removeEventListener("mousedown", close); window.removeEventListener("keydown", close); };
+  }, [addMenu]);
   const draftProfiles = pickable(profiles, draft.pick.profileId);
   const draftChoices = useChoicesFor(link, modelPopup ? draftProfiles.map((p) => p.id) : []);
   const [projectPicker, setProjectPicker] = useState(false);
@@ -336,6 +349,15 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
             />
             <MentionList mentions={mentions} />
             <div className="cbar">
+              <div className="draft-add-tools" ref={addBox}>
+                <button type="button" className="composer-tools-trigger" aria-label="添加" aria-expanded={addMenu} disabled={busy} onClick={() => setAddMenu(!addMenu)}>+</button>
+                {addMenu && <div className="composer-popover composer-add-menu" role="dialog" aria-label="添加"><div className="composer-popover-heading">添加</div>
+                  <button type="button" onClick={() => { setAddMenu(false); setAddingFiles(true); }}>文件和文件夹</button>
+                  {profiles.find((p) => p.id === draft.pick.profileId)?.runtime === "codex" && <button type="button" aria-pressed={draft.options.plan ?? false} onClick={() => { update({ options: { ...draft.options, plan: !draft.options.plan } }); setAddMenu(false); }}>计划模式 <small>{draft.options.plan ? "已开启" : "开启计划模式"}</small></button>}
+                  <button type="button" onClick={() => { setAddMenu(false); setSketching(true); }}>绘图 <small>绘制草图</small></button>
+                </div>}
+              </div>
+              {draft.options.plan && profiles.find((p) => p.id === draft.pick.profileId)?.runtime === "codex" && <span className="composer-mode-badge">计划模式</span>}
               <HashPresetButton link={link} onPick={(text) => update({ text: `${text}${draft.text.trim() ? `\n\n${draft.text}` : ""}` })} />
               <button type="button" className="round-btn attach" aria-label="添加图片或文件" title="添加图片或文件（也可以粘贴或拖进来）" onClick={() => picker.current?.click()}>
                 <IconPaperclip />
@@ -351,7 +373,7 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
                   e.currentTarget.value = "";
                 }}
               />
-              {choices && <select className="composer-permission draft-permission" aria-label="权限" value={draft.options.permission ?? ""} onChange={(e) => update({ options: { ...draft.options, permission: e.target.value || undefined } })}><option value="">默认权限</option>{choices.permissions.map((p) => <option key={p.id} value={p.id} disabled={!!p.unavailable}>{p.label}</option>)}</select>}
+              {choices && <PermissionPicker permissions={choices.permissions} value={draft.options.permission ?? choices.defaultPermission} disabled={busy} onPick={(permission) => update({ options: { ...draft.options, permission } })} />}
               <span className="composer-options-spacer" />
               <ComposerModelPicker profileId={draft.pick.profileId} groups={draftProfiles.map((p) => ({ profileId: p.id, label: p.label, models: (p.id === draft.pick.profileId ? choices : draftChoices.get(p.id))?.models ?? [], loading: p.id !== draft.pick.profileId && !draftChoices.has(p.id) }))} onProfileModel={(profileId, id) => { const m = (profileId === draft.pick.profileId ? choices : draftChoices.get(profileId))?.models.find((m) => m.id === id); const cross = profileId !== draft.pick.profileId; update({ pick: { profileId, model: m?.isDefault ? null : id }, options: { ...draft.options, effort: draft.options.effort && m?.efforts.includes(draft.options.effort) ? draft.options.effort : undefined, permission: cross ? undefined : draft.options.permission, fast: cross ? false : draft.options.fast } }); setModelPopup(false); }} models={choices?.models ?? []} model={model} label={pickLabel(profiles.find((p) => p.id === draft.pick.profileId), model?.id ?? draft.pick.model, choices?.models).main} effort={draft.options.effort} fast={draft.options.fast} disabled={busy || !choices} fastUsage={<FastUsageHint link={link} profileId={draft.pick.profileId} />} open={modelPopup} onOpen={setModelPopup} onModel={(id) => { const m = choices?.models.find((m) => m.id === id); update({ pick: { ...draft.pick, model: m?.isDefault ? null : id }, options: { ...draft.options, effort: draft.options.effort && m?.efforts.includes(draft.options.effort) ? draft.options.effort : undefined } }); setModelPopup(false); }} onEffort={(effort) => update({ options: { ...draft.options, effort: effort ?? undefined } })} onFast={(fast) => update({ options: { ...draft.options, fast } })} footer={<button type="button" className="composer-other-accounts" onClick={() => { setModelPopup(false); setDrawer(true); }}>更多账号与模型 ›</button>} />
               <button type="button" className="btn-primary draft-send" aria-label="发送并开始新聊天" title="发送" onClick={() => void submit(false)} disabled={busy || !draft.pick.profileId || !draft.text.trim() && attach.empty} data-testid="draft-start">{busy ? "…" : "↑"}</button>
@@ -393,10 +415,12 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
         </div>
       </div>
       {projectPicker && <ChoicePicker noun="项目" choices={rows.projectChoices} selected={draft.projectId} noneLabel="不指定项目" onPick={(id) => { rows.pickProject(id); setProjectPicker(false); }} onClose={() => setProjectPicker(false)} />}
-      {finding && draft.projectId && (
+      {addingFiles && <AddFilesDialog attach={attach} onFind={() => setFinding({ query: "" })} onClose={() => setAddingFiles(false)} />}
+      {sketching && <SketchDialog onAdd={(file) => attach.addImages([file])} onClose={() => setSketching(false)} />}
+      {finding && (draft.projectId || workspaces.find((w) => w.builtin === "common")?.id) && (
         <FileSelector
           link={link}
-          workspaceId={draft.projectId}
+          workspaceId={draft.projectId ?? workspaces.find((w) => w.builtin === "common")!.id}
           initialQuery={finding.query}
           onPick={(path) => attach.addFiles([path])}
           onClose={() => {

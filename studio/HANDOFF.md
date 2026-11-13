@@ -33,6 +33,7 @@
 | 事项 | 状态（2026-11-06 核对） |
 |---|---|
 | 文档整理（Archify 三层） | 11-06 用户审过，合进 master：HANDOFF 瘦身、导航索引 `docs/nav/`（`node scripts/nav.mjs`）+ 锚点测试、plans 只留决定、`plans/later/` 放以后推进的。维护办法和对比实验在 `plans/doc-architecture.md`；以后每批文档改动后用里面的 3 个问题复测 |
+| 公司工作台与 Codex 操作（kingkunkun fork） | 11-13 源码已接入工作群、Agent 管理、组织架构、@ 派工排队，以及 Codex 模型/权限/加号菜单、预览拖动和运行标识。指定高低配与产品对话的完整本机快照、校验清单及 `.data/company-bootstrap.json` 已备好，不进 Git、未写运行任务库。仅做 noEmit、隔离测试与静态布局预览；**用户要求不编译、不刷新、不重启，正式构建和加载等用户安排**。方案 `plans/done/agent-company.md`。 |
 | Host 结构 | `plans/host-structure.md`：8a–8c 已合进 master；剩一个 feature 环组 {collab、gitreview、projects、remote、review、sessions、tasks、viewpacks}，拆法写在方案里，没开工。项目梳理总表 `plans/done/cleanup-2026-11.md` |
 | 全景（userlayer） | 分支 `studio/panorama`（worktree `G:\PROJECT\AgentMonitorOverlay-panorama`）比 master 多 4 个提交：全景里抽屉打开会话（`plans/userlayer/framework.md` 第 1 步）、内存测量，没合 |
 | 远程会话 | 功能都在 master、已发布（`plans/done/remote-session.md`、`plans/done/remote-page-and-new-task.md`；11-06 加了远程任务页的被控端额度）。等用户用两台真电脑验收；会话级授权、模型细到型号、远程权限上限等用户 10-29 定先不做 |

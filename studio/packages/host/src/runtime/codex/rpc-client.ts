@@ -95,6 +95,7 @@ export class CodexRpcClient extends EventEmitter<CodexRpcClientEvents> {
     });
     await this.request("initialize", {
       clientInfo: { name: options.clientName ?? "amo-studio", title: "WorkStudio", version: options.clientVersion ?? "0.0.0" },
+      capabilities: { experimentalApi: true, requestAttestation: false },
     } as ParamsOf<"initialize">);
     this.notify("initialized");
   }

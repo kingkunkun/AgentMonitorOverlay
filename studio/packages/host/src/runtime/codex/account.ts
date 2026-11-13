@@ -45,6 +45,8 @@ export interface CodexSkill {
   shortDescription?: string;
   path: string;
   enabled?: boolean;
+  interface?: { displayName?: string; shortDescription?: string };
+  pluginId?: string | null;
 }
 
 /** `/code-review` arguments: nothing (uncommitted changes), `base <branch>`, `commit <sha>`, or review instructions. */

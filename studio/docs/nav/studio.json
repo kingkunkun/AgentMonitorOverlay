@@ -10,7 +10,9 @@
         "项目聊天",
         "新聊天",
         "专题隐藏",
-        "画布隐藏"
+        "画布隐藏",
+        "任务转圈",
+        "运行进度"
       ],
       "category": "ui",
       "purpose": "桌面与 Android/iOS 共用界面的紧凑新聊天；项目下保留看板并展开聊天，置顶、改名和归档；默认 Codex 主题，专题画布从设置恢复。",
@@ -517,13 +519,19 @@
     {
       "id": "ui.chat",
       "label": "对话区",
-      "aliases": ["对话", "Transcript", "chat", "详细", "完全展开", "思考", "审批", "提问", "questions", "全部模型", "切换模型", "跨渠道接续", "Fast额度"],
+      "aliases": ["对话", "Transcript", "chat", "详细", "完全展开", "思考", "审批", "提问", "questions", "全部模型", "切换模型", "跨渠道接续", "Fast额度", "权限菜单", "分隔线", "预览比例", "单聊天", "加号菜单", "目标模式", "计划模式", "草图", "插件技能"],
       "category": "ui",
       "purpose": "会话的对话区：轮次和折叠、思考、工具行、审批和提问；Codex 风格输入框的模型/思考强度浮层、搜索型号、权限和工具菜单，以及无衬线正文排版。",
       "anchors": [
         { "label": "对话区", "path": "studio/packages/ui/src/chat/Transcript.tsx", "anchor": "export const Transcript" },
         { "label": "轮次折叠", "path": "studio/packages/ui/src/chat/turns.ts" },
         { "label": "会话选项栏", "path": "studio/packages/ui/src/chat/SessionOptionsBar.tsx" },
+        { "label": "Codex 原生加号功能", "path": "studio/packages/ui/src/chat/CodexAddMenu.tsx", "anchor": "export function CodexAddMenu" },
+        { "label": "草图附件", "path": "studio/packages/ui/src/chat/SketchDialog.tsx", "anchor": "export function SketchDialog" },
+        { "label": "运行状态图标", "path": "studio/packages/ui/src/lib/RunIndicator.tsx", "anchor": "export function RunIndicator" },
+        { "label": "权限菜单与实际权限映射", "path": "studio/packages/ui/src/chat/PermissionPicker.tsx", "anchor": "export function PermissionMenu" },
+        { "label": "聊天与预览比例", "path": "studio/packages/ui/src/files/FilePreview.tsx", "anchor": "export function FilePreview" },
+        { "label": "单会话隐藏列表", "path": "studio/packages/ui/src/task/TaskPage.tsx", "anchor": "const [sessionsHidden" },
         { "label": "模型与强度浮层", "path": "studio/packages/ui/src/chat/ComposerModelPicker.tsx", "anchor": "export function ComposerModelPicker" },
         { "label": "跨渠道接续", "path": "studio/packages/host/src/features/sessions/service.ts", "anchor": "async continueWithModel" },
         { "label": "接续文字封装", "path": "studio/packages/protocol/src/chat-context.ts", "anchor": "export function composeChatContext" },

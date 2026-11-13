@@ -3,6 +3,8 @@ import { readSessionDraft, writeSessionDraft } from "./sessionDraft.js";
 import type { Annotation, ApprovalDecision, DecisionRequest, ModelProfile, Session, SessionItem, SessionPreset, SlashCommand, SubsessionNote, SubsessionSetup, Task, Workspace } from "@amo-studio/protocol";
 import { call, copyText, HostApiError, type HostLink } from "../host/client.js";
 import { SessionOptionsBar } from "../chat/SessionOptionsBar.js";
+import { SketchDialog } from "../chat/SketchDialog.js";
+import { AddFilesDialog } from "../attach/AddFilesDialog.js";
 import { readSelection, type SelectionAnchor } from "../lib/selection.js";
 import { ReplyNav } from "./ReplyNav.js";
 import { navHistory } from "../shell/navHistory.js";
@@ -154,6 +156,8 @@ export function Thread({ link, presets, session, firstMessage, profile, profiles
   const attach = useAttachments(link);
   // 找文件: the selector, opened with Ctrl+P or from the @ list (with what was typed after @).
   const [finding, setFinding] = useState<{ query: string } | null>(null);
+  const [sketching, setSketching] = useState(false);
+  const [addingFiles, setAddingFiles] = useState(false);
   // How far the composer's text is scrolled, for the @ colour layer behind it.
   const [inputScroll, setInputScroll] = useState(0);
   const mentions = useComposerMentions({
@@ -779,7 +783,7 @@ ${d}` : back));
                   e.currentTarget.value = "";
                 }}
               />
-              <SessionOptionsBar profiles={profiles} onContinued={onContinued ? (next) => { flushDraft(); writeSessionDraft(next.id, draft); writeSessionDraft(session.id, ""); pendingDraft.current = null; onContinued(next); } : undefined} link={link} session={session} profile={profile} presets={presets} disabled={readOnly || isRemote} />
+              <SessionOptionsBar onFiles={() => setAddingFiles(true)} onSketch={() => setSketching(true)} onSkill={(name) => { setDraft((old) => `/${name} ${old.replace(/^\/[\w:.-]+\s*/, "")}`); requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(".chat-input textarea")?.focus()); }} profiles={profiles} onContinued={onContinued ? (next) => { flushDraft(); writeSessionDraft(next.id, draft); writeSessionDraft(session.id, ""); pendingDraft.current = null; onContinued(next); } : undefined} link={link} session={session} profile={profile} presets={presets} disabled={readOnly || isRemote} />
 
 
               {generating && !readOnly && !blocked && (
@@ -812,6 +816,8 @@ ${d}` : back));
           <ComposerStats stats={stats} canCompact={!readOnly && session?.runtime !== "dsh" && !isRemote} busy={generating || compacting} compacting={compacting} onCompact={() => void runCommand(COMPACT, "")} />
         </div>
       )}
+      {addingFiles && <AddFilesDialog attach={attach} onFind={() => setFinding({ query: "" })} onClose={() => setAddingFiles(false)} />}
+      {sketching && <SketchDialog onAdd={(file) => attach.addImages([file])} onClose={() => setSketching(false)} />}
       {finding && session && (
         <FileSelector
           link={link}

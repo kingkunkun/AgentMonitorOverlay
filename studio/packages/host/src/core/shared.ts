@@ -60,6 +60,7 @@ export function sessionOptions(v: unknown): SessionOptions {
   if (effort) out.effort = effort;
   if (permission) out.permission = permission;
   if (typeof o.fast === "boolean") out.fast = o.fast;
+  if (typeof o.plan === "boolean") out.plan = o.plan;
   if (o.mcp && typeof o.mcp === "object" && !Array.isArray(o.mcp)) {
     const mcp = Object.fromEntries(Object.entries(o.mcp).filter(([, v]) => typeof v === "boolean")) as Record<string, boolean>;
     if (Object.keys(mcp).length) out.mcp = mcp;

@@ -33,17 +33,16 @@ export interface FilePreviewProps {
   extraActions?: ReactNode;
 }
 
-const WIDTH_KEY = "amo.filePreview.width";
+const WIDTH_KEY = "amo.filePreview.ratio";
 const MIN_WIDTH = 320;
 const DEFAULT_WIDTH = 520;
 /** Fixed row height of the code view (it only renders the rows in sight). */
 const ROW_H = 20;
 const OVERSCAN = 30;
 
-const maxWidth = () => Math.max(MIN_WIDTH, Math.min(1100, window.innerWidth - 420));
-function savedWidth(): number {
+function savedRatio(): number {
   const v = Number(readStored(WIDTH_KEY));
-  return v >= MIN_WIDTH ? Math.min(v, maxWidth()) : DEFAULT_WIDTH;
+  return v > 0 && v < 1 ? v : 0.5;
 }
 
 export const isImage = (path: string) => {
@@ -128,7 +127,29 @@ export function FileContent({
 
 export function FilePreview({ link, file, line, endLine, column, diff, onClose, extraActions }: FilePreviewProps) {
   const vscode = useVsCode(link);
-  const [width, setWidth] = useState(savedWidth);
+  const panel = useRef<HTMLElement>(null);
+  const [ratio, setRatio] = useState(savedRatio);
+  const [available, setAvailable] = useState(DEFAULT_WIDTH * 2);
+  const drag = useRef<{ x: number; width: number; ratio: number } | null>(null);
+  const minWidth = Math.min(MIN_WIDTH, available * 0.4);
+  const maxWidth = available - Math.min(360, available * 0.4);
+  const width = Math.max(minWidth, Math.min(maxWidth, available * ratio));
+  useLayoutEffect(() => {
+    const parent = panel.current?.parentElement;
+    if (!parent) return;
+    const measure = () => {
+      const occupied = Array.from(parent.children).reduce((sum, child) => child === panel.current || child.classList.contains("thread-col") ? sum : sum + child.getBoundingClientRect().width, 0);
+      setAvailable(Math.max(1, parent.clientWidth - occupied - 1));
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(parent);
+    const observeColumns = () => { for (const child of parent.children) if (child !== panel.current && !child.classList.contains("thread-col")) observer.observe(child); measure(); };
+    const columns = new MutationObserver(observeColumns);
+    columns.observe(parent, { childList: true });
+    observeColumns();
+    measure();
+    return () => { observer.disconnect(); columns.disconnect(); document.body.classList.remove("col-resizing"); };
+  }, []);
   const [mode, setMode] = useState<"diff" | "file">(diff ? "diff" : "file");
   const [at, setAt] = useState<{ line?: number | undefined; endLine?: number | undefined; column?: number | undefined }>({ line, endLine, column });
   const [reload, setReload] = useState(0);
@@ -169,21 +190,21 @@ export function FilePreview({ link, file, line, endLine, column, diff, onClose, 
 
   // Dragging the left edge resizes the panel (kept on this machine).
   const startResize = (e: ReactPointerEvent) => {
+    if (e.button !== 0) return;
     e.preventDefault();
-    const startX = e.clientX;
-    const startW = width;
-    let w = startW;
-    const move = (ev: PointerEvent) => {
-      w = Math.max(MIN_WIDTH, Math.min(maxWidth(), startW + (startX - ev.clientX)));
-      setWidth(w);
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      writeStored(WIDTH_KEY, String(Math.round(w)));
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
+    e.currentTarget.setPointerCapture(e.pointerId);
+    drag.current = { x: e.clientX, width, ratio };
+    document.body.classList.add("col-resizing");
+  };
+  const finishResize = () => {
+    if (drag.current) writeStored(WIDTH_KEY, String(drag.current.ratio));
+    drag.current = null;
+    document.body.classList.remove("col-resizing");
+  };
+  const saveWidth = (next: number) => {
+    const value = Math.max(minWidth, Math.min(maxWidth, next)) / available;
+    setRatio(value);
+    writeStored(WIDTH_KEY, String(value));
   };
 
   const showFile = (l?: number) => {
@@ -193,8 +214,17 @@ export function FilePreview({ link, file, line, endLine, column, diff, onClose, 
   };
 
   return (
-    <aside className="file-preview" aria-label="文件预览" data-testid="file-preview" style={{ width }}>
-      <div className="fp-resize" role="separator" aria-orientation="vertical" aria-label="调整预览宽度" onPointerDown={startResize} />
+    <aside ref={panel} className="file-preview" aria-label="文件预览" data-testid="file-preview" style={{ width }}>
+      <div className="fp-resize" role="separator" tabIndex={0} aria-orientation="vertical" aria-label="调整聊天与预览比例" aria-valuemin={Math.round(minWidth / available * 100)} aria-valuemax={Math.round(maxWidth / available * 100)} aria-valuenow={Math.round(width / available * 100)} title="左右拖动调整比例，双击恢复各半" data-testid="preview-splitter" onPointerDown={startResize} onPointerMove={(e) => {
+        if (!drag.current) return;
+        const next = Math.max(minWidth, Math.min(maxWidth, drag.current.width + drag.current.x - e.clientX)) / available;
+        drag.current.ratio = next;
+        setRatio(next);
+      }} onPointerUp={finishResize} onPointerCancel={finishResize} onLostPointerCapture={finishResize} onDoubleClick={() => saveWidth(available / 2)} onKeyDown={(e) => {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+        e.preventDefault();
+        saveWidth(e.key === "Home" ? minWidth : e.key === "End" ? maxWidth : width + (e.key === "ArrowLeft" ? 20 : -20));
+      }} />
       <div className="fp-head">
         <div className="fp-title">
           <span className="fp-name" title={absolute} data-testid="file-preview-name">

@@ -315,6 +315,7 @@ export function App() {
           }}
           onSettings={() => setSettingsOpen({ at: Date.now() })}
           currentChat={shown.kind === "task" ? shown.taskId : undefined}
+          company={{ current: shown.kind === "company" ? shown.tab : undefined, open: (tab) => setView({ kind: "company", tab }) }}
           onOpenChat={(id) => { const t = state.tasks.find((t) => t.id === id); if (t) setScope({ kind: "workspace", id: t.workspaceId }); setView({ kind: "task", taskId: id }); }}
           onNewChat={(id) => { const projectId = id ?? (scope.kind === "workspace" ? scope.id : null); beginNewChatDraft(state.profiles, projectId); if (projectId) setScope({ kind: "workspace", id: projectId }); setView({ kind: "new" }); }}
           // 全景 (11-04): from the left column, not a tab; a task opened from it counts as in it.

@@ -63,8 +63,9 @@ internal fun AmoTextButton(onClick: () -> Unit, modifier: Modifier = Modifier, e
     Tone.Quiet -> LocalAmoColors.current.quiet
 }
 /** The desktop's status dot; a hollow ring for quiet ones so the colour is not the only sign. */
-@Composable internal fun StatusDot(tone: Tone, modifier: Modifier = Modifier) {
+@Composable internal fun StatusDot(tone: Tone, modifier: Modifier = Modifier, animate: Boolean = false) {
     val color = toneColor(tone)
+    if (tone == Tone.Running && animate) { CircularProgressIndicator(modifier.size(12.dp), color = color, strokeWidth = 1.5.dp); return }
     Box(modifier.size(8.dp).clip(CircleShape).let { if (tone == Tone.Quiet) it.border(1.5.dp, color, CircleShape) else it.background(color) })
 }
 
@@ -72,7 +73,7 @@ internal fun AmoTextButton(onClick: () -> Unit, modifier: Modifier = Modifier, e
 @Composable internal fun ListRow(title: String, subtitle: String = "", tone: Tone? = null, trailing: String = "", tag: String = "entry", indent: Int = 0, highlight: Boolean = false, onClick: () -> Unit) {
     Column(Modifier.fillMaxWidth().background(if (highlight) LocalAmoColors.current.attentionBg else Color.Transparent).clickable(onClick = onClick).testTag(tag)) {
         Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = 16.dp + (indent * 20).dp, end = 16.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (tone != null) { StatusDot(tone); Spacer(Modifier.width(12.dp)) }
+            if (tone != null) { StatusDot(tone, animate = tag == "task-row" || tag == "session-row"); Spacer(Modifier.width(12.dp)) }
             Column(Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 if (subtitle.isNotBlank()) Text(subtitle, style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5.sp, lineHeight = 18.sp), color = LocalAmoColors.current.dim, maxLines = 1, overflow = TextOverflow.Ellipsis)

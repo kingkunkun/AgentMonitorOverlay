@@ -360,4 +360,19 @@ export const MIGRATIONS: readonly Migration[] = [
   `
   ALTER TABLE tasks ADD COLUMN first_message TEXT;
   `,
+  // 26: local company identities and group conversations. Deliberately outside shared tasks/session snapshots.
+  `
+  CREATE TABLE company_agents (id TEXT PRIMARY KEY, body TEXT NOT NULL);
+  CREATE TABLE company_rooms (id TEXT PRIMARY KEY, body TEXT NOT NULL);
+  CREATE TABLE company_messages (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE,
+    room_id TEXT NOT NULL REFERENCES company_rooms(id),
+    sender_id TEXT NOT NULL REFERENCES company_agents(id),
+    client_message_id TEXT NOT NULL,
+    body TEXT NOT NULL,
+    UNIQUE(room_id, sender_id, client_message_id)
+  );
+  CREATE INDEX company_messages_room ON company_messages(room_id, seq);
+  `,
 ];

@@ -1,6 +1,7 @@
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { taskWhere, type CanvasNode, type Session, type Task, type Topic, type Workspace } from "@amo-studio/protocol";
 import { relativeTime, SESSION_LOOK, taskSessions, taskStatus } from "../lib/status.js";
+import { RunIndicator } from "../lib/RunIndicator.js";
 
 // The canvas's cards (stage 16 split out of CanvasPage.tsx): a task of the topic, a reference to another topic's task,
 // and a note. A task's description shows on its card (two lines); a colour mark is its outline (data-color).
@@ -84,7 +85,7 @@ export function TaskCard({ node, task, sessions, workspaces, selected, flag, lin
           <span>{[where, task.archivedAt ? `${relativeTime(task.archivedAt)}归档` : ""].filter(Boolean).join(" · ")}</span>
         ) : (
           <>
-            <span className="dot" style={{ background: look?.dot ?? "var(--muted-dot)" }} />
+            {status === "running" ? <RunIndicator status={status} /> : <span className="dot" style={{ background: look?.dot ?? "var(--muted-dot)" }} />}
             <span style={{ color: look?.text ?? "var(--text-dim)" }}>{look?.label ?? "未开始"}</span>
             <span>· {[where, live ? `${live} 个会话` : ""].filter(Boolean).join(" · ")}</span>
           </>

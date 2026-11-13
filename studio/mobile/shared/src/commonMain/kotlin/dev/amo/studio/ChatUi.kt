@@ -62,6 +62,7 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
     var selectedModel by remember { mutableStateOf("") }
     var selectedEffort by remember { mutableStateOf("") }
     var selectedPermission by remember { mutableStateOf("") }
+    var morePermissions by remember { mutableStateOf(false) }
     var people by remember { mutableStateOf<JSONObject?>(null) }
     var presets by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var presetMenu by remember { mutableStateOf(false) }
@@ -89,7 +90,8 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
     val currentModel = optionModels.find { it.str("id") == selectedModel } ?: optionModels.find { it.optBoolean("isDefault") } ?: optionModels.firstOrNull()
     val modelCaption = currentModel?.str("label") ?: state.profiles.find { it.first == session?.profileId }?.second ?: "模型"
     val effortCaption = selectedEffort.ifBlank { currentModel?.str("defaultEffort") ?: "" }
-    val permissionCaption = availableOptions?.objects("permissions")?.find { it.str("id") == selectedPermission.ifBlank { availableOptions.str("defaultPermission") } }?.str("label") ?: "权限"
+    val currentPermission = availableOptions?.objects("permissions")?.find { it.str("id") == selectedPermission.ifBlank { availableOptions.str("defaultPermission") } }
+    val permissionCaption = currentPermission?.let { mobilePermissionLabel(it, compact = true, codex = availableOptions?.objects("permissions")?.any { p -> p.str("id") == "auto-review" } == true) } ?: "权限"
     val running = session?.state == "running"
     val rows = remember(state.items) { chatRows(state.items) }
     val reversed = remember(rows) { rows.asReversed() }
@@ -165,8 +167,8 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
         Composer(draft, ::saveDraft, running, writable, canSend = writable && draft.isNotBlank() && submitted.isEmpty(), stop = repo::interrupt,
             leading = {
                 ComposerMenuButton("#", writable, "chat-presets") { presetMenu = !presetMenu; if (presetMenu) repo.chatPresets { presets = it.objects("presets") } }
-                ComposerMenuButton(if (permissionCaption in listOf("全部允许", "完全允许")) "完全访问" else permissionCaption, writable, "chat-permission", attention = permissionCaption in listOf("全部允许", "完全允许", "完全访问")) { loadOptions("permission") }
-            }, trailing = { ComposerMenuButton((if (selectedFast == true && currentModel?.optJSONObject("fast") != null) "ϟ " else "") + modelCaption + if (effortCaption.isBlank()) " ⌄" else " " + mobileEffortLabel(effortCaption) + " ⌄", writable, "chat-model", compact = true) { loadOptions("model") } }) {
+                ComposerMenuButton(permissionCaption, writable, "chat-permission", attention = permissionCaption == "完全访问", icon = AmoIcons.Shield) { morePermissions = false; loadOptions("permission") }
+            }, trailing = { ComposerMenuButton(modelCaption + if (effortCaption.isBlank()) " ⌄" else " " + mobileEffortLabel(effortCaption) + " ⌄", writable, "chat-model", compact = true, icon = if (selectedFast == true && currentModel?.optJSONObject("fast") != null) AmoIcons.Bolt else null) { loadOptions("model") } }) {
             sentAfter = state.items.maxOfOrNull { it.optLong("seq", -1L) } ?: -1L; submitted = draft.trim(); saveDraft(submitted)
             prefs.edit(now = true) { put("pending-$draftKey", submitted); put("after-$draftKey", sentAfter) }; repo.send(submitted); stick = true
         }
@@ -181,12 +183,34 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
                 Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) { Text(if (panel == "permission") "权限" else "模型与思考强度", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f)); IconAction(AmoIcons.Close, "关闭选项") { cancelOptions() } }
                 Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     if (panel == "permission") {
-                        (listOf("" to "默认权限") + available.objects("permissions").filter { it.str("unavailable").isBlank() }.map { it.str("id") to it.str("label") }).forEach { (id, label) ->
-                            Row(Modifier.fillMaxWidth().clickable { selectedPermission = id }.heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) { Text(label, modifier = Modifier.weight(1f)); RadioButton(selectedPermission == id, { selectedPermission = id }) }
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text("应如何批准 WorkStudio 操作？", style = MaterialTheme.typography.bodySmall, color = LocalAmoColors.current.dim, modifier = Modifier.weight(1f))
+                            AmoTextButton(onClick = { morePermissions = !morePermissions }) { Text(if (morePermissions) "收起说明" else "了解更多") }
+                        }
+                        val permissions = available.objects("permissions")
+                        val codex = permissions.any { it.str("id") == "auto-review" }
+                        val mainIds = if (codex) listOf("workspace-write", "auto-review", "full-auto") else listOf("default", "auto", "bypassPermissions")
+                        val primary = mainIds.mapNotNull { id -> permissions.find { it.str("id") == id } }
+                        val extras = permissions.filter { it.str("id") !in mainIds }
+                        val visible = if (primary.isEmpty()) permissions else primary + if (morePermissions) extras else emptyList()
+                        visible.forEach { permission ->
+                            val id = permission.str("id"); val picked = selectedPermission.ifBlank { available.str("defaultPermission") } == id
+                            val full = id in listOf("full-auto", "full-access", "bypassPermissions", "danger-full-access")
+                            val tint = if (full) androidx.compose.ui.graphics.Color(0xfff16a24) else MaterialTheme.colorScheme.onSurface
+                            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(if (picked) LocalAmoColors.current.input else androidx.compose.ui.graphics.Color.Transparent).clickable(enabled = permission.str("unavailable").isBlank()) { selectedPermission = id }.padding(10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Icon(AmoIcons.Shield, null, tint = tint, modifier = Modifier.size(18.dp))
+                                Column(Modifier.weight(1f)) { Text(mobilePermissionLabel(permission, codex = codex), color = tint); Text(permission.str("unavailable").ifBlank { mobilePermissionDescription(permission, codex) }, style = MaterialTheme.typography.bodySmall, color = if (full) tint else LocalAmoColors.current.dim) }
+                                if (picked) Text("✓", color = tint)
+                            }
                         }
                         Text("执行在电脑上。文件外发仍需电脑确认，不会读取手机相册、联系人或剪贴板。", style = MaterialTheme.typography.bodySmall, color = LocalAmoColors.current.dim)
                     } else {
-                        SecondaryButton(currentModel?.str("label") ?: "选择模型", "select-mobile-model", modifier = Modifier.fillMaxWidth()) { modelList = !modelList; modelQuery = "" }
+                        if (!modelList) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            if (currentModel?.optJSONObject("fast") != null) IconButton(onClick = { selectedFast = selectedFast != true }) { Icon(AmoIcons.Bolt, "Fast 模式", tint = if (selectedFast == true) androidx.compose.ui.graphics.Color(0xff4385ff) else LocalAmoColors.current.dim) } else Spacer(Modifier.width(48.dp))
+                            Text(mobileEffortLabel(selectedEffort.ifBlank { currentModel?.str("defaultEffort") ?: "默认" }), color = androidx.compose.ui.graphics.Color(0xff4385ff), textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
+                            IconAction(AmoIcons.Refresh, "恢复默认思考强度") { selectedEffort = "" }
+                        }
+                        AmoTextButton(onClick = { modelList = !modelList; modelQuery = "" }, modifier = Modifier.fillMaxWidth().testTag("select-mobile-model")) { Text((currentModel?.str("label") ?: "选择模型") + " ›", color = LocalAmoColors.current.dim) }
                         if (modelList) {
                             OutlinedTextField(modelQuery, { modelQuery = it }, placeholder = { Text("搜索模型") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("model-search"))
                             val groups = if (profileRows.isNotEmpty()) profileRows else listOf(JSONObject().put("profileId", session?.profileId ?: "").put("label", "当前渠道").put("choices", available))
@@ -199,10 +223,9 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
                                 }
                             }
                         } else {
-                            Text("思考强度 · " + mobileEffortLabel(selectedEffort.ifBlank { currentModel?.str("defaultEffort") ?: "默认" }), style = MaterialTheme.typography.titleSmall)
                             if (effortValues.size > 1) Slider(value = index.toFloat(), onValueChange = { selectedEffort = effortValues[it.toInt().coerceIn(effortValues.indices)] }, valueRange = 0f..(effortValues.size - 1).toFloat(), steps = (effortValues.size - 2).coerceAtLeast(0))
                             else Text("此模型不提供思考强度选项。", style = MaterialTheme.typography.bodySmall, color = LocalAmoColors.current.dim)
-                            currentModel?.optJSONObject("fast")?.let { fast -> Row(verticalAlignment = Alignment.CenterVertically) { Text("Fast", modifier = Modifier.weight(1f)); Switch(checked = selectedFast == true, onCheckedChange = { selectedFast = it }) }; Text(fast.str("description", "Fast 可能更快消耗额度，独立剩余额度以渠道提供的信息为准。"), style = MaterialTheme.typography.bodySmall, color = LocalAmoColors.current.dim) }
+                            if (selectedFast == true) currentModel?.optJSONObject("fast")?.let { fast -> Text(fast.str("description", "Fast 可能更快消耗额度。"), style = MaterialTheme.typography.bodySmall, color = LocalAmoColors.current.dim) }
                             if (selectedProfile != session?.profileId) Text("继续当前 WorkStudio 聊天，原记录保留；不自动转发附件。", style = MaterialTheme.typography.bodySmall)
                         }
                     }
@@ -232,8 +255,15 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
 
 private fun mobileEffortLabel(value: String) = when (value) { "none" -> "不思考"; "minimal" -> "极低"; "low" -> "低"; "medium" -> "中"; "high" -> "高"; "xhigh" -> "超高"; "max" -> "最高"; "ultra" -> "极致"; else -> value }
 
-@Composable private fun ComposerMenuButton(label: String, enabled: Boolean, tag: String, attention: Boolean = false, compact: Boolean = false, onClick: () -> Unit) {
-    Text(label, style = MaterialTheme.typography.labelSmall, color = if (attention) androidx.compose.ui.graphics.Color(0xffde6b36) else LocalAmoColors.current.dim, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = if (compact) 145.dp else 100.dp).clip(RoundedCornerShape(8.dp)).clickable(enabled = enabled, onClick = onClick).padding(horizontal = 5.dp, vertical = 10.dp).testTag(tag))
+private fun mobilePermissionLabel(p: JSONObject, compact: Boolean = false, codex: Boolean = false) = when (p.str("id")) { "workspace-write" -> if (codex) "请求批准" else p.str("label"); "auto-review", "auto" -> "帮我批准"; "full-auto", "full-access", "bypassPermissions", "danger-full-access" -> if (compact) "完全访问" else "完全访问权限"; else -> p.str("label") }
+private fun mobilePermissionDescription(p: JSONObject, codex: Boolean) = when (p.str("id")) { "workspace-write" -> if (codex) "编辑外部文件和使用互联网时始终询问" else p.str("description"); "auto-review", "auto" -> "仅对检测到的风险操作请求批准"; "full-auto", "full-access", "bypassPermissions", "danger-full-access" -> "可不受限制地访问互联网和电脑上的任何文件"; else -> p.str("description") }
+
+@Composable private fun ComposerMenuButton(label: String, enabled: Boolean, tag: String, attention: Boolean = false, compact: Boolean = false, icon: androidx.compose.ui.graphics.vector.ImageVector? = null, onClick: () -> Unit) {
+    val tint = if (attention) androidx.compose.ui.graphics.Color(0xffde6b36) else LocalAmoColors.current.dim
+    Row(Modifier.widthIn(max = if (compact) 165.dp else 112.dp).clip(RoundedCornerShape(8.dp)).clickable(enabled = enabled, onClick = onClick).padding(horizontal = 5.dp, vertical = 10.dp).testTag(tag), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        if (icon != null) Icon(icon, null, tint = tint, modifier = Modifier.size(14.dp))
+        Text(label, style = MaterialTheme.typography.labelSmall, color = tint, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
 }
 
 @Composable private fun Composer(draft: String, change: (String) -> Unit, running: Boolean, writable: Boolean, canSend: Boolean, stop: () -> Unit, leading: @Composable RowScope.() -> Unit, trailing: @Composable RowScope.() -> Unit, send: () -> Unit) {
@@ -266,7 +296,7 @@ private fun mobileEffortLabel(value: String) = when (value) { "none" -> "不思�
     Column(Modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).clickable(onClick = toggle).heightIn(min = 36.dp).padding(horizontal = 4.dp).testTag("ops-row"), verticalAlignment = Alignment.CenterVertically) {
             Icon(if (open) AmoIcons.ChevronDown else AmoIcons.ChevronRight, contentDescription = null, tint = c.dim, modifier = Modifier.size(16.dp))
-            if (live != null) { Spacer(Modifier.width(6.dp)); StatusDot(Tone.Running) }
+            if (live != null) { Spacer(Modifier.width(6.dp)); StatusDot(Tone.Running, animate = true) }
             Text(label, style = MaterialTheme.typography.bodySmall, color = c.dim, modifier = Modifier.padding(start = 6.dp))
             if (failed > 0) Text(" · $failed 个失败", style = MaterialTheme.typography.bodySmall, color = c.error)
             if (live != null && !open) Text(" · " + (if (live.type == "reasoning") "正在思考" else "正在执行 ${live.json.str("summary", live.json.str("name"))}"), style = MaterialTheme.typography.bodySmall, color = c.dim, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
@@ -501,4 +531,3 @@ private fun prettyInput(input: String): String {
         }
     }
 }
-

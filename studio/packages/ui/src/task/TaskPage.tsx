@@ -86,6 +86,7 @@ type Toast = { text: string; command?: string; error?: boolean } | null;
 export function TaskPage({ link, task, sessions, tasks = [task], workspaces, topics = [], profiles, checklist = [], initialSessionId, passage, restoreScroll, justCreated = false, backLabel = "看板", onBack }: TaskPageProps) {
   const topicsOn = useTopicsVisible();
   const own = sessions.filter((s) => s.taskId === task.id);
+  const liveSessionCount = own.filter((s) => !s.archivedAt).length;
   // The first live session; in an archived task (or one whose sessions are all archived), the latest archived one.
   const firstSession = () => own.find((s) => !s.archivedAt) ?? [...own].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
   const [selected, setSelected] = useState<string | null>(initialSessionId ?? firstSession()?.id ?? null);
@@ -161,13 +162,20 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
   };
   // A task just made opens with its list hidden (it has one session: nothing to choose between); otherwise the list is
   // as the person last left it. The page is keyed by task, so this is read once per task opened.
-  const [sessionsHidden, setSessionsHiddenState] = useState(() => justCreated || readFlag(SESSIONS_KEY));
+  const [sessionsHidden, setSessionsHiddenState] = useState(() => liveSessionCount <= 1 || justCreated || readFlag(SESSIONS_KEY));
   const setSessionsHidden = (on: boolean) => {
     setSessionsHiddenState(on);
     writeFlag(SESSIONS_KEY, on);
   };
   // The new-session form in the session list, opened from 新会话 in the head.
   const [creating, setCreating] = useState(false);
+  // A second session arriving (including a fork/continuation) makes the chooser useful again.
+  const previousSessionCount = useRef(liveSessionCount);
+  useEffect(() => {
+    if (liveSessionCount > 1 && previousSessionCount.current <= 1) setSessionsHiddenState(false);
+    if (liveSessionCount <= 1 && previousSessionCount.current > 1) setSessionsHiddenState(true);
+    previousSessionCount.current = liveSessionCount;
+  }, [liveSessionCount]);
 
   /** A save from the annotation bubble: true once stored, else the error as a notice (the bubble keeps the draft). */
   async function annotationCall(fn: () => Promise<unknown>): Promise<boolean> {

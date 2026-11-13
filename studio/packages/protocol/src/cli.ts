@@ -18,6 +18,9 @@ export const SLASH_GROUP_LABEL: Record<SlashCommandGroup, string> = {
 export interface SlashCommand {
   /** Without the leading slash. */
   name: string;
+  /** Codex skill's own presentation metadata, when provided by the installed plugin. */
+  displayName?: string;
+  pluginId?: string;
   description: string;
   /** What it takes after the name (e.g. "<file>"); empty when nothing. */
   argumentHint?: string;
@@ -30,6 +33,13 @@ export interface SlashCommand {
 
 export interface SlashCommandList {
   commands: SlashCommand[];
+  /** Native Codex controls for this WorkStudio-owned thread. */
+  codex?: {
+    plan: boolean;
+    goal?: { objective: string; status: string; tokenBudget: number | null; tokensUsed: number } | null;
+    apps: Array<{ id: string; name: string }>;
+    unavailable: string[];
+  };
   /** Why the runtime's own commands are missing (it could not be asked), when they are. */
   note?: string;
 }

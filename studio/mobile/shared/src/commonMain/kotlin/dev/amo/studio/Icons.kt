@@ -18,6 +18,8 @@ private fun icon(name: String, fill: Boolean = false, block: PathBuilder.() -> U
 private fun PathBuilder.circle(x: Float, y: Float, r: Float) { moveTo(x - r, y); arcTo(r, r, 0f, false, true, x + r, y); arcTo(r, r, 0f, false, true, x - r, y); close() }
 
 internal object AmoIcons {
+    val Bolt = icon("fast", fill = true) { moveTo(14f, 2f); lineTo(4f, 13f); lineTo(10f, 13f); lineTo(9f, 22f); lineTo(20f, 10f); lineTo(14f, 10f); close() }
+    val Shield = icon("permission") { moveTo(12f, 2f); lineTo(20f, 5f); lineTo(20f, 11f); curveTo(20f, 16f, 16f, 20f, 12f, 22f); curveTo(8f, 20f, 4f, 16f, 4f, 11f); lineTo(4f, 5f); close(); moveTo(12f, 7f); lineTo(12f, 12f); moveTo(12f, 15f); lineTo(12f, 15.1f) }
     val Menu = icon("menu") { moveTo(4f, 7f); lineTo(20f, 7f); moveTo(4f, 12f); lineTo(16f, 12f); moveTo(4f, 17f); lineTo(20f, 17f) }
     val Edit = icon("new-chat") { moveTo(14f, 4f); lineTo(20f, 10f); moveTo(11f, 7f); lineTo(17f, 13f); moveTo(4f, 14f); lineTo(15f, 3f); lineTo(21f, 9f); lineTo(10f, 20f); lineTo(3f, 21f); close() }
     val Search = icon("search") { circle(10.5f, 10.5f, 6.5f); moveTo(15f, 15f); lineTo(21f, 21f) }
