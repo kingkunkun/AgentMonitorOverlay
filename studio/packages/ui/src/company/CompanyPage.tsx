@@ -9,7 +9,7 @@ import { useCompany } from "./data.js";
 import { WorkList, WorkEditor } from "./WorkList.js";
 import "./company.css";
 
-const TABS = [{ id: "rooms", label: "工作群" }, { id: "agents", label: "Agent 管理" }, { id: "org", label: "组织架构" }, { id: "work", label: "工作列表" }] as const;
+const TABS = [{ id: "rooms", label: "工作群" }, { id: "agents", label: "Agent 管理" }, { id: "org", label: "组织架构" }, { id: "work", label: "给牛马分活（工作列表）" }] as const;
 export function CompanyPage({ link, state, view, setView }: ViewContext & { view: Extract<View, { kind: "company" }> }) {
   const { snapshot, setSnapshot, error, reload } = useCompany(link);
   const [editingAgent, setEditingAgent] = useState<CompanyAgent | "new" | null>(null);

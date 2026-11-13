@@ -1,5 +1,7 @@
 .company-nav { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
-.company-nav .nav-row { gap: 10px; }
+.company-nav .nav-row { gap: 10px; height: auto; min-height: 32px; padding-block: 6px; }
+.company-nav .nav-row .name { white-space: normal; overflow-wrap: anywhere; line-height: 1.5; }
+.company-nav .nav-row > svg { flex-shrink: 0; }
 .company-page { display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; background: var(--panel); color: var(--text); container-type: inline-size; }
 .company-page button { font: inherit; }
 .company-work { display: flex; flex: 1; flex-direction: column; min-height: 0; }
