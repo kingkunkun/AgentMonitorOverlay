@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "topics": [{
+    "id": "studio.toolDownloads",
+    "label": "工具下载与本机 APK 服务",
+    "aliases": ["工具下载", "下载入口", "APK 下载", "安装包", "download"],
+    "category": "host",
+    "purpose": "设置中的低显著度下载入口，独立只读 HTTP 下载页与内容寻址 APK 清单。独立于手机账号和团队发布。",
+    "anchors": [
+      { "label": "下载界面", "path": "studio/packages/ui/src/settings/DownloadsPage.tsx", "anchor": "export function DownloadsPage" },
+      { "label": "下载服务", "path": "studio/packages/host/src/features/downloads/server.ts", "anchor": "export class ToolDownloadServer" },
+      { "label": "开关与启动恢复", "path": "studio/packages/host/src/features/downloads/service.ts", "anchor": "export class DownloadsFeature" },
+      { "label": "本机发布与临时服务", "path": "studio/scripts/tool-downloads.mjs" },
+      { "label": "空闲后安全重启", "path": "studio/scripts/restart-studio-when-idle.mjs" }
+    ],
+    "related": ["tool.mobile"],
+    "next": ["studio/plans/done/tool-downloads.md"]
+  }]
+}

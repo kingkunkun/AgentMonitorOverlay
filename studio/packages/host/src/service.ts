@@ -13,6 +13,7 @@ import type { DshRuntime } from "./runtime/dsh/dsh-runtime.js";
 import { DshFeature } from "./features/dsh/service.js";
 import { ProjectsFeature } from "./features/projects/service.js";
 import { CompanyFeature } from "./features/company/service.js";
+import { DownloadsFeature } from "./features/downloads/service.js";
 import { ConfigFeature } from "./features/config/service.js";
 import { ClaudeAccountsFeature } from "./features/claudeaccounts/service.js";
 import type { ClaudeAccounts } from "./runtime/claude/accounts.js";
@@ -62,6 +63,7 @@ export class HostService extends EventEmitter<HostServiceEvents> {
   liveWindows = 0;
   readonly projects: ProjectsFeature = new ProjectsFeature(this);
   readonly company: CompanyFeature = new CompanyFeature(this);
+  readonly downloads: DownloadsFeature = new DownloadsFeature(this);
   readonly config: ConfigFeature = new ConfigFeature(this);
   /** Claude 多账号 (2026-11-03): the Claude subscription's accounts, signing in and switching. */
   readonly claudeAccounts: ClaudeAccountsFeature = new ClaudeAccountsFeature(this);

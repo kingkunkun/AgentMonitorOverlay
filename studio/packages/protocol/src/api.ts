@@ -19,6 +19,7 @@ import type { CooperationRoutes } from "./cooperation.js";
 import type { BuildJobRoutes } from "./build-job.js";
 import type { ChatPresetRoutes } from "./chat-presets.js";
 import type { CompanyRoutes } from "./company.js";
+import type { ToolDownloadsRoutes } from "./downloads.js";
 import type { ViewPackRoutes } from "./viewpacks.js";
 
 export const HOST_DEFAULT_PORT = 47900;
@@ -563,6 +564,7 @@ export interface CredentialStatus {
 export interface HostRoutes
   extends BuildJobRoutes,
     CompanyRoutes,
+    ToolDownloadsRoutes,
     ChatPresetRoutes,
     CanvasRoutes,
     ChannelRoutes,

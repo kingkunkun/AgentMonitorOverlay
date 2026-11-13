@@ -9,6 +9,7 @@ import { DevUiSection } from "./DevUi.js";
 import { ExperimentalSection } from "./ExperimentalSection.js";
 import { ScratchpadSettings } from "../scratchpad/ScratchpadSettings.js";
 import { DataPage } from "./DataPage.js";
+import { DownloadsPage } from "./DownloadsPage.js";
 import { QuotaPage } from "./QuotaPage.js";
 import { StatsPage } from "./StatsPage.js";
 import { useDialogSize } from "./dialogSize.js";
@@ -38,6 +39,7 @@ const PAGES = [
   { id: "duty", label: "值守" },
   { id: "scratchpad", label: "便签" },
   { id: "data", label: "数据管理" },
+  { id: "downloads", label: "工具下载" },
   { id: "maintenance", label: "维护" },
 ] as const;
 export type SettingsPage = (typeof PAGES)[number]["id"];
@@ -275,6 +277,7 @@ export function SettingsDialog({ link, state, settings, page: startPage, onClose
             )}
             {page === "scratchpad" && <ScratchpadSettings link={link} settings={settings} />}
             {page === "data" && <DataPage link={link} />}
+            {page === "downloads" && <DownloadsPage link={link} />}
             {page === "duty" && <DutyPage link={link} state={state} />}
             {page === "mcp" && <McpPage link={link} />}
             {page === "maintenance" && <MaintenancePage link={link} />}

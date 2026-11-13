@@ -12,6 +12,7 @@ import type { HostErrorCode } from "@amo-studio/protocol";
 export type FeatureName =
   | "projects"
   | "company"
+  | "downloads"
   | "config"
   | "claudeAccounts"
   | "tasks"

@@ -178,6 +178,7 @@ export async function startHost(options: StartHostOptions): Promise<RunningHost>
   const release = acquireLock(options.dataDir);
   let store: Store | undefined;
   let http: HostServer | undefined;
+  let downloads: HostService["downloads"] | undefined;
   let manager: CodexServerManager | undefined;
   let claude: ClaudeRuntime | undefined;
   let dsh: DshRuntime | undefined;
@@ -360,6 +361,8 @@ export async function startHost(options: StartHostOptions): Promise<RunningHost>
     }
     if (options.remote) service.remote.start(options.remote);
     if (options.teamLink) await service.cooperation.startDefault();
+    downloads = service.downloads;
+    await downloads.startDefault();
     // 值守 (2026-10-31): its clock runs in every Host; without items it does nothing.
     service.duty.start();
     const info: HostInfo = { url: http.url, port: http.port, pid: process.pid, startedAt: new Date().toISOString() };
@@ -402,6 +405,7 @@ export async function startHost(options: StartHostOptions): Promise<RunningHost>
         await service.buildJob.stop();
         service.teamRelay.stop();
         await service.cooperation.stop();
+        await service.downloads.close();
         service.remote.stop();
         service.teamLink.stop();
         await finalHttp.close();
@@ -417,6 +421,7 @@ export async function startHost(options: StartHostOptions): Promise<RunningHost>
     };
     return self;
   } catch (err) {
+    await downloads?.close();
     await http?.close();
     await dsh?.closeAll();
     await manager?.stopAll();

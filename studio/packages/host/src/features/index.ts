@@ -56,6 +56,7 @@ import { dutyRoutes } from "./duty/routes.js";
 import { dutyTools } from "./duty/mcp.js";
 import { companyRoutes } from "./company/routes.js";
 import { companyTools } from "./company/mcp.js";
+import { downloadsRoutes } from "./downloads/routes.js";
 
 /**
  * Every Host feature (features/<name>/): its service class lives on HostService, its routes and MCP tools are listed
@@ -70,6 +71,7 @@ export interface HostFeature {
 }
 
 export const FEATURES: readonly HostFeature[] = [
+  { name: "downloads", routes: downloadsRoutes },
   { name: "company", routes: companyRoutes, tools: companyTools },
   { name: "projects", routes: projectsRoutes, tools: projectsTools },
   { name: "config", routes: configRoutes },

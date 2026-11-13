@@ -36,7 +36,7 @@ Windows 在本目录执行：
 
 同一可达局域网不需要 Tailscale；没有公网入口时，5G 不能直接连接公司内网电脑。公司 Wi-Fi 隔离和 Windows 防火墙仍可能阻止连接，未自动修改公司网络。详细边界见 [局域网手机说明](../docs/cooperation-privacy-lan.md)。
 
-新版 Android 内部包为 0.2.2 / build 6，应用显示名 WorkStudio，Android/iOS 共用原创头像，来源与提示词见 [图标说明](assets/README.md)。
+新版 Android 内部包为 0.2.3 / build 7，应用显示名 WorkStudio，Android/iOS 共用原创头像，来源与提示词见 [图标说明](assets/README.md)。电脑“设置 → 工具下载”可以启用独立下载服务，复制下载页或 APK 链接供同一局域网手机安装；连接工作台仍使用手机服务地址（通常为 47950）和独立手机账号。公司 Agent 管理与分活页面目前在桌面端。
 
 当前团队服务器是 HTTP；应用为此允许明文连接。需要传输加密时使用 HTTPS/WSS 或覆盖到服务器的 Tailscale 链路。应用不忽略 TLS 证书错误。
 
