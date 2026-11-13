@@ -40,6 +40,9 @@ function setup() {
   const store = new Store(join(root, "studio.db"));
   const servers = new FakeServers(PROFILES);
   const service = new HostService(store, new CodexRuntime({ store, servers, profiles: PROFILES }), PROFILES, { commonDir: join(root, "common") });
+  // 交付值守 (delivery) 自带三个开关项；这些用例只看值守本身，先拿掉它们，保持列表从空开始。
+  const seeded = JSON.parse(store.getKv("duty.items")?.value ?? "[]") as Array<{ id: string }>;
+  store.setKv("duty.items", JSON.stringify(seeded.filter((i) => !i.id.startsWith("duty-delivery-"))));
   cleanups.push(async () => {
     service.duty.stop();
     await servers.close();
@@ -317,8 +320,8 @@ describe("值守", { timeout: 30_000 }, () => {
     let calls = 0;
     duty.register({ name: "issues.poll", label: "问题页", description: "看服务器上有没有新问题", item: { id: "duty_issues", title: "问题页：看新问题", schedule: { every: 30 } }, run: async () => ({ ok: true, summary: `看了 ${++calls} 次` }) });
     duty.register({ name: "issues.poll", label: "问题页", description: "看服务器上有没有新问题", item: { id: "duty_issues", title: "问题页：看新问题", schedule: { every: 30 } }, run: async () => ({ ok: true, summary: `看了 ${++calls} 次` }) });
-    expect(duty.items()).toMatchObject([{ id: "duty_issues", enabled: false, builtin: true, action: { kind: "builtin", name: "issues.poll" } }]);
-    expect(duty.state().builtins).toEqual([{ name: "issues.poll", label: "问题页", description: "看服务器上有没有新问题" }]);
+    expect(duty.items().filter((i) => !i.id.startsWith("duty-delivery-"))).toMatchObject([{ id: "duty_issues", enabled: false, builtin: true, action: { kind: "builtin", name: "issues.poll" } }]);
+    expect(duty.state().builtins.filter((b) => !b.name.startsWith("delivery."))).toEqual([{ name: "issues.poll", label: "问题页", description: "看服务器上有没有新问题" }]);
     expect(() => duty.remove("duty_issues")).toThrow("不能删");
     expect(() => duty.update("duty_issues", { action: { kind: "command", command: "x" } })).toThrow("只能开关、改时间");
     duty.update("duty_issues", { enabled: true, schedule: { every: 15 } });

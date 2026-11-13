@@ -156,6 +156,11 @@ export class HostService extends EventEmitter<HostServiceEvents> {
     this.tasks.watchColumns();
     this.duty.registerCheck(this.issues.dutyCheck());
     for (const job of this.delivery.jobs()) this.duty.register(job);
+    // 交付值守默认打开（2026-11-13，the user: 不用每次提醒我打包）：只在第一次出现时打开，之后沿用设置页里的开关。
+    for (const id of ["duty-delivery-repo", "duty-delivery-apk", "duty-delivery-ios"]) {
+      const item = this.duty.items().find((i) => i.id === id);
+      if (item && item.createdAt === item.updatedAt) this.duty.update(id, { enabled: true });
+    }
   }
 
   /** The common space: where tasks without a project, the scheduler and topic sessions without a project run. */
