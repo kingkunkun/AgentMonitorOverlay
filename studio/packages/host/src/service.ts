@@ -40,6 +40,7 @@ import { RelaysFeature } from "./features/relays/service.js";
 import { TeamRelayFeature } from "./features/teamrelay/service.js";
 import { IssuesFeature } from "./features/issues/service.js";
 import { DutyFeature } from "./features/duty/service.js";
+import { DeliveryFeature } from "./features/delivery/service.js";
 import { ChatFilesFeature } from "./features/chatfiles/service.js";
 import { CliFeature } from "./features/cli/service.js";
 import { DataFeature } from "./features/datamgmt/service.js";
@@ -109,6 +110,8 @@ export class HostService extends EventEmitter<HostServiceEvents> {
   readonly issues: IssuesFeature = new IssuesFeature(this);
   /** 值守 (2026-10-31): items that start a session, run a command or one of Studio's jobs at set times. */
   readonly duty: DutyFeature = new DutyFeature(this);
+  /** 交付值守 (2026-11-13): commit, APK and iOS delivery on a timer, registered below as duty jobs. */
+  readonly delivery: DeliveryFeature = new DeliveryFeature(this);
   /** The runtimes of this computer, plus "remote" for copies of tasks paired devices granted it (远程 step 2). */
   readonly runtime: SessionRuntimeApi;
 
@@ -152,6 +155,7 @@ export class HostService extends EventEmitter<HostServiceEvents> {
     this.collab.watchAnswers();
     this.tasks.watchColumns();
     this.duty.registerCheck(this.issues.dutyCheck());
+    for (const job of this.delivery.jobs()) this.duty.register(job);
   }
 
   /** The common space: where tasks without a project, the scheduler and topic sessions without a project run. */

@@ -45,6 +45,7 @@ export type FeatureName =
   | "remote"
   | "teamRelay"
   | "issues"
+  | "delivery"
   | "duty";
 
 /** The Host without its features: the store, the runtimes, the event stream and the helpers every feature shares. */

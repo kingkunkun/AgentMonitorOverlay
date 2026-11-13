@@ -13,8 +13,9 @@ const rank: Record<CompanyWorkPriority, number> = { high: 0, medium: 1, low: 2 }
 const MODES = ["agent", "new"] as const;
 function workAttachments(v: unknown): CompanyWorkAttachment[] {
   if (v === undefined || v === null) return [];
-  if (!Array.isArray(v) || v.length > 20) fail("附件最多 20 个");
-  return v.map((raw) => {
+  const list = Array.isArray(v) ? v : fail("附件最多 20 个");
+  if (list.length > 20) fail("附件最多 20 个");
+  return list.map((raw) => {
     const a = obj(raw);
     return {
       id: str(a.id, "附件编号", 200),
@@ -134,11 +135,11 @@ export class CompanyWorkManager extends Feature<"sessions" | "tasks"> {
       for (const candidate of sortCompanyWork(this.repo.works().filter((w) => w.status === "queued"))) {
         const w = this.require(candidate.id);
         if (w.status !== "queued") continue;
-        let a = this.company.snapshot().agents.find((a) => a.id === w.agentId);
-        if (!a || !a.enabled || (a.autonomous === false && !w.manualStart)) continue;
-        if (this.repo.works().some((other) => other.id !== w.id && other.agentId === a.id && ["running", "dispatching"].includes(other.status))) continue;
-        if (!this.company.availableForWork(a.id)) continue;
-        if (w.sessionMode === "new") a = await this.freshSession(a);
+        const found = this.company.snapshot().agents.find((x) => x.id === w.agentId);
+        if (!found || !found.enabled || (found.autonomous === false && !w.manualStart)) continue;
+        if (this.repo.works().some((other) => other.id !== w.id && other.agentId === found.id && ["running", "dispatching"].includes(other.status))) continue;
+        if (!this.company.availableForWork(found.id)) continue;
+        const a = w.sessionMode === "new" ? await this.freshSession(found) : found;
         const attempt = w.attempt + 1;
         this.save({ ...w, attempt, status: "dispatching", report: "", outcomeUnknown: false });
         try {
