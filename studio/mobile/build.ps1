@@ -4,7 +4,9 @@ $oldJava = $env:JAVA_HOME
 $oldAndroid = $env:ANDROID_HOME
 $oldPriority = [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass
 try {
-    $candidates = @($env:JAVA_HOME, 'C:/DEVELOP/UnityEditor/6000.3.11f1/Editor/Data/PlaybackEngines/AndroidPlayer/OpenJDK')
+    $unityHubRoots = @('C:/Program Files/Unity/Hub/Editor', 'C:/Program Files (x86)/Unity/Hub/Editor', 'D:/Program Files/Unity/Hub/Editor')
+    $unityEditors = foreach ($hub in $unityHubRoots) { if (Test-Path -LiteralPath $hub) { Get-ChildItem -LiteralPath $hub -Directory | Sort-Object Name -Descending } }
+    $candidates = @($env:JAVA_HOME) + @($unityEditors | ForEach-Object { Join-Path $_.FullName 'Editor/Data/PlaybackEngines/AndroidPlayer/OpenJDK' }) + @('C:/DEVELOP/UnityEditor/6000.3.11f1/Editor/Data/PlaybackEngines/AndroidPlayer/OpenJDK')
     $selected = $null
     foreach ($candidate in $candidates) {
         if (-not $candidate) { continue }
@@ -24,8 +26,12 @@ try {
     }
     if (-not $selected) { throw 'Set JAVA_HOME to a JDK 17 or newer before building.' }
     $env:JAVA_HOME = $selected
-    if (-not $env:ANDROID_HOME) { $env:ANDROID_HOME = Join-Path $env:LOCALAPPDATA 'Android/Sdk' }
-    if (-not (Test-Path -LiteralPath $env:ANDROID_HOME)) { throw 'Set ANDROID_HOME to the Android SDK directory.' }
+    if (-not $env:ANDROID_HOME) {
+        $sdkCandidates = @((Join-Path $env:LOCALAPPDATA 'Android/Sdk')) + @($unityEditors | ForEach-Object { Join-Path $_.FullName 'Editor/Data/PlaybackEngines/AndroidPlayer/SDK' })
+        $foundSdk = $sdkCandidates | Where-Object { $_ -and (Test-Path -LiteralPath (Join-Path $_ 'platform-tools')) } | Select-Object -First 1
+        if ($foundSdk) { $env:ANDROID_HOME = $foundSdk }
+    }
+    if (-not $env:ANDROID_HOME -or -not (Test-Path -LiteralPath $env:ANDROID_HOME)) { throw 'Set ANDROID_HOME to the Android SDK directory.' }
     [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'BelowNormal'
     Push-Location $PSScriptRoot
     try { & './gradlew.bat' --no-daemon --max-workers=4 @Tasks; $buildExit = $LASTEXITCODE }
