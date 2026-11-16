@@ -10,6 +10,45 @@ import { BuildMenu } from "./BuildMenu.js";
 import { HashPresetButton } from "../attach/HashPresets.js";
 import type { HostLink } from "../host/client.js";
 
+/**
+ * 东八区 clock (2026-11-16, the user: the computer runs on a US time zone): the title bar always shows Beijing
+ * date and time, so "now" never needs converting in the head. The hover title carries the full stamp and the
+ * machine's own time zone.
+ */
+function ZoneClock() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 15_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const parts = new Map(
+    new Intl.DateTimeFormat("zh-CN", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      weekday: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    })
+      .formatToParts(now)
+      .map((part) => [part.type, part.value]),
+  );
+  const short = `${parts.get("month")}-${parts.get("day")} ${parts.get("weekday")} ${parts.get("hour")}:${parts.get("minute")}`;
+  const long = `${parts.get("year")}-${parts.get("month")}-${parts.get("day")} ${parts.get("weekday")} ${parts.get("hour")}:${parts.get("minute")}:${parts.get("second")} 东八区（北京，UTC+8）· 本机时区 ${Intl.DateTimeFormat().resolvedOptions().timeZone}`;
+  return (
+    <span className="zone-clock" title={long} aria-label={long} data-testid="topbar-clock">
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+        <circle cx="8" cy="8" r="6" />
+        <path d="M8 4.6V8l2.4 1.4" />
+      </svg>
+      北京 <strong>{short}</strong>
+    </span>
+  );
+}
+
 /** Focus window on/off, mirrored from the Electron shell (absent in a plain browser). */
 export function useFocusToggle(): { on: boolean; available: boolean; set(on: boolean): void } {
   const api = window.amo?.focus;
@@ -67,6 +106,7 @@ export function TopBar({
           </>
         )}
       </div>
+      <ZoneClock />
       <div className="spacer" />
       {cooperationLink && <HashPresetButton link={cooperationLink} />}
       {cooperationLink && <BuildMenu link={cooperationLink} />}

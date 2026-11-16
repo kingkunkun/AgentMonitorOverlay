@@ -6,6 +6,13 @@
 }
 .topbar > :last-child:not(.win-controls) { margin-right: 16px; }
 .topbar button, .topbar input, .topbar a, .topbar select { -webkit-app-region: no-drag; }
+/* 东八区 clock (2026-11-16): the computer may run on a US time zone; this always reads Beijing time. */
+.zone-clock {
+  display: inline-flex; align-items: center; gap: 6px; height: var(--ctl); padding: 0 10px; border-radius: var(--r-btn);
+  color: var(--text-dim); font-size: var(--fs-sm); white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.zone-clock strong { font-weight: 600; color: var(--text); }
+.zone-clock svg { flex: none; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
 .brand { display: flex; align-items: center; gap: 10px; min-width: calc(var(--nav-w) - 32px); }
 /* The viewfinder mark (design/icon/viewfinder.svg). */
 .brand-mark { width: 34px; height: 34px; display: block; flex: none; }
