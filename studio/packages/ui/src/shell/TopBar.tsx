@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import type { Scope } from "../board/Board.js";
 import { scratchpadBridge } from "../scratchpad/bridge.js";
 import { showToast } from "../lib/toast.js";
@@ -18,8 +18,14 @@ import type { HostLink } from "../host/client.js";
 function ZoneClock() {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(new Date()), 15_000);
-    return () => window.clearInterval(timer);
+    // Tick on the second boundary: the readout counts seconds and the hourglass drains with them.
+    let timer = 0;
+    const tick = () => {
+      setNow(new Date());
+      timer = window.setTimeout(tick, 1_000 - (Date.now() % 1_000) + 10);
+    };
+    timer = window.setTimeout(tick, 1_000 - (Date.now() % 1_000) + 10);
+    return () => window.clearTimeout(timer);
   }, []);
   const parts = new Map(
     new Intl.DateTimeFormat("zh-CN", {
@@ -36,13 +42,18 @@ function ZoneClock() {
       .formatToParts(now)
       .map((part) => [part.type, part.value]),
   );
-  const short = `${parts.get("month")}-${parts.get("day")} ${parts.get("weekday")} ${parts.get("hour")}:${parts.get("minute")}`;
+  const short = `${parts.get("month")}-${parts.get("day")} ${parts.get("weekday")} ${parts.get("hour")}:${parts.get("minute")}:${parts.get("second")}`;
+  // Hourglass: the top bulb empties across the minute and the glass turns over at :00, so the icon times the minute.
+  const sand = Math.min(59, Math.max(0, Number(parts.get("second")) || 0)) / 60;
   const long = `${parts.get("year")}-${parts.get("month")}-${parts.get("day")} ${parts.get("weekday")} ${parts.get("hour")}:${parts.get("minute")}:${parts.get("second")} 东八区（北京，UTC+8）· 本机时区 ${Intl.DateTimeFormat().resolvedOptions().timeZone}`;
   return (
     <span className="zone-clock" title={long} aria-label={long} data-testid="topbar-clock">
-      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-        <circle cx="8" cy="8" r="6" />
-        <path d="M8 4.6V8l2.4 1.4" />
+      <svg className="hourglass" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style={{ "--sand": sand.toFixed(4) } as CSSProperties}>
+        <path className="frame" d="M4 2h8M4 14h8" />
+        <path className="glass" d="M4.8 2.9H11.2L8.35 8l2.85 5.1H4.8L7.65 8Z" />
+        <polygon className="sand sand-top" points="6.2,3.95 9.8,3.95 8.25,7.05 7.75,7.05" />
+        <polygon className="sand sand-bottom" points="7.75,8.95 8.25,8.95 9.8,12.05 6.2,12.05" />
+        <path className="sand-stream" d="M8 7.05v1.9" />
       </svg>
       北京 <strong>{short}</strong>
     </span>

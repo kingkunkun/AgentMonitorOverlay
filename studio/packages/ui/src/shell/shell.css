@@ -13,6 +13,18 @@
 }
 .zone-clock strong { font-weight: 600; color: var(--text); }
 .zone-clock svg { flex: none; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
+/* The hourglass empties across the minute and turns over at :00, so the title bar shows time moving, not just ticking. */
+.zone-clock .hourglass { stroke-width: 1.05; }
+.zone-clock .hourglass .frame { stroke-width: 1.5; }
+.zone-clock .hourglass .sand { fill: currentColor; stroke: none; transform-box: view-box; transform-origin: 8px 7.05px; transition: transform 1s linear; }
+.zone-clock .hourglass .sand-top { transform: scaleY(calc(1 - var(--sand, 0))); }
+.zone-clock .hourglass .sand-bottom { transform-origin: 8px 12.05px; transform: scaleY(var(--sand, 0)); }
+.zone-clock .hourglass .sand-stream { stroke-width: 1; opacity: 0.6; animation: zone-sand-fall 1s linear infinite; }
+@keyframes zone-sand-fall { 0% { opacity: 0.15; } 45% { opacity: 0.85; } 100% { opacity: 0.15; } }
+@media (prefers-reduced-motion: reduce) {
+  .zone-clock .hourglass .sand { transition: none; }
+  .zone-clock .hourglass .sand-stream { animation: none; opacity: 0.6; }
+}
 .brand { display: flex; align-items: center; gap: 10px; min-width: calc(var(--nav-w) - 32px); }
 /* The viewfinder mark (design/icon/viewfinder.svg). */
 .brand-mark { width: 34px; height: 34px; display: block; flex: none; }
