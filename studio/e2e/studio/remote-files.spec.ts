@@ -7,6 +7,7 @@ import { expect, test, type ElectronApplication, type Page } from "@playwright/t
 import type { RemoteState, Session, Task, Workspace } from "@amo-studio/protocol";
 import { removeTempDir } from "@amo-studio/testkit";
 import { launchStudio, screenshot, studioRoot, type Studio } from "../support/studio.js";
+import { openTaskMenu } from "../support/task-menu.js";
 
 // 远程, step 3 (plans/done/remote-session.md, 2026-10-29): two Studios on this machine (each its own AMO_HOME and data, the
 // mock model), paired through a relay service started here on a free port — never the team server. A grants B a task
@@ -190,6 +191,7 @@ test("B opens a remote task's Markdown, HTML and pictures: fetched from A with a
   await screenshot(b.app, "studio", "remote-viewer-refused", viewer, "viewer");
 
   // Archived on B: the copy goes, and the files fetched for it with it.
+  await openTaskMenu(b.page);
   await b.page.getByTestId("task-archive").click();
   await expect(b.page.getByTestId("task-card").filter({ hasText: "带文件的远程任务" })).toHaveCount(0);
   // (The folder is moved aside at once, even while a file in it is held a moment by a virus scan; deleted after.)

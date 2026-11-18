@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import type { Session, StateSnapshot, Task, Workspace } from "@amo-studio/protocol";
 import { launchStudio, screenshot, type Studio } from "../support/studio.js";
+import { openTaskMenu } from "../support/task-menu.js";
 
 let studio: Studio | undefined;
 
@@ -47,6 +48,7 @@ test("task page: column, fork, new session, terminal and archive", async () => {
   await expect(page.getByTestId("session-detail")).toContainText("分支 · Mock Model");
 
   // A second independent session in the same task.
+  await openTaskMenu(page);
   await page.getByTestId("new-session-toggle").click();
   await page.getByRole("button", { name: "开始新会话" }).click();
   await expect(rows).toHaveCount(3);

@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import type { CanvasDoc, Session, StateSnapshot, Task, Topic, Workspace } from "@amo-studio/protocol";
 import { launchStudio, screenshot, type Studio } from "../support/studio.js";
+import { openTaskMenu } from "../support/task-menu.js";
 
 // Names and references: a task named at creation and renamed later, a session renamed in its own runtime, a task @-ed
 // in a conversation, and a canvas group removed from its title bar.
@@ -36,6 +37,7 @@ test("tasks and sessions are renamed in place; a task can be @-ed in a conversat
   await page.getByLabel("会话名").fill("摸底");
   await page.getByLabel("会话名").press("Enter");
   // A task just made hides its session list; 会话 shows it.
+  await openTaskMenu(page);
   await page.getByTestId("sessions-toggle").click();
   await expect(page.getByTestId("session-row").first()).toContainText("摸底");
   const state = await studio.api<StateSnapshot>("GET", "/api/state");

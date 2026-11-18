@@ -404,92 +404,8 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
           />
         </div>
         <div className="task-head-actions">
-          {!task.archivedAt && <button type="button" className="btn-ghost small with-icon" aria-pressed={chatPins.has(task.id)} aria-label={chatPins.has(task.id) ? "取消置顶聊天" : "置顶聊天"} title={chatPins.has(task.id) ? "取消置顶聊天" : "置顶聊天"} onClick={() => chatPins.toggle(task.id)} data-testid="task-pin"><svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M10.4 1.4l4.2 4.2-1.6 1.6-1.1-.5-3.2 3.2.2 2.3-1.3 1.3-2.6-2.6-2.9 2.9-1-1 2.9-2.9-2.5-2.6L3 4.9l2.3.2 3.2-3.2-.5-1.1z" /></svg></button>}
-          {!task.archivedAt && !(copy && copy.state === "revoked") && (
-            <button
-              type="button"
-              className="btn-ghost small with-icon"
-              aria-expanded={creating}
-              title={copy ? `在这个任务里开一个新会话（在 ${copy.name} 上跑，只能选那边允许的模型）` : "在这个任务里开一个新会话"}
-              onClick={() => {
-                setCreating(!creating);
-                if (!creating) setSessionsHidden(false);
-              }}
-              data-testid="new-session-toggle"
-            >
-              <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
-                <path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z" />
-                <path d="M8 5.2v3.6M6.2 7h3.6" />
-              </svg>
-              新会话
-            </button>
-          )}
-          {gitRepo && (
-            <button
-              type="button"
-              className="btn-ghost small with-icon"
-              title="Git Review：查看项目的改动并逐行批注，批注发回当前会话"
-              onClick={() => {
-                const target = session && !session.archivedAt ? session : latestMainSession(sessions, task.id);
-                openReview({ workspaceId: task.workspaceId, ...(target ? { sessionId: target.id } : {}) });
-              }}
-              data-testid="task-review"
-            >
-              <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
-                <path d="M3 2.5h7l3 3v8H3z" />
-                <path d="M6 7.5h4M8 5.5v4M6 11.5h4" />
-              </svg>
-              Review
-            </button>
-          )}
-          {BOOKMARKS_ENABLED && !copy && (
-          <button type="button" className="btn-ghost small with-icon" title="书签：这个专题记下的文件和对话片段（Ctrl+Shift+M）" onClick={() => openMarks({ topicId: task.topicId ?? "none", workspaceId: task.workspaceId, taskId: task.id })} data-testid="task-marks">
-            <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
-              <path d="M4.5 2.5h7v11l-3.5-2.6-3.5 2.6z" />
-            </svg>
-            书签
-          </button>
-          )}
-          {/* 归档 on its own, left of ⋯ (2026-10-23). */}
-          {!task.archivedAt && (
-            <button type="button" className="btn-ghost small with-icon soft-danger" title={copy ? `归档：清掉这台电脑上的副本（任务在 ${copy.name} 上照常${copy.state === "revoked" ? "" : "；以后那边重新授权才会再出现"}）` : "归档任务：任务和它的会话变成只读，之后可以恢复"} disabled={busy} onClick={() => void archiveTask()} data-testid="task-archive">
-              <ArchiveIcon size={15} />
-              归档
-            </button>
-          )}
           <button type="button" className="btn-ghost small icon-only" aria-label="任务的更多操作" title="更多" onClick={(e) => setTaskMenu(below(e.currentTarget))} data-testid="task-more">
             ⋯
-          </button>
-          <span className="head-sep" aria-hidden="true" />
-          <button
-            type="button"
-            className="btn-ghost small sidebar-toggle"
-            aria-pressed={!sessionsHidden}
-            title={sessionsHidden ? "显示会话列表" : "隐藏会话列表"}
-            onClick={() => setSessionsHidden(!sessionsHidden)}
-            data-testid="sessions-toggle"
-          >
-            <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
-              <rect x="2" y="2.5" width="12" height="11" rx="1" />
-              <path d="M6 2.5v11" />
-            </svg>
-            会话
-            {sessionsHidden && liveCount > 1 && <span className="sidebar-count">{liveCount}</span>}
-          </button>
-          <button
-            type="button"
-            className="btn-ghost small sidebar-toggle"
-            aria-pressed={sidebar}
-            title={sidebar ? "收起侧栏" : "显示侧栏：进度、批注、留言、清单"}
-            onClick={() => setSidebar(!sidebar)}
-            data-testid="sidebar-toggle"
-          >
-            <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
-              <rect x="2" y="2.5" width="12" height="11" rx="1" />
-              <path d="M10 2.5v11" />
-            </svg>
-            侧栏
-            {!sidebar && sideCount > 0 && <span className="sidebar-count">{sideCount}</span>}
           </button>
         </div>
       </div>
@@ -499,6 +415,37 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
       )}
       {taskMenu && (
         <PopMenu at={taskMenu} label="任务" onClose={() => setTaskMenu(null)} testId="task-menu">
+          {!task.archivedAt && (
+            <button type="button" role="menuitem" onClick={() => { setTaskMenu(null); chatPins.toggle(task.id); }} data-testid="task-pin">
+              {chatPins.has(task.id) ? "取消置顶聊天" : "置顶聊天"}
+            </button>
+          )}
+          {!task.archivedAt && !(copy && copy.state === "revoked") && (
+            <button type="button" role="menuitem" onClick={() => { setTaskMenu(null); setCreating(true); setSessionsHidden(false); }} data-testid="new-session-toggle">
+              新会话
+            </button>
+          )}
+          {gitRepo && (
+            <button type="button" role="menuitem" onClick={() => { const target = session && !session.archivedAt ? session : latestMainSession(sessions, task.id); setTaskMenu(null); openReview({ workspaceId: task.workspaceId, ...(target ? { sessionId: target.id } : {}) }); }} data-testid="task-review">
+              Review
+            </button>
+          )}
+          {BOOKMARKS_ENABLED && !copy && (
+            <button type="button" role="menuitem" onClick={() => { setTaskMenu(null); openMarks({ topicId: task.topicId ?? "none", workspaceId: task.workspaceId, taskId: task.id }); }} data-testid="task-marks">
+              书签
+            </button>
+          )}
+          <button type="button" role="menuitemcheckbox" aria-checked={!sessionsHidden} onClick={() => { setTaskMenu(null); setSessionsHidden(!sessionsHidden); }} data-testid="sessions-toggle">
+            会话列表
+          </button>
+          <button type="button" role="menuitemcheckbox" aria-checked={sidebar} onClick={() => { setTaskMenu(null); setSidebar(!sidebar); }} data-testid="sidebar-toggle">
+            侧栏
+          </button>
+          {!task.archivedAt && (
+            <button type="button" role="menuitem" className="menu-danger" disabled={busy} onClick={() => { setTaskMenu(null); void archiveTask(); }} data-testid="task-archive">
+              归档任务
+            </button>
+          )}
           {copy && <span className="menu-note">远程任务：名字、状态、说明在 {copy.name} 上改</span>}
           {!task.archivedAt && !copy && (
             <button

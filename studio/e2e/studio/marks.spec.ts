@@ -4,6 +4,7 @@ import { expect, test, type ElectronApplication, type Page } from "@playwright/t
 import type { FileMark, Session, Task, Workspace } from "@amo-studio/protocol";
 import { BOOKMARKS_ENABLED } from "@amo-studio/protocol";
 import { launchStudio, screenshot, windowState, type Studio, confirmBookmarkNote } from "../support/studio.js";
+import { openTaskMenu } from "../support/task-menu.js";
 test.skip(!BOOKMARKS_ENABLED, "This fork disables bookmarks; disabled access is covered by cooperation.spec.ts and Host API tests.");
 
 // S12-D acceptance: the file marks window (标记文件 from the project's file selector, a pasted path, files dropped from
@@ -32,6 +33,7 @@ async function openTask(s: Studio, dir: string) {
 /** Opens the marks window from the task page and waits for it. */
 async function openMarksWindow(app: ElectronApplication, page: Page): Promise<Page> {
   const opened = app.waitForEvent("window");
+  await openTaskMenu(page);
   await page.getByTestId("task-marks").click();
   const win = await opened;
   await win.waitForLoadState("domcontentloaded");
@@ -278,6 +280,7 @@ test("显示范围: 当前专题 / 当前项目 / 全部, remembered per task (2
   const openFrom = async (title: string) => {
     await page.getByTestId("scope-all").click();
     await page.getByTestId("task-card").filter({ hasText: title }).click();
+    await openTaskMenu(page);
     await page.getByTestId("task-marks").click();
   };
 

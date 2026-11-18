@@ -3,6 +3,7 @@ import type { Bookmark, Session, Task, Topic, Workspace } from "@amo-studio/prot
 import { BOOKMARKS_ENABLED } from "@amo-studio/protocol";
 import { selectAndRelease } from "../support/selection.js";
 import { launchStudio, longTurn, screenshot, showMainWindow, type Studio, confirmBookmarkNote } from "../support/studio.js";
+import { openTaskMenu } from "../support/task-menu.js";
 test.skip(!BOOKMARKS_ENABLED, "This fork disables bookmarks; disabled access is covered by cooperation.spec.ts and Host API tests.");
 
 // 书签 (2026-10-19): a passage of a reply bookmarked from the selection bar goes under the task's topic; the bookmarks
@@ -18,6 +19,7 @@ test.afterEach(async () => {
 
 async function openMarksWindow(app: ElectronApplication, page: Page): Promise<Page> {
   const opened = app.waitForEvent("window");
+  await openTaskMenu(page);
   await page.getByTestId("task-marks").click();
   const win = await opened;
   await win.waitForLoadState("domcontentloaded");

@@ -3,6 +3,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ProfileChoices, Session, Workspace } from "@amo-studio/protocol";
 import { launchStudio, screenshot } from "../support/studio.js";
+import { closeTaskMenu, openTaskMenu } from "../support/task-menu.js";
 
 test("Codex composer keeps prompts/files, changes actual model/effort/permissions, and stops generation", async () => {
   const studio = await launchStudio();
@@ -146,7 +147,9 @@ test("a single chat hides its session list and the file divider resizes both pan
     await page.getByTestId("task-card").first().click();
     await expect(page.getByTestId("msg-agent").last()).toContainText("MOCK:", { timeout: 30_000 });
     await expect(page.getByTestId("session-row")).toHaveCount(0);
-    await expect(page.getByTestId("sessions-toggle")).toHaveAttribute("aria-pressed", "false");
+    await openTaskMenu(page);
+    await expect(page.getByTestId("sessions-toggle")).toHaveAttribute("aria-checked", "false");
+    await closeTaskMenu(page);
     const openPreview = async () => { const chip = page.getByTestId("msg-user").getByTestId("msg-file"); await expect(chip).toHaveAttribute("data-file-link", ""); await chip.click({ button: "right" }); await page.getByRole("menuitem", { name: "在侧栏预览" }).click(); };
     await openPreview();
     const preview = page.getByTestId("file-preview");
@@ -168,6 +171,7 @@ test("a single chat hides its session list and the file divider resizes both pan
     await handle.focus(); await page.keyboard.press("ArrowLeft");
     expect((await preview.boundingBox())!.width).toBeGreaterThan(before + 15);
     await preview.getByRole("button", { name: "关闭预览" }).click();
+    await openTaskMenu(page);
     await page.getByTestId("new-session-toggle").click();
     await expect(page.getByRole("button", { name: "开始新会话" })).toBeVisible();
     await expect(page.getByTestId("session-row")).toHaveCount(1);

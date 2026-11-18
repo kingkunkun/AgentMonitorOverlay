@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import type { StateSnapshot, Task, Topic, Workspace } from "@amo-studio/protocol";
 import { launchStudio, screenshot, type Studio } from "../support/studio.js";
+import { closeTaskMenu, openTaskMenu } from "../support/task-menu.js";
 
 // The task page head (2026-10-14, 方案 A): the title, and under it status · project · branch · topic as quiet words
 // that open their own pickers; the right column hidden until 侧栏; 编辑项目 from the project word and the left column.
@@ -79,31 +80,33 @@ test("status, topic and project from the line under the title; the right column 
   // remembered; 新会话 brings the list back with its form.
   await page.getByTestId("nav-collapse").click();
   await expect(page.getByTestId("scope-all")).toHaveCount(0);
-  const sessionsToggle = page.getByTestId("sessions-toggle");
-  await expect(sessionsToggle).toHaveAttribute("aria-pressed", "true");
-  await sessionsToggle.click();
-  await expect(sessionsToggle).toHaveAttribute("aria-pressed", "false");
+  await openTaskMenu(page);
+  await expect(page.getByTestId("sessions-toggle")).toHaveAttribute("aria-checked", "true");
+  await page.getByTestId("sessions-toggle").click();
   await expect(page.getByRole("complementary", { name: "会话" })).toHaveCount(0);
   await expect(page.getByTestId("session-row")).toHaveCount(0);
   await screenshot(app, "stage-14", "S14-I-sessions-hidden", page);
+  await openTaskMenu(page);
   await page.getByTestId("new-session-toggle").click();
   await expect(page.getByRole("button", { name: "开始新会话" })).toBeVisible();
   await expect(page.getByTestId("session-row")).toHaveCount(1);
-  await expect(sessionsToggle).toHaveAttribute("aria-pressed", "true");
-  await page.getByTestId("new-session-toggle").click();
-  await sessionsToggle.click();
+  await openTaskMenu(page);
+  await expect(page.getByTestId("sessions-toggle")).toHaveAttribute("aria-checked", "true");
+  await page.getByTestId("sessions-toggle").click();
   await page.reload();
   // Back on the same task after the reload (2026-10-15: the place is remembered).
   await expect(page.locator(".page-head")).toContainText("掉落表");
   await expect(page.getByTestId("session-row")).toHaveCount(0);
+  await openTaskMenu(page);
   await page.getByTestId("sessions-toggle").click();
   await expect(page.getByTestId("session-row")).toHaveCount(1);
   await page.getByTestId("nav-expand").click();
   await expect(page.getByTestId("scope-all")).toBeVisible();
 
   // 侧栏 shows the right column, and is remembered.
+  await openTaskMenu(page);
+  await expect(page.getByTestId("sidebar-toggle")).toHaveAttribute("aria-checked", "false");
   await page.getByTestId("sidebar-toggle").click();
-  await expect(page.getByTestId("sidebar-toggle")).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByTestId("note-count")).toBeVisible();
   // What is being written in the session's box survives a reload (2026-10-15: a restart emptied it).
   await page.getByLabel("输入消息").fill("写到一半的话");
@@ -128,7 +131,9 @@ test("status, topic and project from the line under the title; the right column 
   const glyph = (el: Element) => getComputedStyle(el.querySelector("svg")!).color;
   expect(await archive.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgba(0, 0, 0, 0)");
   expect(await archive.evaluate(glyph)).not.toBe(await bar.getByTestId("session-fork").evaluate(glyph));
-  expect(await page.getByTestId("task-archive").evaluate(glyph)).toBe(await archive.evaluate(glyph));
+  await openTaskMenu(page);
+  await expect(page.getByTestId("task-archive")).toBeVisible();
+  await closeTaskMenu(page);
   await page.getByTestId("session-more").click();
   const { vscode } = await studio.api<{ vscode: boolean }>("GET", "/api/open-in/apps");
   // (绑定到待办… follows when 便签 is there to bind to.)

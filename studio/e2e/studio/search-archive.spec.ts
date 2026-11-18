@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import type { Session, Task, Topic, Workspace } from "@amo-studio/protocol";
 import { launchStudio, screenshot, windowState, type Studio } from "../support/studio.js";
+import { openTaskMenu } from "../support/task-menu.js";
 
 // Stage 14 (S14-C): the search box left of "+ 新任务", no 置顶 in the title bar (removed 10-31), task pages that return where they were
 // opened from, the box after 归档任务, and archived tasks and sessions that say so plainly.
@@ -106,6 +107,7 @@ test("归档任务: a box says what was archived and returns to the canvas or bo
   // Opened from the canvas: 返回画布.
   await page.getByRole("button", { name: "画布", exact: true }).click();
   await page.getByTestId("canvas-card").filter({ hasText: "掉落表调整" }).dblclick();
+  await openTaskMenu(page);
   await page.getByTestId("task-archive").click();
   const box = page.getByTestId("task-archived-dialog");
   await expect(box).toContainText("已归档任务「掉落表调整」和它的 1 个会话");
@@ -133,6 +135,7 @@ test("归档任务: a box says what was archived and returns to the canvas or bo
   await page.getByRole("button", { name: "返回画布" }).click();
   await page.getByRole("button", { name: "看板", exact: true }).click();
   await page.getByTestId("task-card").filter({ hasText: "掉落表调整" }).click();
+  await openTaskMenu(page);
   await page.getByTestId("task-archive").click();
   await expect(box.getByRole("button", { name: "返回看板" })).toBeVisible();
   await box.getByRole("button", { name: "关闭" }).click();

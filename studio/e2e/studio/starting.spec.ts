@@ -1,6 +1,7 @@
 import { expect, test, type Route } from "@playwright/test";
 import type { Workspace } from "@amo-studio/protocol";
 import { launchStudio, screenshot, type Studio } from "../support/studio.js";
+import { openTaskMenu } from "../support/task-menu.js";
 
 // 正在启动 (2026-10-23): starting a session waits for the model's process; the page it starts in is covered with a
 // spinner meanwhile (nothing there clicked or typed twice), and uncovered once the session is there or failed.
@@ -42,7 +43,9 @@ test("开始 and 开始新会话 cover the page with a spinner while the session
 
   // A new session in the task: the conversation column is covered, the session list beside it is not.
   await app.context().route("**/api/tasks/*/sessions", slowPost(1500));
+  await openTaskMenu(page);
   await page.getByTestId("sessions-toggle").click();
+  await openTaskMenu(page);
   await page.getByTestId("new-session-toggle").click();
   await page.getByRole("button", { name: "开始新会话" }).click();
   await expect(page.locator(".thread-col").getByTestId("starting-cover")).toContainText("正在启动");

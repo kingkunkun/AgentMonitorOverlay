@@ -5,6 +5,7 @@ import { expect, test } from "@playwright/test";
 import type { Session, Task, Workspace } from "@amo-studio/protocol";
 import { BOOKMARKS_ENABLED } from "@amo-studio/protocol";
 import { launchStudio, screenshot, windowState, type Studio, confirmBookmarkNote } from "../support/studio.js";
+import { openTaskMenu } from "../support/task-menu.js";
 
 // S11-D acceptance: a project under git → Review from the task page → file list and both diff views → a comment on
 // a line → 复制注释 (2026-10-23, in place of 发给会话: the person pastes them where the work goes on). The window is
@@ -55,6 +56,7 @@ test("review a project's changes, comment a line and send it to the session", as
 
   // Open from the task: a window of its own, off-screen and never focused in tests.
   const opened = app.waitForEvent("window");
+  await openTaskMenu(page);
   await page.getByTestId("task-review").click();
   const review = await opened;
   await review.waitForLoadState("domcontentloaded");
@@ -181,6 +183,7 @@ test("review a project's changes, comment a line and send it to the session", as
 
   // The task head opens the same window again (one per project), pointed at the session in front.
   const windows = app.windows().length;
+  await openTaskMenu(page);
   await page.getByTestId("task-review").click();
   await expect.poll(() => review.url()).toContain(`session=${session.id}`);
   expect(app.windows().length).toBe(windows);

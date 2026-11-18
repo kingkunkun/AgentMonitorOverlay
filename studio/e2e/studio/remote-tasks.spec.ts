@@ -6,6 +6,7 @@ import { expect, test, type ElectronApplication, type Page } from "@playwright/t
 import type { RemoteState, Session, Task, Workspace } from "@amo-studio/protocol";
 import { removeTempDir } from "@amo-studio/testkit";
 import { launchStudio, screenshot, studioRoot, type Studio } from "../support/studio.js";
+import { closeTaskMenu, openTaskMenu } from "../support/task-menu.js";
 
 // 远程, step 2 (plans/done/remote-session.md, 2026-10-29): two Studios on this machine (each its own AMO_HOME and data, the
 // mock model), paired through a relay service started here on a free port — never the team server. A grants a task to
@@ -165,9 +166,11 @@ test("A grants a task; B works in it, sees approvals A's Focus leaves to it, rid
   await screenshot(b.app, "studio", "remote-b-banner-open", b.page);
   await banner.getByTestId("remote-banner-toggle").click();
   // What only A does is not offered: Git Review, 分支, 在终端打开, 书签 of the task.
+  await openTaskMenu(b.page);
   await expect(b.page.getByTestId("task-review")).toHaveCount(0);
   await expect(b.page.getByTestId("session-fork")).toHaveCount(0);
   await expect(b.page.getByTestId("task-marks")).toHaveCount(0);
+  await closeTaskMenu(b.page);
 
   // B's message runs on A; the reply comes back to B.
   await composer(b.page).fill("从 B 发来的消息");
@@ -244,6 +247,7 @@ test("A grants a task; B works in it, sees approvals A's Focus leaves to it, rid
   await expect(b.page.getByTestId("msg-agent").last()).toContainText("MOCK: [[wait]] B 在跑", { timeout: 60_000 });
 
   // A new session from B: only the model A allows (the one the task uses), started on A.
+  await openTaskMenu(b.page);
   await b.page.getByTestId("new-session-toggle").click();
   const form = b.page.getByTestId("remote-new-session");
   await expect(form.getByTestId("remote-model").locator("option")).toHaveCount(1);
@@ -284,6 +288,7 @@ test("A grants a task; B works in it, sees approvals A's Focus leaves to it, rid
   await screenshot(b.app, "studio", "remote-b-board-revoked", b.page);
   // Archived on B: the copy goes from B (back on the board), the task stays on A.
   await b.page.getByTestId("task-card").filter({ hasText: "远程一起做的任务" }).click();
+  await openTaskMenu(b.page);
   await b.page.getByTestId("task-archive").click();
   await expect(b.page.getByTestId("task-card").filter({ hasText: "远程一起做的任务" })).toHaveCount(0);
   await expect(b.page.getByTestId("column-doing")).toBeVisible();

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import type { StateSnapshot, StudioSettings, Task, Topic, Workspace } from "@amo-studio/protocol";
 import { launchStudio, screenshot, type Studio } from "../support/studio.js";
+import { closeTaskMenu, openTaskMenu } from "../support/task-menu.js";
 
 let studio: Studio | undefined;
 
@@ -55,7 +56,9 @@ test("creates a task from the blank task page and streams the first reply", asyn
   await expect(page.getByTestId("task-title")).toHaveText("列出目录结构 [[slow]]");
   await expect(page.getByTestId("msg-user")).toHaveText(/列出目录结构/);
   // Just made, the task opens with its session list hidden (one session: nothing to choose between); 会话 shows it.
-  await expect(page.getByTestId("sessions-toggle")).toHaveAttribute("aria-pressed", "false");
+  await openTaskMenu(page);
+  await expect(page.getByTestId("sessions-toggle")).toHaveAttribute("aria-checked", "false");
+  await closeTaskMenu(page);
   await expect(page.getByRole("complementary", { name: "会话" })).toHaveCount(0);
   await expect(page.getByTestId("session-row")).toHaveCount(0);
   // While streaming, the reply grows and is marked as streaming (a pulsing dot); then it settles.
@@ -94,6 +97,7 @@ test("files a task into 待办 in the topic in scope, without starting a session
   await card.click();
   await expect(page.getByTestId("task-first-message")).toContainText("先补边界：0 掉落和满背包");
   await screenshot(studio.app, "studio", "filed-first-message", page);
+  await openTaskMenu(page);
   await page.getByTestId("new-session-toggle").click();
   await page.getByRole("button", { name: "开始新会话" }).click();
   await expect(page.getByLabel("输入消息")).toHaveValue("Elite 掉落表补单元测试\n先补边界：0 掉落和满背包");
