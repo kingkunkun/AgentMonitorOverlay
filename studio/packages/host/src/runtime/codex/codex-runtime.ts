@@ -102,6 +102,8 @@ export class CodexRuntime extends RuntimeBase {
     }
     options.servers.on("ready", (handle) => {
       this.attach(handle);
+      // A new app-server may list other models (Codex updated, or its model catalog changed): the next ask goes to it.
+      this.dropModels(handle.profileId);
       void this.resubscribe(handle).catch((err: unknown) => this.emit("log", `resubscribe failed: ${String(err)}`));
     });
   }
@@ -384,6 +386,11 @@ export class CodexRuntime extends RuntimeBase {
       this.listingModels.set(cacheKey, asking);
     }
     return asking;
+  }
+
+  /** Forgets the profile's model lists, whatever its pinned model. */
+  private dropModels(profileId: Id): void {
+    for (const key of [...this.modelCache.keys()]) if (key.startsWith(`${profileId}|`)) this.modelCache.delete(key);
   }
 
   async interrupt(sessionId: Id): Promise<void> {

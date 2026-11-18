@@ -10,10 +10,13 @@ import { readStoredJson, writeStoredJson } from "./stored.js";
 export const EFFORT_LABELS: Record<string, string> = { none: "不思考", minimal: "极低", low: "低", medium: "中", high: "高", xhigh: "超高", max: "最高", ultra: "极致" };
 export const effortLabel = (e: string) => EFFORT_LABELS[e] ?? e;
 
-// One request per profile for the page's life; a failed one is asked again next time. 设置 → 模型 (order, defaults)
+// One request per profile at a time (kept a short while); a failed one is asked again next time. 设置 → 模型 (order, defaults)
 // and the channels themselves (a channel's model list, 10-22) change what the Host answers, so a change to either drops
 // the cache and the pickers ask again. `profiles.updated` does not say which channel changed: every profile is asked.
-const cache = new Map<string, Promise<ProfileChoices>>();
+const cache = new Map<string, { at: number; p: Promise<ProfileChoices> }>();
+// The CLI's list can also change on its own (a Codex update or a new model catalog): an answer older than this is
+// asked again, the pickers showing the old one until the new one arrives.
+const CHOICES_MAX_AGE_MS = 2 * 60_000;
 const CHANGED = "amo:choices-changed";
 let prefsSeen: string | null = null;
 const dropChoices = () => {
@@ -28,6 +31,12 @@ onHostEvent((e) => {
   prefsSeen = prefs;
   dropChoices();
 });
+// Pickers that stay open (the composer's) ask again when the window comes back with an old answer in hand.
+if (typeof window !== "undefined") {
+  window.addEventListener("focus", () => {
+    if ([...cache.values()].some((e) => Date.now() - e.at >= CHOICES_MAX_AGE_MS)) dropChoices();
+  });
+}
 
 // The last answer is also kept per install: asking a CLI can mean starting its app-server (seconds for a cold GPT
 // one), so the pickers show what they knew last time at once and replace it when the fresh list arrives.
@@ -39,13 +48,12 @@ export function storedChoices(profileId: string): ProfileChoices | null {
 }
 
 export function loadChoices(link: HostLink, profileId: string): Promise<ProfileChoices> {
-  let p = cache.get(profileId);
-  if (!p) {
-    p = call(link, "GET /api/profiles/:id/choices", { id: profileId });
-    p.then((c) => writeStoredJson(storedKey(profileId), c), () => cache.delete(profileId));
-    cache.set(profileId, p);
-  }
-  return p;
+  const hit = cache.get(profileId);
+  if (hit && Date.now() - hit.at < CHOICES_MAX_AGE_MS) return hit.p;
+  const entry = { at: Date.now(), p: call(link, "GET /api/profiles/:id/choices", { id: profileId }) };
+  entry.p.then((c) => writeStoredJson(storedKey(profileId), c), () => cache.get(profileId) === entry && cache.delete(profileId));
+  cache.set(profileId, entry);
+  return entry.p;
 }
 
 /** Goes up when 设置 → 模型 changes what the Host answers, so the hooks below ask again. */
