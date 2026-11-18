@@ -4,6 +4,10 @@ export interface ChatPresetsState { presets: ChatPreset[]; filePath: string }
 export const DEFAULT_CHAT_PRESETS: readonly ChatPreset[] = [
   { id: "build-ios", phrase: "高配打包机 自动出IOS包", job: "ios", prompt: "使用高配打包机的 SurvivorTD_IOS_Auto 默认参数生成 iOS 包。在当前会话报告排队、执行和成功或失败；失败时展示经过脱敏的关键日志，自动分析原因并提出可执行的修复建议，继续在当前会话沟通。不要自动重复提交打包。" },
   { id: "build-android", phrase: "高配打包机 自动出安卓包", job: "android", prompt: "使用高配打包机的 SurvivorTD_Android_Auto 默认参数生成安卓包。在当前会话报告排队、执行和成功或失败；失败时展示经过脱敏的关键日志，自动分析原因并提出可执行的修复建议，继续在当前会话沟通。不要自动重复提交打包。" },
+  { id: "build-ios-base", phrase: "打ios热更母包", job: "ios_base", prompt: "使用 SurvivorTD_IOS 默认参数出 iOS 热更母包。在当前会话报告排队、执行和成功或失败；失败时展示经过脱敏的关键日志，自动分析原因并提出可执行的修复建议，继续在当前会话沟通。不要自动重复提交打包。" },
+  { id: "build-ios-hotfix", phrase: "出ios热更新资源", job: "ios_hotfix", prompt: "使用 SurvivorTD_IOS_Hotfix 默认参数出 iOS 热更新资源。在当前会话报告排队、执行和成功或失败；失败时展示经过脱敏的关键日志，自动分析原因并提出可执行的修复建议，继续在当前会话沟通。不要自动重复提交打包。" },
+  { id: "build-android-base", phrase: "出安卓热更母包", job: "android_base", prompt: "使用 SurvivorTD_Android 默认参数出安卓热更母包。在当前会话报告排队、执行和成功或失败；失败时展示经过脱敏的关键日志，自动分析原因并提出可执行的修复建议，继续在当前会话沟通。不要自动重复提交打包。" },
+  { id: "build-android-hotfix", phrase: "出安卓热更新资源", job: "android_hotfix", prompt: "使用 SurvivorTD_Android_Hotfix 默认参数出安卓热更新资源。在当前会话报告排队、执行和成功或失败；失败时展示经过脱敏的关键日志，自动分析原因并提出可执行的修复建议，继续在当前会话沟通。不要自动重复提交打包。" },
 ];
 export const presetMessage = (preset: ChatPreset): string => `#${preset.phrase}\n${preset.prompt}`;
 export interface ChatPresetRoutes {

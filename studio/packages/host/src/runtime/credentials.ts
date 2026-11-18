@@ -9,6 +9,8 @@ import { execFile, execFileSync } from "node:child_process";
 export interface CredentialReader {
   /** The secret, or null when the entry does not exist. */
   read(credentialId: string): string | null;
+  /** Reads the entry again from the store (another program may have saved it since), without holding up the event loop. */
+  reload?(credentialId: string): Promise<string | null>;
 }
 
 /** A reader that can also save and remove entries. */
@@ -157,6 +159,21 @@ export class WindowsCredentialReader implements CredentialStore {
     // The script holds only the target name; the secret comes back on stdout.
     const out = this.powershell(readScript(this.prefix + credentialId)).trim();
     const secret = out.length ? out : null;
+    this.cache.set(credentialId, secret);
+    return secret;
+  }
+
+  // The Jenkins login is also saved by jenkins-build-mcp, another process: a read that may have gone stale asks again.
+  async reload(credentialId: string): Promise<string | null> {
+    if (!ID_PATTERN.test(credentialId)) throw new Error(`invalid credential id: ${credentialId}`);
+    if (process.platform !== "win32") return this.cache.get(credentialId) ?? null;
+    const out = await new Promise<string | null>((resolve) => {
+      const child = execFile("powershell", POWERSHELL_ARGS, { encoding: "utf8", windowsHide: true, timeout: 20_000 }, (err, stdout) => resolve(err ? null : stdout));
+      child.stdin?.on("error", () => undefined);
+      child.stdin?.end(readScript(this.prefix + credentialId));
+    });
+    if (out === null) return this.cache.get(credentialId) ?? null;
+    const secret = out.trim().length ? out.trim() : null;
     this.cache.set(credentialId, secret);
     return secret;
   }

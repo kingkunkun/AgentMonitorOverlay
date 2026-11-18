@@ -19,7 +19,8 @@ export interface KvKey {
 }
 
 export const KV_KEYS: readonly KvKey[] = [
-  { key: "build-job.state", scope: "global", owner: "core/build-job.ts", what: "固定 Jenkins Job 最近的构建状态，不包含凭据" },
+  { key: "build-job.state", scope: "global", owner: "core/build-job.ts", what: "固定 Jenkins Job 最近一次构建的状态，不包含凭据" },
+  { key: "build-job.runs", scope: "global", owner: "core/build-job.ts", what: "6 个固定 Jenkins Job 各自最近的构建状态和失败通知结果，不包含凭据" },
   { key: "build-job.enabled", scope: "global", owner: "core/build-job.ts", what: "是否允许通过按钮和手机聊天触发固定打包 Job" },
   { key: "phone.accounts", scope: "global", owner: "core/phone-remote.ts", what: "独立手机账号启用和团队来信路由，不含密码" },
   { key: "phone.device", scope: "global", owner: "core/phone-remote.ts", what: "独立于团队设备通道的本机手机服务设备号" },

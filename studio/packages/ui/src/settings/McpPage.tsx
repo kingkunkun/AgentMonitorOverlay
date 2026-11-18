@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { MCP_SECRET_MASK, mcpSummary, type McpChoices, type McpState, type StudioMcpServer } from "@amo-studio/protocol";
 import { call, HostApiError, type HostLink } from "../host/client.js";
 import { ChoiceChips, EntryLine, parsePasted, useMcpChanges } from "../mcp/shared.js";
+import { BuildJobCard } from "../shell/BuildMenu.js";
 
 // 设置 → MCP (2026-11-04, plans/done/mcp.md): the MCP servers sessions get besides Studio's own amo. Studio's list (pasted
 // JSON, secrets kept in the Windows credential store), the person's own Claude Code servers, and whether each is on by
@@ -80,7 +81,8 @@ export function McpPage({ link }: { link: HostLink }) {
             const entry = state.entries.find((e) => e.serverId === s.id);
             if (editing !== "new" && editing?.id === s.id) return <ServerForm key={s.id} link={link} server={s} onDone={() => (setEditing(null), reload())} />;
             return (
-              <EntryLine key={s.id} entry={entry ?? { name: s.name, source: "studio", summary: mcpSummary(s.spec), on: s.on, inherited: s.on, ...(s.note ? { note: s.note } : {}) }}>
+              <Fragment key={s.id}>
+              <EntryLine entry={entry ?? { name: s.name, source: "studio", summary: mcpSummary(s.spec), on: s.on, inherited: s.on, ...(s.note ? { note: s.note } : {}) }}>
                 <span className="mcp-actions">
                   <label className="settings-hint" title="不勾：只在单独打开它的项目或会话里用">
                     <input type="checkbox" checked={s.on} disabled={busy} onChange={(e) => void run(() => call(link, "PATCH /api/mcp/servers/:id", { id: s.id }, { on: e.target.checked }))} data-testid={`mcp-default-${s.name}`} /> 默认启用
@@ -99,6 +101,8 @@ export function McpPage({ link }: { link: HostLink }) {
                   </button>
                 </span>
               </EntryLine>
+              {s.name === "jenkins-build" && <BuildJobCard link={link} />}
+              </Fragment>
             );
           })}
         </div>

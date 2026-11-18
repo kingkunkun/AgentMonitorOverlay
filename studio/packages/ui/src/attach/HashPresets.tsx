@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { presetMessage, type ChatPreset, type ChatPresetsState } from "@amo-studio/protocol";
+import { BUILD_JOB_IDS, BUILD_JOBS, isBuildJobId, presetMessage, type ChatPreset, type ChatPresetsState } from "@amo-studio/protocol";
 import { call, type HostLink } from "../host/client.js";
 import { Modal } from "../lib/Modal.js";
 import "../shell/cooperation.css";
@@ -28,7 +28,7 @@ export function HashPresetSettings({ link, onPick }: { link: HostLink; onPick?(t
     {current && <div style={{ display: "grid", gap: 10 }}>
       <label>提示词名称（不含 #）<input aria-label="提示词名称" value={current.phrase} onChange={(e) => patch({ phrase: e.target.value })} /></label>
       <label>默认聊天任务<textarea aria-label="默认聊天任务" rows={6} value={current.prompt} onChange={(e) => patch({ prompt: e.target.value })} style={{ width: "100%", boxSizing: "border-box", resize: "vertical" }} /></label>
-      <label>发送后的自动任务 <select aria-label="自动任务" value={current.job ?? ""} onChange={(e) => patch({ job: e.target.value === "ios" ? "ios" : e.target.value === "android" ? "android" : null })}><option value="">仅填入提示词，由 AI 对话处理</option><option value="ios">高配打包机 · iOS</option><option value="android">高配打包机 · 安卓</option></select></label>
+      <label>发送后的自动任务 <select aria-label="自动任务" value={current.job ?? ""} onChange={(e) => patch({ job: isBuildJobId(e.target.value) ? e.target.value : null })}><option value="">仅填入提示词，由 AI 对话处理</option>{BUILD_JOB_IDS.map((id) => <option key={id} value={id}>{BUILD_JOBS[id].label}（{BUILD_JOBS[id].name}）</option>)}</select></label>
       {onPick && <button className="btn-primary" disabled={busy} onClick={() => { const saved = state?.presets.find((p) => p.id === current.id); if (saved && JSON.stringify(saved) === JSON.stringify(current)) onPick(presetMessage(current)); else setError("请先保存修改，再使用这条预设"); }}>填入当前对话</button>}
     </div>}
     <p style={{ display: "flex", gap: 8 }}><button className="btn-primary" disabled={busy || !state} onClick={() => void save()}>保存提示词</button><button className="btn-ghost" disabled={busy || !state || drafts.length >= 100} onClick={() => { const p: ChatPreset = { id: `preset-${crypto.randomUUID()}`, phrase: "新提示词", prompt: "请完成下面的任务。", job: null }; setDrafts((all) => [...all, p]); setSelected(p.id); }}>新增提示词</button><button className="btn-ghost" disabled={busy || !current} onClick={() => { const next = drafts.filter((p) => p.id !== selected); setDrafts(next); setSelected(next[0]?.id ?? ""); }}>移除此项（保存生效）</button></p>
