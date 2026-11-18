@@ -15,7 +15,7 @@
     },
     "claude": {
       "limit": 300,
-      "used": 4
+      "used": 9
     },
     "dsh-dxx-ds": {
       "limit": 1000,
@@ -465,6 +465,31 @@
     },
     {
       "at": "2026-11-18T07:10:46.552Z",
+      "provider": "claude",
+      "note": "WorkStudio explicit local OpenCodex model compatibility smoke"
+    },
+    {
+      "at": "2026-11-18T07:29:20.469Z",
+      "provider": "claude",
+      "note": "Fable 5.2 isolated adaptive-thinking wire diagnostic: responses-high"
+    },
+    {
+      "at": "2026-11-18T07:29:22.340Z",
+      "provider": "claude",
+      "note": "Fable 5.2 isolated adaptive-thinking wire diagnostic: chat-adaptive-high"
+    },
+    {
+      "at": "2026-11-18T07:30:07.343Z",
+      "provider": "claude",
+      "note": "Fable 5.2 isolated adaptive-thinking wire diagnostic: anthropic-adaptive-high"
+    },
+    {
+      "at": "2026-11-18T07:32:08.719Z",
+      "provider": "claude",
+      "note": "Fable 5.2 proper OpenCodex Anthropic adapter low-effort synthetic smoke"
+    },
+    {
+      "at": "2026-11-18T07:33:37.081Z",
       "provider": "claude",
       "note": "WorkStudio explicit local OpenCodex model compatibility smoke"
     }
