@@ -101,7 +101,7 @@ export function McpPage({ link }: { link: HostLink }) {
                   </button>
                 </span>
               </EntryLine>
-              {s.name === "jenkins-build" && <BuildJobCard link={link} />}
+              {(s.name === "BuildPackageMCP" || s.name === "jenkins-build") && <BuildJobCard link={link} />}
               </Fragment>
             );
           })}
