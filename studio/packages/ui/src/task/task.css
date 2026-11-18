@@ -211,6 +211,8 @@
 .task-head-actions { display: flex; align-items: center; gap: 6px; flex: none; }
 /* Codex-like head (2026-11-18): glyph-only buttons instead of labelled pills. */
 .task-head-actions .btn-ghost.small { width: 30px; height: 30px; padding: 0; gap: 0; font-size: 0; border-color: transparent; background: transparent; }
+/* ⋯ is a text glyph, not an svg: keep it readable while the labelled pills lose their words. */
+.task-head-actions .btn-ghost.small.icon-only { font-size: 15px; }
 .task-head-actions .btn-ghost.small:hover:not(:disabled) { border-color: transparent; background: var(--panel-raised); color: var(--text); }
 .task-head-actions .sidebar-toggle, .task-head-actions .sidebar-toggle[aria-pressed="true"] { position: relative; border-color: transparent; background: transparent; }
 .task-head-actions .sidebar-toggle[aria-pressed="true"] { color: var(--text); }
