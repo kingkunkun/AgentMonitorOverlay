@@ -218,15 +218,13 @@ export function ViewBar({
   view,
   scope,
   onView,
-  onNew,
-  search,
   disabled = false,
 }: {
   views: readonly AnyViewDef[];
   view: View | null;
   scope: Scope;
   onView(view: View): void;
-  onNew(): void;
+  onNew?: () => void;
   /** 搜索 (stage 14), left of "+ 新任务". */
   search?: ReactNode;
   disabled?: boolean;
@@ -248,10 +246,6 @@ export function ViewBar({
         })}
       </nav>
       <div className="spacer" />
-      {search}
-      <button type="button" className="btn-primary" onClick={onNew} disabled={disabled} title="新聊天（Ctrl N 打开快速开始）">
-        + 新聊天
-      </button>
     </div>
   );
 }

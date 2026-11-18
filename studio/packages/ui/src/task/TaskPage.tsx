@@ -404,7 +404,7 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
           />
         </div>
         <div className="task-head-actions">
-          {!task.archivedAt && <button type="button" className="btn-ghost small" aria-pressed={chatPins.has(task.id)} onClick={() => chatPins.toggle(task.id)} data-testid="task-pin">{chatPins.has(task.id) ? "取消置顶" : "置顶聊天"}</button>}
+          {!task.archivedAt && <button type="button" className="btn-ghost small with-icon" aria-pressed={chatPins.has(task.id)} aria-label={chatPins.has(task.id) ? "取消置顶聊天" : "置顶聊天"} title={chatPins.has(task.id) ? "取消置顶聊天" : "置顶聊天"} onClick={() => chatPins.toggle(task.id)} data-testid="task-pin"><svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M10.4 1.4l4.2 4.2-1.6 1.6-1.1-.5-3.2 3.2.2 2.3-1.3 1.3-2.6-2.6-2.9 2.9-1-1 2.9-2.9-2.5-2.6L3 4.9l2.3.2 3.2-3.2-.5-1.1z" /></svg></button>}
           {!task.archivedAt && !(copy && copy.state === "revoked") && (
             <button
               type="button"
