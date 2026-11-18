@@ -67,7 +67,7 @@ it("phone accounts are independent of the signed-in team account; chat/options/p
   expect((await client.post("/api/register", { name: "outside", password: "outside-password-123" })).status).toBe(403);
   expect((await client.ask("rt.list")).tasks).toContainEqual(expect.objectContaining({ taskId: task.id }));
   expect((await client.ask("rt.items", { sessionId: session.id })).items).toContainEqual(expect.objectContaining({ markdown: "手机应该看到的本机聊天" }));
-  expect((await client.ask("rt.presets", { sessionId: session.id })).presets).toHaveLength(2);
+  expect((await client.ask("rt.presets", { sessionId: session.id })).presets).toHaveLength(6);
   expect((await client.ask("rt.choices", { sessionId: session.id, all: true })).profiles).toContainEqual(expect.objectContaining({ profileId: "p" }));
   await client.ask("rt.options", { sessionId: session.id, options: { effort: "high", permission: "full-auto", fast: true } });
   expect(host.store.getSession(session.id)?.options).toMatchObject({ effort: "high", permission: "full-auto", fast: true });

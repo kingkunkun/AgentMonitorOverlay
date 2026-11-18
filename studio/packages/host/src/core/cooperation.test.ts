@@ -95,7 +95,7 @@ it("all-task sync applies only to an explicitly paired own-account device, and i
   expect(build).toHaveBeenCalledWith(session.id, "/打包");
   expect((await service.remote.grants.serve({ account: "other", device: "other" }, "rt.presets", { sessionId: session.id })).kind).toBe("error");
   const presets = await service.remote.grants.serve({ account: "owner", device: "phone" }, "rt.presets", { sessionId: session.id });
-  expect(presets.body).toMatchObject({ presets: [expect.objectContaining({ job: "ios" }), expect.objectContaining({ job: "android" })] });
+  expect(presets.body).toMatchObject({ presets: [expect.objectContaining({ job: "ios" }), expect.objectContaining({ job: "android" }), expect.objectContaining({ job: "ios_base" }), expect.objectContaining({ job: "ios_hotfix" }), expect.objectContaining({ job: "android_base" }), expect.objectContaining({ job: "android_hotfix" })] });
   expect(JSON.stringify(presets.body)).not.toContain("filePath");
   const archive = vi.spyOn(service.tasks, "archiveTask").mockResolvedValue(task);
   expect((await service.remote.grants.serve({ account: "other", device: "other" }, "rt.task-archive", { taskId: task.id })).kind).toBe("error");
