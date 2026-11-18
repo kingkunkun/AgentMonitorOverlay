@@ -11,11 +11,11 @@
     },
     "gpt": {
       "limit": 300,
-      "used": 6
+      "used": 7
     },
     "claude": {
       "limit": 300,
-      "used": 0
+      "used": 4
     },
     "dsh-dxx-ds": {
       "limit": 1000,
@@ -442,6 +442,31 @@
       "at": "2026-10-30T17:14:55.828Z",
       "provider": "deepseek",
       "note": "Android fixture Dxx-DS isolated remote smoke"
+    },
+    {
+      "at": "2026-11-18T07:04:00.766Z",
+      "provider": "gpt",
+      "note": "WorkStudio explicit local OpenCodex model compatibility smoke"
+    },
+    {
+      "at": "2026-11-18T07:04:04.762Z",
+      "provider": "claude",
+      "note": "WorkStudio explicit local OpenCodex model compatibility smoke"
+    },
+    {
+      "at": "2026-11-18T07:04:18.160Z",
+      "provider": "claude",
+      "note": "WorkStudio explicit local OpenCodex model compatibility smoke"
+    },
+    {
+      "at": "2026-11-18T07:06:11.733Z",
+      "provider": "claude",
+      "note": "WorkStudio local proxy Fable 5.2 reasoning wire compatibility"
+    },
+    {
+      "at": "2026-11-18T07:10:46.552Z",
+      "provider": "claude",
+      "note": "WorkStudio explicit local OpenCodex model compatibility smoke"
     }
   ]
 }

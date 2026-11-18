@@ -738,9 +738,11 @@ export class CodexRuntime extends RuntimeBase {
 
   /** For thread/resume: the session's identity header (takes effect when the server loads the thread again). */
   /** thread/resume's config: the AMO MCP identity header and the 自动压缩点. */
-  private identityConfig(sessionId: Id): { config: CodexConfig } {
+  private identityConfig(sessionId: Id): { modelProvider?: string; config: CodexConfig } {
     const ids = this.options.identities;
-    return { config: { ...codexAutoCompactConfig(this.store, this.store.getSession(sessionId)?.profileId), ...(ids ? McpIdentities.threadConfig(ids.tokenFor(sessionId)) : {}) } };
+    const session = this.store.getSession(sessionId);
+    const provider = session ? codexThreadParams(this.profile(session.profileId)).modelProvider : undefined;
+    return { ...(provider ? { modelProvider: provider } : {}), config: { ...codexAutoCompactConfig(this.store, session?.profileId), ...(ids ? McpIdentities.threadConfig(ids.tokenFor(sessionId)) : {}) } };
   }
 
   private async handleFor(profileId: Id): Promise<CodexServerHandle> {

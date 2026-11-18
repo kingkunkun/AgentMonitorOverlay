@@ -16,6 +16,8 @@ export interface CodexProviderDef {
   wireApi: "responses";
   /** Env var the key is passed through. */
   envKey: string;
+  /** A user-configured loopback gateway may require no API key; never send the ChatGPT login to it. */
+  auth?: "none";
   /** Model catalog file (absolute, or relative to packages/host/assets/codex), applied only on servers whose default is this provider. */
   catalog?: string;
 }
@@ -116,8 +118,12 @@ export function codexServerSpec(
       ...configArg(`model_providers.${id}.name`, def.name),
       ...configArg(`model_providers.${id}.base_url`, def.baseUrl),
       ...configArg(`model_providers.${id}.wire_api`, def.wireApi),
-      ...configArg(`model_providers.${id}.env_key`, def.envKey),
     );
+    if (def.auth === "none") {
+      configArgs.push("-c", `model_providers.${id}.requires_openai_auth=false`);
+      continue;
+    }
+    configArgs.push(...configArg(`model_providers.${id}.env_key`, def.envKey));
     const credentialId = profiles.find((p) => p.provider === id && p.credentialId)?.credentialId ?? (profile.provider === id ? profile.credentialId : undefined);
     if (!credentialId) continue;
     const secret = credentials.read(credentialId);
@@ -183,7 +189,7 @@ export function codexServerSpec(
 
   // Commands the agent runs inherit the server's environment; Codex 0.161 passed the provider keys and the MCP token
   // straight through (S4-09 review). Keep its default KEY/SECRET/TOKEN filter on and name ours explicitly.
-  const secrets = [...new Set([...[...used].map((id) => providers[id]!.envKey), AMO_MCP_TOKEN_ENV, ...mcpSecrets])].sort();
+  const secrets = [...new Set([...[...used].map((id) => providers[id]!.envKey).filter(Boolean), AMO_MCP_TOKEN_ENV, ...mcpSecrets])].sort();
   configArgs.push("-c", "shell_environment_policy.ignore_default_excludes=false", "-c", `shell_environment_policy.exclude=[${secrets.map(tomlString).join(",")}]`);
 
   return { profileId: profile.id, configArgs, env, missingCredentials };

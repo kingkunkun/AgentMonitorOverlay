@@ -6,6 +6,7 @@ import { claudeCodeStatus } from "../../runtime/claude/executable.js";
 import { ChannelError, balanceConfig, type ChannelRegistry } from "../../runtime/channels.js";
 import { listSiteModels } from "../../runtime/site-models.js";
 import { claudeEndpoint, codexEndpoint } from "../../runtime/endpoints.js";
+import { LOCAL_CODEX_PROXY } from "../../runtime/codex/local-proxy.js";
 import { localClaudeHome } from "../../runtime/claude/claude-login.js";
 import { HostError } from "../../core/shared.js";
 import { Feature } from "../../core/feature.js";
@@ -112,7 +113,7 @@ export class ChannelsFeature extends Feature {
     const p = this.requireProfile(profileId);
     if (p.custom) return null;
     if (p.runtime === "claude" && p.provider === "anthropic") return claudeEndpoint(this.options.localClaudeHome ?? localClaudeHome());
-    if (p.runtime === "codex" && !p.provider) return codexEndpoint(this.options.codexHome ?? (process.env.CODEX_HOME?.trim() || join(homedir(), ".codex")));
+    if (p.runtime === "codex" && (!p.provider || p.provider === LOCAL_CODEX_PROXY)) return codexEndpoint(this.options.codexHome ?? (process.env.CODEX_HOME?.trim() || join(homedir(), ".codex")));
     return null;
   }
 

@@ -301,6 +301,7 @@ describe("CodexRuntime", () => {
     const before = fake.calls.filter((c) => c.method === "thread/resume").length;
     await servers.ensure("p-ds");
     await until(() => fake.calls.filter((c) => c.method === "thread/resume").length > before, "resume after reconnect");
+      expect(fake.calls.filter((c) => c.method === "thread/resume").at(-1)?.params).toMatchObject({ modelProvider: "amo-ds" });
     await runtime.sendMessage(s.id, "after reconnect");
     await until(() => lastAgent(s.id)?.markdown === "FAKE: after reconnect", "reply after reconnect");
   });

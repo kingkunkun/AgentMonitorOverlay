@@ -450,7 +450,7 @@
     {
       "id": "runtime.codex",
       "label": "Codex runtime（codex app-server）",
-      "aliases": ["Codex", "CodexRuntime", "app-server", "CodexServerManager", "gen:codex", "codex 协议类型"],
+      "aliases": ["Codex", "CodexRuntime", "app-server", "CodexServerManager", "gen:codex", "codex 协议类型", "OpenCodex", "本机代理", "GPT-6.1 Sol"],
       "category": "runtime",
       "purpose": "Codex 会话：Studio 起用户装的 codex 的 app-server，走 JSON-RPC；协议类型从本机 codex 生成（protocol 包 `npm run gen:codex`）；每条命令都问（不开沙箱）。",
       "steps": [
@@ -459,11 +459,12 @@
       "anchors": [
         { "label": "CodexRuntime", "path": "studio/packages/host/src/runtime/codex/codex-runtime.ts", "anchor": "export class CodexRuntime" },
         { "label": "app-server 进程", "path": "studio/packages/host/src/runtime/codex/server-manager.ts", "anchor": "export class CodexServerManager" },
+        { "label": "本机 OpenCodex 路由适配", "path": "studio/packages/host/src/runtime/codex/local-proxy.ts", "anchor": "export function localCodexProxy" },
         { "label": "事件转会话行", "path": "studio/packages/host/src/runtime/codex/events.ts" },
         { "label": "生成协议类型", "path": "studio/packages/protocol/scripts/gen-codex.mjs" }
       ],
       "related": ["runtime.common", "studio.channels"],
-      "next": ["studio/plans/host-structure.md"]
+      "next": ["studio/plans/host-structure.md", "studio/docs/local-opencodex.md"]
     },
     {
       "id": "runtime.dsh",

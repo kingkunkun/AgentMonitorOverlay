@@ -21,6 +21,8 @@ import { shellHelpEnv } from "./runtime/agent-env.js";
 import { recordRole, roleCard, roleCardFor } from "./features/guide/role.js";
 import { McpIdentities } from "./mcp/identity.js";
 import { CodexServerManager } from "./runtime/codex/server-manager.js";
+import { localCodexProxy, LOCAL_CODEX_PROXY, profilesWithLocalProxy } from "./runtime/codex/local-proxy.js";
+import { codexHomeOf } from "./runtime/codex/desktop-tools.js";
 import { WindowsCredentialReader, type CredentialReader } from "./runtime/credentials.js";
 import { BUILTIN_BALANCES, BUILTIN_PROFILES, CODEX_PROVIDERS, type CodexProviderDef } from "./runtime/profiles.js";
 import { ChannelRegistry } from "./runtime/channels.js";
@@ -204,11 +206,12 @@ export async function startHost(options: StartHostOptions): Promise<RunningHost>
     if (credentials instanceof WindowsCredentialReader) await credentials.preload();
     // The built-in profiles plus the person's own channels (设置 → 模型). The list and the provider tables are changed
     // in place when a channel is added or edited, so every runtime below sees it at once.
+    const localProxy = options.profiles ? null : localCodexProxy(codexHomeOf(options.codexEnv ?? process.env));
     const channels = new ChannelRegistry({
       kv: store,
       credentials,
-      builtins: options.profiles ?? BUILTIN_PROFILES,
-      codexProviders: { ...(options.providers ?? CODEX_PROVIDERS) },
+      builtins: profilesWithLocalProxy(options.profiles ?? BUILTIN_PROFILES, localProxy),
+      codexProviders: { ...(options.providers ?? CODEX_PROVIDERS), ...(localProxy ? { [LOCAL_CODEX_PROXY]: localProxy } : {}) },
       claudeProviders: { ...(options.claudeProviders ?? BUILTIN_CLAUDE_PROVIDERS) },
       dshProviders: {},
       ...(options.profiles ? {} : { builtinBalance: BUILTIN_BALANCES }),

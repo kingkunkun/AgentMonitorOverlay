@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ProfileEndpoint } from "@amo-studio/protocol";
+import { localCodexProxy } from "./codex/local-proxy.js";
 
 // 问题 #14 (2026-11-03, the user): 设置 → 模型 shows where Claude 订阅 and GPT send their requests. Those two run on the
 // person's own Claude Code and Codex setup, and tools like ccswitch rewrite it (Claude: ~/.claude/settings.json's
@@ -103,6 +104,8 @@ export function codexEndpoint(home: string, env: NodeJS.ProcessEnv = process.env
   const model = pick("model");
   const modelPart = { model: model?.value ?? null, modelFrom: model?.from ?? null, ...(problem ? { problem } : {}) };
   const id = provider?.value ?? "openai";
+  const localProxy = localCodexProxy(home);
+  if (localProxy) return { ...base, ...modelPart, url: localProxy.baseUrl, from: `${file} 的 openai_base_url（WorkStudio OpenCodex 适配）` };
   const own = tables.get(`model_providers.${id}`);
   if (own) {
     const url = own.get("base_url");

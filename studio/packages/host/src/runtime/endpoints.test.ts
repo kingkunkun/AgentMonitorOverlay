@@ -60,6 +60,12 @@ describe("codexEndpoint", () => {
     expect(e).toMatchObject({ model: "gpt-5.5-codex" });
   });
 
+  it("shows the configured OpenCodex loopback route instead of the unrelated ChatGPT login", () => {
+    const e = codexEndpoint(dir({ ...chatgpt, "config.toml": 'model="gpt-6.1-sol"\nmodel_catalog_json="opencodex-catalog.json"\nopenai_base_url="http://127.0.0.1:10100/v1"\n' }), {});
+    expect(e).toMatchObject({ url: "http://127.0.0.1:10100/v1", model: "gpt-6.1-sol" });
+    expect(e.from).toContain("OpenCodex 适配");
+  });
+
   it("follows `profile = …` and quoted table names", () => {
     const toml = ['profile = "work"', 'model = "gpt-5.5"', '[profiles.work]', "model_provider = 'my-relay'", 'model = "o5"', '[model_providers."my-relay"]', "base_url = 'http://10.0.0.2:8080/v1'"].join("\n");
     const e = codexEndpoint(dir({ "config.toml": toml }), {});
