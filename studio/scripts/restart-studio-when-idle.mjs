@@ -46,8 +46,19 @@ async function activity() {
 }
 async function waitForIdle() {
   let quiet = 0;
+  const deadline = mode === "--build-when-idle" ? Infinity : Date.now() + 4 * 60 * 60 * 1000;
   while (quiet < 3) {
-    const busy = await activity();
+    if (Date.now() > deadline) throw new Error("Still busy after four hours");
+    let busy;
+    try {
+      busy = await activity();
+    } catch (err) {
+      if (mode !== "--build-when-idle" || (err.name !== "TimeoutError" && !(err instanceof TypeError && err.cause) && !(err.status >= 500))) throw err;
+      quiet = 0;
+      record("waiting-for-host", { lastCheckError: String(err) });
+      await pause(10000);
+      continue;
+    }
     quiet = Object.values(busy).every(n => n === 0) ? quiet + 1 : 0;
     record("waiting-for-idle", { busy });
     if (quiet < 3) await pause(quiet ? 2000 : 10000);
@@ -60,7 +71,6 @@ try {
     record("building");
     execFileSync("cmd.exe", ["/d", "/c", "npm run build"], { cwd: studio, windowsHide: true, stdio: "inherit" });
     record("built", { builtAt: new Date().toISOString() });
-    await waitForIdle();
   }
   const before = await api("/api/state");
   const backupDir = join(dataDir, `backup-before-downloads-${new Date().toISOString().replace(/[:.]/g, "-")}`);
@@ -114,8 +124,8 @@ try {
   const downloads = await api("/api/tool-downloads", "GET", undefined, next.url);
   const company = await api("/api/company", "GET", undefined, next.url);
   if (!company.agents?.some((a) => a.id === "company-platform")) throw new Error("Platform agent not loaded");
-  if (!downloads.running || !downloads.items.length) throw new Error("New download service unavailable");
-  if (!(await fetch(downloads.urls[0], { signal: AbortSignal.timeout(10000) })).ok) throw new Error("Download landing page unavailable");
+  if (expected.download && (!downloads.running || !downloads.items.length)) throw new Error("New download service unavailable");
+  if (downloads.running && !(await fetch(downloads.urls[0], { signal: AbortSignal.timeout(10000) })).ok) throw new Error("Download landing page unavailable");
   record("complete", { hostPid: next.pid, after: { tasks: after.tasks.length, sessions: after.sessions.length }, downloads: downloads.urls, companyLoaded: Boolean(company) });
 } catch (e) { record("failed", { error: String(e) }); process.exitCode = 1; }
 finally { if (existsSync(lock)) unlinkSync(lock); }

@@ -47,10 +47,17 @@ export function ComposerModelPicker({ models, model, label, effort, fast, disabl
           const rows = g.models.filter((m) => `${g.label} ${m.label} ${m.id} ${m.resolvedModel ?? ""}`.toLowerCase().includes(query.trim().toLowerCase()));
           if (query && !rows.length && !g.label.toLowerCase().includes(query.toLowerCase())) return null;
           return <div className="composer-model-group" role="group" aria-label={g.label || "当前渠道"} key={`${g.profileId}:${g.priority}`}>
-            {g.label && <div className="composer-model-group-title">{g.label}{g.profileId === profileId ? " · 当前" : ""}</div>}
+            {g.label && <div className="composer-model-group-title">{g.label}{g.profileId === profileId && g.models.some(m => m.id === model?.id) ? " · 当前" : ""}</div>}
             {g.loading && <p className="composer-popover-note">正在读取型号…</p>}
             {!g.loading && !g.models.length && <p className="composer-popover-note">暂时无法读取此渠道型号</p>}
-            {rows.map((m) => { const selected = (!groups || g.profileId === profileId) && m.id === model?.id; return <button type="button" role="option" key={m.id} aria-selected={selected} disabled={disabled || !!g.disabledReason} title={g.disabledReason ?? m.description} onClick={() => onProfileModel ? onProfileModel(g.profileId, m.id, m.label) : onModel(m.id, m.label)}><span>{m.label}{m.resolvedModel && !m.label.includes(m.resolvedModel) && <small className="model-wire-id">{m.resolvedModel}</small>}</span><span aria-hidden="true">{selected ? "✓" : ""}</span></button>; })}
+            {rows.map((m) => {
+              const selected = (!groups || g.profileId === profileId) && m.id === model?.id;
+              return <button type="button" role="option" key={m.id} aria-selected={selected} disabled={disabled || !!g.disabledReason}
+                title={g.disabledReason ?? m.description} onClick={() => onProfileModel ? onProfileModel(g.profileId, m.id, m.label) : onModel(m.id, m.label)}>
+                <span>{m.label}{m.resolvedModel && !m.label.includes(m.resolvedModel) && <small className="model-wire-id">{m.resolvedModel}</small>}</span>
+                <span aria-hidden="true">{selected ? "✓" : ""}</span>
+              </button>;
+            })}
           </div>;
         })}</div>
         {footer}
