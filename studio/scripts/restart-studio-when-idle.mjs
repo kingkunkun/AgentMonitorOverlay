@@ -6,7 +6,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { DatabaseSync, backup } from "node:sqlite";
 
 const [dataArg, hostArg, shellArg, downloadArg, mode] = process.argv.slice(2);
-if (!dataArg || !/^\d+$/.test(hostArg ?? "") || !/^\d+$/.test(shellArg ?? "") || !/^\d+$/.test(downloadArg ?? "")) throw new Error("Usage: restart-studio-when-idle.mjs <dataDir> <hostPid> <shellPid> <temporaryDownloadPid> [--check]");
+if (!dataArg || !/^\d+$/.test(hostArg ?? "") || !/^\d+$/.test(shellArg ?? "") || !/^\d+$/.test(downloadArg ?? "") || ![undefined, "--check", "--build-when-idle"].includes(mode)) throw new Error("Usage: restart-studio-when-idle.mjs <dataDir> <hostPid> <shellPid> <temporaryDownloadPid or 0> [--check | --build-when-idle]");
 const dataDir = resolve(dataArg), studio = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const expected = { host: Number(hostArg), shell: Number(shellArg), download: Number(downloadArg) };
 const json = (p) => JSON.parse(readFileSync(p, "utf8"));
@@ -22,12 +22,12 @@ function identity(pid) {
 }
 const original = json(join(dataDir, "host.json"));
 if (original.pid !== expected.host || json(join(dataDir, "shell.json")).pid !== expected.shell) throw new Error("Running Studio changed; restart cancelled");
-const shellIdentity = identity(expected.shell), downloadIdentity = identity(expected.download);
-if (!shellIdentity?.CommandLine?.includes("packages/app") || !downloadIdentity?.CommandLine?.includes("tool-downloads.mjs") || !downloadIdentity.CommandLine.includes("serve")) throw new Error("Unexpected process identity; restart cancelled");
+const shellIdentity = identity(expected.shell), downloadIdentity = expected.download ? identity(expected.download) : null;
+if (!shellIdentity?.CommandLine?.includes("packages/app") || (expected.download && (!downloadIdentity?.CommandLine?.includes("tool-downloads.mjs") || !downloadIdentity.CommandLine.includes("serve")))) throw new Error("Unexpected process identity; restart cancelled");
 const token = readFileSync(join(dataDir, "host-token"), "utf8").trim();
 async function api(path, method = "GET", body, base = original.url) {
   const res = await fetch(base + path, { method, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(10000) });
-  if (!res.ok) throw new Error(`${method} ${path}: ${res.status}`);
+  if (!res.ok) throw Object.assign(new Error(`${method} ${path}: ${res.status}`), { status: res.status });
   return res.json();
 }
 if (mode === "--check") {
@@ -35,18 +35,32 @@ if (mode === "--check") {
   console.log(JSON.stringify({ valid: true, host: health.pid, running: health.running, tasks: state.tasks.length, sessions: state.sessions.length, temporaryDownloads: expected.download }));
   process.exit(0);
 }
+async function activity() {
+  const [health, duty, builds, work] = await Promise.all(["/api/health", "/api/duty", "/api/build-job", "/api/company/work"].map(path => api(path)));
+  if (health.pid !== expected.host || json(join(dataDir, "host.json")).pid !== expected.host) throw new Error("Host changed while waiting");
+  return {
+    sessions: health.running, duty: duty.running.length,
+    builds: [...Object.values(builds.runs), builds.last].some(run => run && ["queued", "running", "unknown"].includes(run.status)) ? 1 : 0,
+    work: work.filter(item => ["dispatching", "running"].includes(item.status) || (item.status === "queued" && !item.manualStart)).length,
+  };
+}
+async function waitForIdle() {
+  let quiet = 0;
+  while (quiet < 3) {
+    const busy = await activity();
+    quiet = Object.values(busy).every(n => n === 0) ? quiet + 1 : 0;
+    record("waiting-for-idle", { busy });
+    if (quiet < 3) await pause(quiet ? 2000 : 10000);
+  }
+}
 writeFileSync(lock, String(process.pid), { flag: "wx" });
 try {
-  record("waiting-for-idle");
-  let quiet = 0;
-  const deadline = Date.now() + 4 * 60 * 60 * 1000;
-  while (quiet < 3) {
-    if (Date.now() > deadline) throw new Error("Still busy after four hours; no process was interrupted");
-    if (json(join(dataDir, "host.json")).pid !== expected.host) throw new Error("Host changed while waiting; restart cancelled");
-    const health = await api("/api/health");
-    if (health.pid !== expected.host) throw new Error("Host identity changed");
-    quiet = health.running === 0 ? quiet + 1 : 0;
-    await pause(2000);
+  await waitForIdle();
+  if (mode === "--build-when-idle") {
+    record("building");
+    execFileSync("cmd.exe", ["/d", "/c", "npm run build"], { cwd: studio, windowsHide: true, stdio: "inherit" });
+    record("built", { builtAt: new Date().toISOString() });
+    await waitForIdle();
   }
   const before = await api("/api/state");
   const backupDir = join(dataDir, `backup-before-downloads-${new Date().toISOString().replace(/[:.]/g, "-")}`);
@@ -55,7 +69,15 @@ try {
   try { await backup(db, join(backupDir, "studio.db")); } finally { db.close(); }
   record("backup-ready", { backupDir, before: { tasks: before.tasks.length, sessions: before.sessions.length } });
   // The Host repeats the busy check atomically; a new task starting meanwhile refuses this shutdown.
-  await api("/api/shutdown", "POST", { interrupt: false });
+  for (;;) {
+    await waitForIdle();
+    try {
+      await api("/api/shutdown", "POST", { interrupt: false });
+      break;
+    } catch (err) {
+      if (err.status !== 409) throw err;
+    }
+  }
   for (let i = 0; i < 120 && alive(expected.host); i++) await pause(500);
   if (alive(expected.host)) throw new Error("Host did not exit gracefully; no force-kill performed");
   for (let i = 0; i < 30 && alive(expected.shell); i++) await pause(500);
@@ -66,7 +88,7 @@ try {
     for (let i = 0; i < 20 && alive(expected.shell); i++) await pause(250);
     if (alive(expected.shell)) throw new Error("Old shell did not exit; no duplicate shell started");
   }
-  if (alive(expected.download)) {
+  if (expected.download && alive(expected.download)) {
     const current = identity(expected.download);
     if (current?.CreationDate !== downloadIdentity.CreationDate || current?.CommandLine !== downloadIdentity.CommandLine) throw new Error("Temporary service identity changed");
     process.kill(expected.download);

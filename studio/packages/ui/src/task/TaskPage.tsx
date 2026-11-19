@@ -477,7 +477,7 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
               收回 {g.name} 的授权
             </button>
           ))}
-          {!task.archivedAt && !copy && (
+          {(task.description || (!task.archivedAt && !copy)) && (
             <button
               type="button"
               role="menuitem"
@@ -487,7 +487,7 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
               }}
               data-testid="task-describe"
             >
-              {task.description ? "编辑说明…" : "添加说明…"}
+              {task.archivedAt || copy ? "查看说明…" : task.description ? "编辑说明…" : "添加说明…"}
             </button>
           )}
           {!copy && canBindTodo() && (
@@ -565,17 +565,7 @@ export function TaskPage({ link, task, sessions, tasks = [task], workspaces, top
         </div>
       )}
 
-      {task.description && (
-        <div className="task-desc" data-testid="task-description">
-          <p className="task-desc-text">{task.description}</p>
-          {!task.archivedAt && !copy && (
-            <button type="button" className="link-btn" onClick={() => setDescribing(true)}>
-              编辑
-            </button>
-          )}
-        </div>
-      )}
-      {describing && <DescriptionDialog link={link} task={task} onClose={() => setDescribing(false)} />}
+      {describing && <DescriptionDialog link={link} task={task} readOnly={!!task.archivedAt || !!copy} onClose={() => setDescribing(false)} />}
       {todoBind && <TodoBindDialog view={todoBind.view} target={todoBind.target} onClose={() => setTodoBind(null)} />}
       <PlanBanner link={link} plans={plans} tasks={tasks} workspaces={workspaces} profiles={profiles} />
       <RelayBanner link={link} relays={relays} tasks={tasks} />

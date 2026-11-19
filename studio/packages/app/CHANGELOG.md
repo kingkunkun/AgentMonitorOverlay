@@ -4,6 +4,8 @@
 
 ## 下一版
 
+- 新聊天和会话里的型号列表按原生 GPT、原生 Claude、Gorilla、其他渠道排列。Claude 使用当前账号的 Claude Code 型号目录，可按具体版本或完整 ID 搜索。任务说明收到任务的「⋯」菜单里。
+
 - 打包窗口改为 6 个 Job 按钮（iOS/安卓的整包、热更母包、热更资源），整包和母包需再点一次确认，不同 Job 可同时打包；设置 → MCP 的 jenkins-build 卡片下也有这组按钮。
 - 打包支持直接用 Jenkins 登录密码（或 API Token），自动带 CSRF crumb；与 jenkins-build MCP 共用本机凭据，任一处登录两边都能用。
 - 构建失败经中转 @WNY 通知（以 WorkStudio AI 身份，附日志末尾）；未登录中转、中转关闭或本机就是 WNY 时改为本机弹出打包窗口提示。

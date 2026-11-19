@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { createSdkMcpServer, forkSession, query, renameSession, tool, type HookCallbackMatcher, type HookEvent, type SDKMessage, type SDKUserMessage, type SlashCommand as SdkSlashCommand } from "@anthropic-ai/claude-agent-sdk";
 import { inTurn, parseSlashCommand, type ApprovalDecision, type Attachment, type ChatSettings, type Id, type ModelOption, type ModelProfile, type ProfileChoices, type QuestionReply, type Session, type SessionItem, type SessionOptions, type UserDelivery, type SlashCommandList, type SlashCommandResult, type Workspace, type AccountUsage, type McpApply, type OutsideSessionList, type OutsideSessionPreview } from "@amo-studio/protocol";
@@ -473,6 +473,8 @@ export class ClaudeRuntime extends RuntimeBase implements SessionRuntimeApi {
     let asking = this.askingModels.get(cacheKey);
     if (!asking) {
       const env = claudeEnv(profile, this.options.providers, this.options.credentials, this.newHome(profile), this.options.baseEnv);
+      // Local-login sessions may never have needed Studio's private directory. A missing cwd prevents the CLI from spawning.
+      mkdirSync(this.options.claudeHome, { recursive: true });
       asking = askModels(profile, env, this.options.claudeHome).finally(() => this.askingModels.delete(cacheKey));
       this.askingModels.set(cacheKey, asking);
     }

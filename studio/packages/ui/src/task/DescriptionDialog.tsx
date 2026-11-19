@@ -6,11 +6,12 @@ import { Modal } from "../lib/Modal.js";
 // A task's description (2026-10-17, stage 16): what it is about, shown on its canvas card and task page. Written here,
 // from the canvas's right-click menu or the task page, or by an agent (MCP task_describe).
 
-export function DescriptionDialog({ link, task, onClose }: { link: HostLink; task: Task; onClose(): void }) {
+export function DescriptionDialog({ link, task, readOnly = false, onClose }: { link: HostLink; task: Task; readOnly?: boolean; onClose(): void }) {
   const [text, setText] = useState(task.description ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const save = async () => {
+    if (readOnly) return;
     setBusy(true);
     setError(null);
     try {
@@ -24,11 +25,11 @@ export function DescriptionDialog({ link, task, onClose }: { link: HostLink; tas
   return (
     <Modal className="description-dialog" label="任务说明" testId="description-dialog" onClose={onClose}>
       <span className="modal-title">任务说明 · {task.title || "未命名任务"}</span>
-      <span className="settings-hint">这个任务要做什么、目标和范围，几行就够。显示在画布卡片和任务页上，agent 也能读到和改写。</span>
       <textarea
         className="side-textarea"
         aria-label="说明内容"
         value={text}
+        readOnly={readOnly}
         rows={7}
         maxLength={TASK_DESCRIPTION_MAX}
         autoFocus
@@ -46,14 +47,14 @@ export function DescriptionDialog({ link, task, onClose }: { link: HostLink; tas
         </span>
       )}
       <div className="description-dialog-actions">
-        <span className="settings-hint">Ctrl+Enter 保存{text.trim() ? "" : "；留空即删除说明"}</span>
+        {!readOnly && <span className="settings-hint">Ctrl+Enter 保存{text.trim() ? "" : "；留空即删除说明"}</span>}
         <span className="spacer" />
         <button type="button" className="btn-ghost" onClick={onClose}>
-          取消
+          {readOnly ? "关闭" : "取消"}
         </button>
-        <button type="button" className="btn-primary" disabled={busy || text.trim() === (task.description ?? "")} onClick={() => void save()} data-testid="description-save">
+        {!readOnly && <button type="button" className="btn-primary" disabled={busy || text.trim() === (task.description ?? "")} onClick={() => void save()} data-testid="description-save">
           保存
-        </button>
+        </button>}
       </div>
     </Modal>
   );

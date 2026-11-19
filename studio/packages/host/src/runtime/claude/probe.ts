@@ -33,10 +33,11 @@ export const CLAUDE_FAST_NOTE = "Claude 的 fast mode：输出更快；按额外
 
 /** Claude Code's model list for the account. */
 export function askModels(profile: ModelProfile, env: Record<string, string | undefined>, cwd: string): Promise<ModelOption[]> {
-  return asking({ cwd, env, settingSources: [], permissionMode: "default" }, async (q) => {
+  return asking({ cwd, env, settingSources: ["user"], tools: [], strictMcpConfig: true, persistSession: false, permissionMode: "default" }, async (q) => {
     const list = await withTimeout(q.supportedModels(), 20_000);
     return list.map((m) => ({
       id: m.value,
+      ...(m.resolvedModel ? { resolvedModel: m.resolvedModel } : {}),
       label: m.value === "default" ? `默认（${m.resolvedModel ?? m.displayName}）` : m.displayName,
       ...(m.description ? { description: m.description } : {}),
       efforts: m.supportedEffortLevels ?? [],

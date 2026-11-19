@@ -105,6 +105,8 @@ export interface OutsideSessionPreview {
 export interface ModelOption {
   id: string;
   label: string;
+  /** Exact wire ID when the CLI resolves a selectable alias. Keep id for the CLI's selection semantics. */
+  resolvedModel?: string;
   description?: string;
   /** Reasoning efforts this model takes (CLI values: low, medium, high, xhigh, max…); empty when it has none. */
   efforts: string[];

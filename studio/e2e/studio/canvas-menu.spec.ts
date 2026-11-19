@@ -126,11 +126,12 @@ test("canvas right-click: descriptions, colour marks, 连依赖, notes and group
   await menu.getByTestId("menu-fit").click();
   await expect(page.getByTestId("zoom-label")).not.toHaveText("");
 
-  // The task page shows the description, and edits it from ⋯.
+  // The description is available from ⋯ without taking up space above the chat.
   await card("装甲车").dblclick();
-  await expect(page.getByTestId("task-description")).toHaveText(/迁移装甲车和弹射闪电/);
+  await expect(page.getByTestId("task-description")).toHaveCount(0);
   await page.getByTestId("task-more").click();
   await page.getByTestId("task-describe").click();
+  await expect(dialog.getByLabel("说明内容")).toHaveValue(/迁移装甲车和弹射闪电/);
   await dialog.getByLabel("说明内容").fill("");
   await dialog.getByTestId("description-save").click();
   await expect(page.getByTestId("task-description")).toHaveCount(0);
