@@ -31,12 +31,17 @@ export interface SlashCommand {
   local?: "open-review";
 }
 
+export interface CodexModeState {
+  plan: boolean;
+  /** null: no goal; absent: the native goal could not be read. */
+  goal?: { objective: string; status: string; tokenBudget: number | null; tokensUsed: number } | null;
+  goalError?: string;
+}
+
 export interface SlashCommandList {
   commands: SlashCommand[];
   /** Native Codex controls for this WorkStudio-owned thread. */
-  codex?: {
-    plan: boolean;
-    goal?: { objective: string; status: string; tokenBudget: number | null; tokensUsed: number } | null;
+  codex?: CodexModeState & {
     apps: Array<{ id: string; name: string }>;
     unavailable: string[];
   };
@@ -47,6 +52,7 @@ export interface SlashCommandList {
 /** What running a command did: a turn started (or was queued / steered), or it finished at once. */
 export interface SlashCommandResult {
   mode: "start" | "steer" | "queue" | "done";
+  codexMode?: CodexModeState;
 }
 
 /** The tail of a background command's output, read from the file the CLI writes it to. */
@@ -94,6 +100,8 @@ export function parseSlashCommand(text: string): { name: string; args: string } 
 
 /** CLI features in the conversation (stage 12, S12-E): / commands, compaction, background commands. */
 export interface CliRoutes {
+  /** Only the selected Studio thread's modes; independent of Git, apps and the skills catalog. */
+  "GET /api/sessions/:id/codex-mode": { req: void; res: CodexModeState };
   /** The `/` menu for a session: Studio's commands, the runtime's (Claude Code's list, Codex review), its skills. */
   "GET /api/sessions/:id/commands": { req: void; res: SlashCommandList };
   /**

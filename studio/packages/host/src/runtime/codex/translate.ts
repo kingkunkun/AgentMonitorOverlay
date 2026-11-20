@@ -43,7 +43,7 @@ export async function translationEndpoint(profile: ModelProfile, providers: Reco
   return { url: CHATGPT_DEFAULT_URL, headers };
 }
 
-interface ResponseOutput { status?: string; output?: Array<{ type: string; role?: string; content?: Array<{ type: string; text?: string }> }> }
+interface ResponseOutput { status?: string; usage?: { input_tokens?: number; output_tokens?: number; input_tokens_details?: { cached_tokens?: number } }; output?: Array<{ type: string; role?: string; content?: Array<{ type: string; text?: string }> }> }
 function completed(response: ResponseOutput | undefined): string {
   if (response?.status !== "completed" || !Array.isArray(response.output)) throw problem("翻译未完成，请重试");
   const text = response.output.filter(m => m.type === "message" && m.role === "assistant")
@@ -53,9 +53,15 @@ function completed(response: ResponseOutput | undefined): string {
 }
 
 /** One text request, no agent turn, tools, files, or conversation history. Never return a partial stream as a draft. */
-export async function translateText(endpoint: Endpoint, model: string, input: TranslationRequest, fetcher = fetch): Promise<string> {
+export async function translateText(endpoint: Endpoint, model: string, input: TranslationRequest, fetcher = fetch, onUsage?: (input: number, cached: number, output: number) => void): Promise<string> {
   if (!isTranslationModel(model)) throw problem("翻译需要 GPT 模型");
   const language = input.target === "en" ? "English" : "Simplified Chinese";
+  function meter(response?: ResponseOutput) {
+    const u = response?.usage;
+    if (!u || !Number.isSafeInteger(u.input_tokens) || !Number.isSafeInteger(u.output_tokens) || u.input_tokens! < 0 || u.output_tokens! < 0) return;
+    const cached = u.input_tokens_details?.cached_tokens ?? 0;
+    onUsage?.(u.input_tokens!, Number.isSafeInteger(cached) ? Math.max(0, Math.min(cached, u.input_tokens!)) : 0, u.output_tokens!);
+  }
   try {
     const res = await fetcher(`${endpoint.url.replace(/\/+$/, "")}/responses`, {
       method: "POST", redirect: "error", signal: AbortSignal.timeout(90_000),
@@ -84,13 +90,18 @@ export async function translateText(endpoint: Endpoint, model: string, input: Tr
             const data = event.split(/\r?\n/).filter(l => l.startsWith("data:")).map(l => l.slice(5).trimStart()).join("\n");
             if (!data || data === "[DONE]") continue;
             const packet = JSON.parse(data) as { type?: string; response?: ResponseOutput };
+            if (["response.completed", "response.failed", "response.incomplete"].includes(packet.type ?? "")) meter(packet.response);
             if (packet.type === "response.completed") return completed(packet.response);
             if (["error", "response.failed", "response.incomplete"].includes(packet.type ?? "")) throw problem("模型未能完成翻译，请重试或更换翻译模型");
           }
         }
         if (done) break;
       }
-      if (!stream) return completed(JSON.parse(buffer) as ResponseOutput);
+      if (!stream) {
+        const response = JSON.parse(buffer) as ResponseOutput;
+        meter(response);
+        return completed(response);
+      }
       throw problem("翻译连接提前结束，请重试");
     } finally { await reader.cancel().catch(() => {}); }
   } catch (err) {

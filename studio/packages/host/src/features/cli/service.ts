@@ -62,6 +62,12 @@ export class CliFeature extends Feature<"gitReview"> {
     return { ...runtime, commands: [...studio, ...runtime.commands.filter((c) => !taken.has(c.name))] };
   }
 
+  async codexMode(sessionId: Id) {
+    const session = this.requireSession(sessionId);
+    if (session.runtime !== "codex" || !session.runtimeRef || !this.runtime.codexMode) throw new HostError("bad_request", "此会话不支持 Codex 模式");
+    return this.wrap(() => this.runtime.codexMode!(sessionId));
+  }
+
   async runCommand(sessionId: Id, body: unknown): Promise<SlashCommandResult> {
     const session = this.requireSession(sessionId);
     if (session.archivedAt) throw new HostError("read_only", "archived sessions cannot run commands");

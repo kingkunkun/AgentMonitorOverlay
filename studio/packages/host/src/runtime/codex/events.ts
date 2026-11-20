@@ -86,6 +86,17 @@ export class CodexEvents {
     switch (n.method) {
       case "thread/started":
         return this.onThreadStarted(handle, n.params.thread);
+      case "thread/goal/updated":
+      case "thread/goal/cleared": {
+        const s = this.core.findByThread(n.params.threadId);
+        if (!s || s.profileId !== handle.profileId) return;
+        const st = this.core.sessionState(s.id), status = n.method === "thread/goal/cleared" ? null : n.params.goal.status;
+        if (st.goalStatus !== status) {
+          st.goalStatus = status;
+          this.core.emitTransient({ type: "codex.goal-changed", sessionId: s.id });
+        }
+        return;
+      }
       case "account/rateLimits/updated":
         return this.onRateLimits(handle.profileId, n.params.rateLimits);
       case "thread/name/updated": {

@@ -263,6 +263,7 @@ export async function startFakeAppServer(options: FakeAppServerOptions = {}): Pr
   const speedTiers = options.speedTiers ?? defaultProvider === "openai";
   const script = options.script ?? defaultTurnScript;
   const threads = new Map<string, FakeThread>();
+  const goals = new Map<string, { objective: string; status: string; tokenBudget: number | null; tokensUsed: number }>();
   const clients = new Set<Client>();
   const pending = new Map<number, PendingApproval>();
   const calls: FakeAppServer["calls"] = [];
@@ -514,6 +515,16 @@ export async function startFakeAppServer(options: FakeAppServerOptions = {}): Pr
       notify(t.id, "thread/started", { thread: threadView(t) });
       return threadResponse(t);
     },
+    "thread/goal/get": (_client, params) => ({ goal: goals.get(requireThread(params).id) ?? null }),
+    "thread/goal/set": (_client, params) => {
+      const id = requireThread(params).id, old = goals.get(id);
+      if (params.origin !== "user" || (!old && !params.objective)) throw rpcError(-32602, "missing objective or origin");
+      const goal = { objective: String(params.objective ?? old!.objective), status: String(params.status ?? "active"), tokenBudget: typeof params.tokenBudget === "number" ? params.tokenBudget : old?.tokenBudget ?? null, tokensUsed: 0 };
+      goals.set(id, goal);
+      notify(id, "thread/goal/updated", { threadId: id, turnId: null, goal });
+      return { goal };
+    },
+    "thread/goal/clear": (_client, params) => { const id = requireThread(params).id; goals.delete(id); notify(id, "thread/goal/cleared", { threadId: id }); return {}; },
     "thread/resume": (client, params) => {
       const t = requireThread(params);
       if (!t.turns.length) throw rpcError(-32600, `no rollout found for thread id ${t.id}`);

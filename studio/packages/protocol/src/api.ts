@@ -47,6 +47,8 @@ export interface StateSnapshot {
 
 export interface NewSessionInput {
   profileId: Id;
+  /** Explicit objective for a new local Codex chat. Set on its own thread before the first message. */
+  initialGoal?: string;
   /** Topic sessions only: one of the topic's projects; the common space when omitted. Task sessions use the task's. */
   workspaceId?: Id;
   /** First user message; when present the session starts a turn right away. */
@@ -514,18 +516,25 @@ export interface DshCheck {
   kind?: "desktop" | "clone";
 }
 
-/**
- * 设置 → 统计 (2026-10-27): tokens per local day and model, counted again from every turn's usage each time it is asked
- * for. A model is a profile (a channel: Claude, GPT, GLM, a third-party one); subagents and delegated sessions count
- * under the model they ran on. `input` here is what was not read from the cache (the runtimes' input minus cachedInput).
- */
+/** Only counters from the Host computer. Account quotas (GET /api/usage) have a different scope and unit. */
+export type TokenSource = "studio" | "codex" | "claude" | "claude-shared";
+export interface TokenSourceReport {
+  source: TokenSource;
+  status: "available" | "partial" | "unavailable";
+  note: string;
+  total: number;
+}
 export interface TokenStatsDay {
-  /** YYYY-MM-DD in the Host's time zone, from the turn's start. */
+  /** Local YYYY-MM-DD, or "" for counters known only over their lifetime. Never move these to the latest day. */
   date: string;
+  source: TokenSource;
   profileId: string;
   input: number;
   cached: number;
   output: number;
+  /** A native meter can report a total without a breakdown. It is neither input nor output. */
+  unclassified: number;
+  /** WorkStudio turns only; a meter snapshot or a translation is not a turn. */
   turns: number;
 }
 
@@ -540,6 +549,8 @@ export interface TokenStatsModel {
 
 export interface TokenStats {
   generatedAt: Timestamp;
+  total: number;
+  sources: TokenSourceReport[];
   /** How long counting took. */
   ms: number;
   /** Turns with usage that were counted. */
@@ -847,6 +858,8 @@ export type HostEvent = { seq: number } & (
   /** The 中转 sessions this computer's sessions sent, all of them, when one changed. */
   | { type: "teamthreads.changed"; threads: import("./entities.js").TeamThread[] }
   | { type: "session.upserted"; session: Session }
+  /** Transient invalidation for the thread's native goal. Its text stays out of the broadcast. */
+  | { type: "codex.goal-changed"; sessionId: Id }
   | { type: "item.appended"; item: SessionItem }
   /** Full replacement, e.g. a finished agent message or an approval that changed state. */
   | { type: "item.updated"; item: SessionItem }

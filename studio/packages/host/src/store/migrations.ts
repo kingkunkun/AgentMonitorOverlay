@@ -381,4 +381,14 @@ export const MIGRATIONS: readonly Migration[] = [
   CREATE TABLE company_evolution (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, agent_id TEXT NOT NULL REFERENCES company_agents(id), body TEXT NOT NULL);
   CREATE INDEX company_evolution_agent ON company_evolution(agent_id, seq);
   `,
+  // 28: local metering only. Keys are one-way digests of native meter IDs; no account, path, prompt or transcript.
+  `
+  CREATE TABLE device_token_meters (
+    kind TEXT NOT NULL, meter TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(kind, meter)
+  ) WITHOUT ROWID;
+  CREATE TABLE studio_request_usage (
+    day TEXT NOT NULL, model TEXT NOT NULL, input INTEGER NOT NULL, cached INTEGER NOT NULL, output INTEGER NOT NULL,
+    PRIMARY KEY(day, model)
+  ) WITHOUT ROWID;
+  `,
 ];

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { DEFAULT_TRANSLATION_MODEL, isTranslationModel, TRANSLATION_PROFILE } from "@amo-studio/protocol";
+import { compareModelVersions, DEFAULT_TRANSLATION_MODEL, isTranslationModel, TRANSLATION_PROFILE } from "@amo-studio/protocol";
 import { call, type HostLink } from "../host/client.js";
 import { useProfileChoices } from "../lib/choices.js";
 
@@ -12,7 +12,7 @@ export function TranslationSection({ link }: { link: HostLink }) {
     void call(link, "GET /api/settings/translation").then(s => { if (live) setModel(s.model); }, e => { if (live) setError(String(e)); });
     return () => { live = false; };
   }, [link]);
-  const models = choices?.models.filter(m => isTranslationModel(m.id)).sort((a, b) => Number(a.id.startsWith("gorilla/")) - Number(b.id.startsWith("gorilla/"))) ?? [];
+  const models = choices?.models.filter(m => isTranslationModel(m.id)).sort((a, b) => Number(a.id.startsWith("gorilla/")) - Number(b.id.startsWith("gorilla/")) || compareModelVersions(a, b)) ?? [];
   const missing = model !== null && !models.some(m => m.id === model);
   const save = async (next: string) => {
     setSaving(true); setError("");

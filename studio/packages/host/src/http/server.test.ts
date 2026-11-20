@@ -113,6 +113,15 @@ describe("Host API", () => {
     await until(async () => (await lastAgentText(session.id)) === "FAKE: hello there", "reply");
   });
 
+  it("starts a goal draft on its own thread before sending the first message exactly once", async () => {
+    const { session } = await ok<{ session: Session }>("POST", "/api/tasks", { firstSession: { profileId: "p-ds", options: { plan: true }, initialGoal: "finish the fixture", text: "first message" } });
+    await until(async () => (await lastAgentText(session.id)) === "FAKE: first message", "first goal reply");
+    expect(await ok("GET", `/api/sessions/${session.id}/codex-mode`)).toMatchObject({ plan: false, goal: { objective: "finish the fixture", status: "active" } });
+    const wire = servers.fakes.get("p-ds")!.calls.filter(c => c.method === "thread/goal/set" || c.method === "turn/start");
+    expect(wire.map(c => c.method)).toEqual(["thread/goal/set", "turn/start"]);
+    expect(wire[1]?.params).toMatchObject({ threadId: session.runtimeRef, collaborationMode: { mode: "default" } });
+  });
+
   it("files a task without a project in the common space and keeps its sessions in the task's project", async () => {
     const a = await ok<Workspace>("POST", "/api/workspaces", { path: join(root, "alpha") });
     const b = await ok<Workspace>("POST", "/api/workspaces", { path: join(root, "beta") });

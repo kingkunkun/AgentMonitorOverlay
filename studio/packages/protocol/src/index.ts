@@ -2,6 +2,7 @@ export * from "./entities.js";
 export * from "./session-tree.js";
 export * from "./examples.js";
 export * from "./api.js";
+export * from "./metering.js";
 export * from "./canvas.js";
 export * from "./scope.js";
 export * from "./canvas-layout.js";

@@ -43,9 +43,13 @@ function seed(store: Store) {
 describe("Store", () => {
   it("applies migrations once", () => {
     const path = tempDbPath();
-    expect(makeStore(path).schemaVersion()).toBe(27);
+    const first = makeStore(path);
+    expect(first.schemaVersion()).toBe(28);
+    first.db.prepare("INSERT INTO studio_request_usage VALUES (?,?,?,?,?)").run("2026-01-01", "fixture", 3, 2, 1);
     open.pop()!.close();
-    expect(makeStore(path).schemaVersion()).toBe(27);
+    const reopened = makeStore(path);
+    expect(reopened.schemaVersion()).toBe(28);
+    expect(reopened.db.prepare("SELECT input,cached,output FROM studio_request_usage").get()).toMatchObject({ input: 3, cached: 2, output: 1 });
   });
 
   it("refuses data a newer Studio migrated, says so for the person, and leaves the file alone (2026-10-28)", () => {

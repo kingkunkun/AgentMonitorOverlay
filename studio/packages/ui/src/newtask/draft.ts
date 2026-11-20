@@ -20,6 +20,8 @@ export interface TaskDraft {
   pick: ModelPick;
   /** Effort and permissions; the model comes from `pick`. */
   options: Omit<SessionOptions, "model">;
+  /** The person chose to use the first message as this new Codex thread's objective. */
+  asGoal?: boolean;
   /** 主控 (stage 16): the task coordinates its topic (or project). */
   lead?: boolean;
   /**
@@ -48,6 +50,7 @@ function load(profiles: readonly ModelProfile[]): TaskDraft {
       topicId: topicsVisible() && typeof d.topicId === "string" ? d.topicId : null,
       pick,
       options: d.options && typeof d.options === "object" ? d.options : {},
+      ...(d.asGoal && profiles.find(p => p.id === pick.profileId)?.runtime === "codex" ? { asGoal: true } : {}),
       ...(d.lead === true ? { lead: true } : {}),
       ...(d.refs && typeof d.refs === "object" ? { refs: cleanRefs(d.refs) } : {}),
     };
@@ -111,7 +114,7 @@ export function useTaskDraft(profiles: readonly ModelProfile[]) {
     const next = repick(profiles, draft.pick.profileId);
     if (next === null) return;
     setDraft((cur) => {
-      const fixed = { ...cur, pick: { profileId: next, model: null }, options: {} };
+      const fixed = { ...cur, pick: { profileId: next, model: null }, options: {}, asGoal: false };
       save(fixed);
       return fixed;
     });
@@ -119,7 +122,7 @@ export function useTaskDraft(profiles: readonly ModelProfile[]) {
   const update = useCallback((patch: Partial<TaskDraft>) => {
     setDraft((cur) => {
       const next = { ...cur, ...patch, ...(!topicsVisible() ? { topicId: null } : {}) };
-      if (patch.pick && patch.pick.profileId !== cur.pick.profileId) next.options = {};
+      if (patch.pick && patch.pick.profileId !== cur.pick.profileId) { next.options = {}; next.asGoal = false; }
       save(next);
       return next;
     });
@@ -141,8 +144,10 @@ export function useTaskDraft(profiles: readonly ModelProfile[]) {
  * with the first message (not when only filing).
  */
 /** `resumeFrom` (接续已有会话, 2026-11-05): the outside Claude session the first session goes on from; the text may be empty then. */
-export async function submitDraft(link: HostLink, draft: TaskDraft, file: boolean, onCanvas = false, attachments: readonly string[] = [], resumeFrom?: string, subsessions?: readonly SubsessionSetup[]): Promise<{ task: Task; session: Session | null }> {
+export async function submitDraft(link: HostLink, draft: TaskDraft, file: boolean, onCanvas = false, attachments: readonly string[] = [], resumeFrom?: string, subsessions?: readonly SubsessionSetup[], objective = draft.text.trim()): Promise<{ task: Task; session: Session | null }> {
   const text = draftText(draft);
+  if (draft.asGoal && file) throw new Error("目标需要在会话中运行，请直接发送，或切换成执行模式再放入待办。");
+  if (draft.asGoal && (!objective || objective.length > 4000)) throw new Error("请输入 1–4000 字的目标。");
   // 子会话设定 named in the first message (2026-11-05): kept by the Host for the task's first session.
   const setups = subsessions ?? (draft.refs ? subSessionSetups(draft.text, new Map(Object.entries(draft.refs))) : []);
   const options: SessionOptions = { ...draft.options, ...(draft.pick.model ? { model: draft.pick.model } : {}) };
@@ -154,7 +159,7 @@ export async function submitDraft(link: HostLink, draft: TaskDraft, file: boolea
     // 放进待办 (2026-11-05): the sentence is kept on the task for its first session; it used to be cut to the title.
     ...(file
       ? { firstMessage: text }
-      : { firstSession: { profileId: draft.pick.profileId, ...(text ? { text } : {}), ...(Object.keys(options).length ? { options } : {}), ...(attachments.length ? { attachments: [...attachments] } : {}), ...(resumeFrom ? { resumeFrom } : {}), ...(setups.length ? { subsessions: [...setups] } : {}) } }),
+      : { firstSession: { profileId: draft.pick.profileId, ...(text ? { text } : {}), ...(draft.asGoal ? { initialGoal: objective } : {}), ...(Object.keys(options).length ? { options } : {}), ...(attachments.length ? { attachments: [...attachments] } : {}), ...(resumeFrom ? { resumeFrom } : {}), ...(setups.length ? { subsessions: [...setups] } : {}) } }),
   });
   if (!file) {
     rememberProfile(draft.pick.profileId);

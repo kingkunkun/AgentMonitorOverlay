@@ -23,6 +23,8 @@ export interface ResponseMap {
   "thread/list": codex.v2.ThreadListResponse;
   "thread/loaded/list": codex.v2.ThreadLoadedListResponse;
   "thread/name/set": codex.v2.ThreadSetNameResponse;
+  "thread/goal/get": codex.v2.ThreadGoalGetResponse;
+  "thread/goal/set": codex.v2.ThreadGoalSetResponse;
   "turn/start": codex.v2.TurnStartResponse;
   "turn/steer": codex.v2.TurnSteerResponse;
   "turn/interrupt": codex.v2.TurnInterruptResponse;

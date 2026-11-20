@@ -26,6 +26,29 @@ async function openTask(s: Studio, workspace: string, firstSession: Record<strin
 const reply = (page: Page, text: string) => expect(page.getByTestId("msg-agent").filter({ hasText: text }).first()).toBeVisible({ timeout: 60_000 });
 const idle = (page: Page) => expect(page.getByTestId("run-status")).toHaveCount(0, { timeout: 60_000 });
 
+test("the current Codex mode opens directly; cancelling a goal keeps plan and leaving it preserves the objective", async () => {
+  studio = await launchStudio();
+  const { page } = studio;
+  await openTask(studio, studio.workspace("alpha"), { profileId: "codex-mock", options: { plan: true } });
+  const mode = (label: string) => page.getByRole("button", { name: label, exact: true });
+  await mode("切换模式：计划模式").click();
+  await mode("目标模式").click();
+  await page.getByLabel("目标内容").fill("完成示例检查");
+  await mode("取消").click();
+  await mode("切换模式：计划模式").click();
+  await mode("执行模式").click();
+  await mode("切换模式：执行模式").click();
+  await mode("目标模式").click();
+  await page.getByLabel("目标内容").fill("完成示例检查");
+  await mode("设置目标").click();
+  await mode("切换模式：目标模式").click();
+  await mode("执行模式").click();
+  await mode("切换模式：执行模式").click();
+  await mode("目标模式").click();
+  await expect(page.getByLabel("目标内容")).toHaveValue("完成示例检查");
+  await expect(page.getByRole("dialog", { name: "目标模式" })).toContainText("已暂停");
+});
+
 async function send(page: Page, text: string) {
   const composer = page.getByLabel("输入消息");
   await composer.fill(text);

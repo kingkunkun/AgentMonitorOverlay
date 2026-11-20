@@ -7,6 +7,15 @@ const invoke = (res: Response) => {
   return { fetcher, result: translateText({ url: "http://localhost:10000/v1" }, "gpt-6.2-sol", { target: "en", text: "请检查构建。" }, fetcher) };
 };
 const reply = { status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Check the build." }] }] };
+it("meters a direct translation just once from its terminal response and does not invent missing usage", async () => {
+  const usage = { input_tokens: 70, input_tokens_details: { cached_tokens: 40 }, output_tokens: 10 };
+  for (const response of [Response.json({ ...reply, usage }), new Response('data: '+JSON.stringify({type:"response.completed",response:{ ...reply, usage }})+'\n\n', { headers: { "content-type": "text/event-stream" } }), Response.json(reply)]) {
+    const present = (await response.clone().text()).includes("input_tokens");
+    const meter = vi.fn();
+    await translateText({url:"http://localhost"}, "gpt-6.2-sol", {target:"en",text:"示例"}, vi.fn().mockResolvedValue(response), meter);
+    expect(meter.mock.calls).toEqual(present ? [[70,40,10]] : []);
+  }
+});
 it("issues exactly one tool-free Responses request and reads only a finished assistant message", async () => {
   const { fetcher, result } = invoke(Response.json(reply));
   expect(await result).toBe("Check the build.");

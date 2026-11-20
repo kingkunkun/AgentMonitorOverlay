@@ -11,6 +11,7 @@ import { useSettings } from "../settings/useSettings.js";
 import { nextEffort, pickLabel } from "../chat/pickers.js";
 import { FastUsageHint } from "../chat/FastUsageHint.js";
 import { ComposerModelPicker } from "../chat/ComposerModelPicker.js";
+import { ComposerModePicker } from "../chat/CodexModePicker.js";
 import { PermissionPicker } from "../chat/PermissionPicker.js";
 import { SketchDialog } from "../chat/SketchDialog.js";
 import { DraftTranslation } from "../chat/Translation.js";
@@ -83,15 +84,17 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
   const [drawer, setDrawer] = useState(false);
   const [modelPopup, setModelPopup] = useState(false);
   const [addMenu, setAddMenu] = useState(false);
+  const [modeMenu, setModeMenu] = useState(false);
+  const isCodex = profiles.find(p => p.id === draft.pick.profileId)?.runtime === "codex";
   const [addingFiles, setAddingFiles] = useState(false);
   const [sketching, setSketching] = useState(false);
   const addBox = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (!addMenu) return;
-    const close = (e: Event) => { if (e instanceof KeyboardEvent ? e.key === "Escape" : !addBox.current?.contains(e.target as Node)) setAddMenu(false); };
+    if (!addMenu && !modeMenu) return;
+    const close = (e: Event) => { if (e instanceof KeyboardEvent ? e.key === "Escape" : !addBox.current?.contains(e.target as Node)) { setAddMenu(false); setModeMenu(false); } };
     window.addEventListener("mousedown", close); window.addEventListener("keydown", close);
     return () => { window.removeEventListener("mousedown", close); window.removeEventListener("keydown", close); };
-  }, [addMenu]);
+  }, [addMenu, modeMenu]);
   const draftProfiles = pickable(profiles, draft.pick.profileId);
   const draftChoices = useChoicesFor(link, modelPopup ? draftProfiles.map((p) => p.id) : []);
   const [projectPicker, setProjectPicker] = useState(false);
@@ -174,7 +177,7 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
       const images = attach.images.flatMap((i) => (i.id ? [i.id] : []));
       const setups = draft.refs ? subSessionSetups(draft.text, new Map(Object.entries(draft.refs))) : [];
       const { refs: _refs, ...rest } = draft;
-      const created = await submitDraft(link, { ...rest, title: "", lead: false, text, ...(resume && !rest.title.trim() ? { title: resume.title } : {}) }, file, onCanvas, images, resume?.id, setups);
+      const created = await submitDraft(link, { ...rest, title: "", lead: false, text, ...(resume && !rest.title.trim() ? { title: resume.title } : {}) }, file, onCanvas, images, resume?.id, setups, draft.text.trim());
       setResume(null);
       attach.reset();
       reset({ projectId: draft.projectId, topicId: draft.topicId });
@@ -333,7 +336,7 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
               value={draft.text}
               rows={3}
               aria-label="第一句话"
-              placeholder="向 WorkStudio 提问，输入 # 使用预设任务，@ 引用项目或文件"
+              placeholder={draft.asGoal ? "写下希望 Codex 持续完成的目标，发送后开始" : "向 WorkStudio 提问，输入 # 使用预设任务，@ 引用项目或文件"}
               onChange={(e) => {
                 update({ text: e.target.value });
                 mentions.track(e.target);
@@ -351,14 +354,14 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
             <MentionList mentions={mentions} />
             <div className="cbar">
               <div className="draft-add-tools" ref={addBox}>
-                <button type="button" className="composer-tools-trigger" aria-label="添加" aria-expanded={addMenu} disabled={busy} onClick={() => setAddMenu(!addMenu)}>+</button>
+                <button type="button" className="composer-tools-trigger" aria-label="添加" aria-expanded={addMenu} disabled={busy} onClick={() => { setModeMenu(false); setAddMenu(!addMenu); }}>+</button>
                 {addMenu && <div className="composer-popover composer-add-menu" role="dialog" aria-label="添加"><div className="composer-popover-heading">添加</div>
                   <button type="button" onClick={() => { setAddMenu(false); setAddingFiles(true); }}>文件和文件夹</button>
-                  {profiles.find((p) => p.id === draft.pick.profileId)?.runtime === "codex" && <button type="button" aria-pressed={draft.options.plan ?? false} onClick={() => { update({ options: { ...draft.options, plan: !draft.options.plan } }); setAddMenu(false); }}>计划模式 <small>{draft.options.plan ? "已开启" : "开启计划模式"}</small></button>}
+                  {isCodex && <button type="button" onClick={() => { setAddMenu(false); setModeMenu(true); }}>切换模式 <small>执行、计划或目标</small></button>}
                   <button type="button" onClick={() => { setAddMenu(false); setSketching(true); }}>绘图 <small>绘制草图</small></button>
                 </div>}
+                {isCodex && <ComposerModePicker mode={draft.asGoal ? "goal" : draft.options.plan ? "plan" : "execute"} open={modeMenu} onOpen={on => { setAddMenu(false); setModeMenu(on); }} disabled={busy} onPick={m => { update({ asGoal: m === "goal", options: { ...draft.options, plan: m === "plan" } }); setModeMenu(false); input.current?.focus(); }} note="选择目标模式后，发送的第一句话也会作为本次目标。" />}
               </div>
-              {draft.options.plan && profiles.find((p) => p.id === draft.pick.profileId)?.runtime === "codex" && <span className="composer-mode-badge">计划模式</span>}
               <DraftTranslation link={link} input={input} text={draft.text} disabled={busy} onReplace={text => update({ text })} />
               <HashPresetButton link={link} onPick={(text) => update({ text: `${text}${draft.text.trim() ? `\n\n${draft.text}` : ""}` })} />
               <button type="button" className="round-btn attach" aria-label="添加图片或文件" title="添加图片或文件（也可以粘贴或拖进来）" onClick={() => picker.current?.click()}>

@@ -4,6 +4,7 @@ import { parseRemoteProfileId, AUTO_COMPACT_MAX, AUTO_COMPACT_MIN, MAX_PROJECT_G
 import { localClaudeHome, localClaudeSignedIn } from "../../runtime/claude/claude-login.js";
 import { readAutoCompact, readAutoCompactProfiles, writeAutoCompact, writeAutoCompactProfiles } from "../../runtime/compact.js";
 import { readShellHelp, SHELL_HELP_KEY } from "../../runtime/agent-env.js";
+import { compareModelVersions } from "@amo-studio/protocol";
 import { applyModelPrefs, readModelPrefs, writeModelPrefs } from "../../core/model-prefs.js";
 import { newId } from "../../store/store.js";
 import type { CredentialStore } from "../../runtime/credentials.js";
@@ -344,7 +345,8 @@ export class ConfigFeature extends Feature<"claudeAccounts" | "scratchpad"> {
     if (parseRemoteProfileId(profileId)) return { profileId, models: [], permissions: [], defaultPermission: "", source: "builtin" };
     if (!this.profiles.some((p) => p.id === profileId)) throw new HostError("not_found", `profile ${profileId} not found`);
     const choices = await this.wrap(() => this.runtime.choices(profileId));
-    return applyModelPrefs(choices, readModelPrefs(this.store)[profileId]);
+    const ordered = { ...choices, models: [...choices.models].sort(compareModelVersions) };
+    return applyModelPrefs(ordered, readModelPrefs(this.store)[profileId]);
   }
 
   /** Quota use of the subscription profiles (GPT login, Claude token), in profile order. */

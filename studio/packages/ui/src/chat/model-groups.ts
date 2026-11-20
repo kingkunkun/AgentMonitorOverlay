@@ -1,4 +1,4 @@
-import type { ModelOption } from "@amo-studio/protocol";
+import { compareModelVersions, type ModelOption } from "@amo-studio/protocol";
 
 export interface ComposerModelGroup { profileId: string; label: string; models: readonly ModelOption[]; loading?: boolean; disabledReason?: string }
 
@@ -21,7 +21,7 @@ export function orderedModelGroups(groups: readonly ComposerModelGroup[]) {
     }
     if (!buckets.size) buckets.set(rank(group), []);
     return [...buckets].map(([priority, models]) => ({
-      ...group, priority, models,
+      ...group, priority, models: models.sort(compareModelVersions),
       label: priority === 2 && !/\bgorilla\b/i.test(group.label) ? (group.label ? `Gorilla · ${group.label}` : "Gorilla") : group.label,
     }));
   }).sort((a, b) => a.priority - b.priority);

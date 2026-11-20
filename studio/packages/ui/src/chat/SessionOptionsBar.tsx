@@ -12,13 +12,14 @@ import { PermissionIcon, PermissionMenu, permissionView } from "./PermissionPick
 import { DSH_FULL_ACCESS, SandboxHint } from "../settings/SandboxHint.js";
 import { SessionMcpTray, useSessionMcp } from "../mcp/SessionMcp.js";
 import { CodexAddMenu } from "./CodexAddMenu.js";
+import { SessionModePicker } from "./CodexModePicker.js";
 
 // Under the composer: what the session runs with — model, effort, permissions — each one click away
 // (design/ui-directions/new-task.html, "会话中切换"). Clicking the model or the permissions opens that group above the
 // composer. Same-account changes retain the runtime session; another channel continues this task in a new session
 // with WorkStudio text carried on the next send. Codex applies same-channel changes next turn, Claude at once.
 
-type Tray = "model" | "permission" | "tools" | "mcp" | null;
+type Tray = "model" | "permission" | "tools" | "mcp" | "mode" | null;
 
 export function SessionOptionsBar({
   link,
@@ -147,7 +148,8 @@ export function SessionOptionsBar({
         <PermissionMenu permissions={choices.permissions} value={permission?.id} disabled={disabled || busy} onPick={setPermission} />
         <SandboxHint link={link} workspaceId={session.workspaceId} active={session.runtime === "dsh" && (session.options.permission ?? choices.defaultPermission) === "workspace-write"} onUseFull={() => setPermission(DSH_FULL_ACCESS)} />
       </div>}
-      {session.runtime === "codex" && <CodexAddMenu key={session.id} link={link} session={session} open={tray === "tools"} disabled={disabled} onClose={() => setTray(null)} onFiles={onFiles} onSketch={onSketch} onSkill={onSkill}>
+      {session.runtime === "codex" && <SessionModePicker key={`mode:${session.id}`} link={link} session={session} open={tray === "mode"} onOpen={on => setTray(on ? "mode" : null)} disabled={disabled || busy} />}
+      {session.runtime === "codex" && <CodexAddMenu key={session.id} link={link} session={session} open={tray === "tools"} disabled={disabled} onClose={() => setTray(null)} onModes={() => setTray("mode")} onFiles={onFiles} onSketch={onSketch} onSkill={onSkill}>
         <div className="composer-popover-heading">工具</div>
         <button type="button" data-testid="switch-mcp" onClick={() => { mcp.refresh(); setTray("mcp"); }}>MCP{mcp.state ? ` · ${mcpOn} 个已启用` : ""}<span aria-hidden="true">›</span></button>
         {mine.map((p) => <button type="button" key={p.id} disabled={disabled || busy} onClick={() => void apply(p.options, `已换成预设「${p.name}」`)}>{p.name}</button>)}

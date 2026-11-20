@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { inTurn, type ApprovalDecision, type Attachment, type Id, type ModelOption, type ModelProfile, type ProfileChoices, type QuestionReply, type Session, type SessionOptions, type SlashCommand, type SlashCommandList, type SlashCommandResult, type UserDelivery, type Workspace, type AccountUsage, type codex } from "@amo-studio/protocol";
+import { inTurn, type ApprovalDecision, type Attachment, type CodexModeState, type Id, type ModelOption, type ModelProfile, type ProfileChoices, type QuestionReply, type Session, type SessionOptions, type SlashCommand, type SlashCommandList, type SlashCommandResult, type UserDelivery, type Workspace, type AccountUsage, type codex } from "@amo-studio/protocol";
 import type { Store } from "../../store/store.js";
 import { codexThreadParams, profileGone, type CodexConfig } from "../profiles.js";
 import { McpIdentities } from "../../mcp/identity.js";
@@ -14,6 +14,7 @@ import { CodexEvents } from "./events.js";
 import { newSessionState, type CodexCore, type SessionState } from "./state.js";
 import { mcpSkippedNotice } from "../mcp-launch.js";
 import { CodexCompanyTools, companyToolsUnavailable } from "./company-tools.js";
+import { RpcError } from "./rpc-client.js";
 
 export { codexRetry, codexUsage, fastTier, reviewTarget } from "./account.js";
 export { describePlan, describeReview, describeTool, inputQuestions } from "./describe.js";
@@ -72,6 +73,7 @@ export class CodexRuntime extends RuntimeBase {
   private readonly skillCache = new Map<string, { at: number; skills: CodexSkill[] }>();
   private readonly companyTools = new CodexCompanyTools();
   private readonly startingTurns = new Map<Id, number>();
+  private readonly modeEdits = new Map<Id, Promise<void>>();
   private readonly asks: CodexAsks;
   private readonly events: CodexEvents;
 
@@ -161,8 +163,9 @@ export class CodexRuntime extends RuntimeBase {
 
   /** `extra`: more input (a skill); `again`: the row of a message sent again (重新发送), reused instead of a new one. */
   private async send(sessionId: Id, text: string, images: readonly Attachment[], extra: readonly codex.v2.UserInput[], options: SendOptions = {}, again?: Id): Promise<{ mode: "start" | "steer" }> {
+    const handle = await this.handleFor(this.writable(sessionId).profileId);
     const session = this.writable(sessionId);
-    const handle = await this.handleFor(session.profileId);
+    if (this.modeEdits.has(sessionId)) throw Object.assign(new Error("正在切换对话模式，请稍后再发送"), { code: "conflict" });
     const st = this.sessionState(sessionId);
     // Capability discovery may have yielded while the person started work. A company assignment must never
     // become a steer into that turn; also cover turn/start before its turn/started notification arrives.
@@ -266,6 +269,8 @@ export class CodexRuntime extends RuntimeBase {
    * 2026-11-02, the user: a message waiting when 停止 is pressed is sent, not lost (as the Claude Code CLI does too).
    */
   private async afterTurn(sessionId: Id): Promise<void> {
+    const changing = this.modeEdits.get(sessionId);
+    if (changing) { await changing; return this.afterTurn(sessionId); }
     const st = this.sessionState(sessionId);
     const left = [...st.sent].filter(([, m]) => m.kind === "steer");
     if (!left.length) return;
@@ -468,19 +473,92 @@ export class CodexRuntime extends RuntimeBase {
 
   // ---- CLI features (stage 12, S12-E) -------------------------------------------------------------------------------
 
+  private async readGoal(session: Session) {
+    const handle = await this.handleFor(session.profileId);
+    return (await handle.client.request("thread/goal/get", { threadId: session.runtimeRef! }, { timeoutMs: 8000 })).goal;
+  }
+
+  private async changeMode(session: Session, name: string, args: string): Promise<SlashCommandResult> {
+    const id = session.id, threadId = session.runtimeRef!;
+    const conflict = (message: string) => Object.assign(new Error(message), { code: "conflict" });
+    const invalid = (message: string) => Object.assign(new Error(message), { code: "bad_request" });
+    const idle = () => {
+      if (this.sessionState(id).activeTurnId || inTurn(this.writable(id).status) || this.startingTurns.has(id)) throw conflict("请等待当前回复或审批结束后更改目标");
+    };
+    if (this.modeEdits.has(id)) throw conflict("另一次模式切换尚未完成");
+    let unlock!: () => void;
+    this.modeEdits.set(id, new Promise<void>(resolve => { unlock = resolve; }));
+    try {
+      let plan = session.options.plan;
+      let goal: CodexModeState["goal"];
+      if (name === "plan") {
+        if (args && args !== "on" && args !== "off") throw invalid("计划模式参数只能是 on 或 off");
+        plan = args ? args === "on" : !plan;
+        // Old servers without goals can still switch collaboration modes. A transient read failure, however, is
+        // not proof that a goal is absent: don't report a successful exit while it might still be driving work.
+        try { goal = await this.readGoal(session); }
+        catch (err) {
+          if (!(err instanceof RpcError && (err.code === -32601 || /goals? (?:feature )?(?:is |are )?(?:disabled|not enabled)/i.test(err.message)))) throw err;
+        }
+        if (goal?.status === "active") {
+          const { client } = await this.handleFor(session.profileId);
+          idle();
+          goal = (await client.request("thread/goal/set", { threadId, origin: "user", status: "paused" })).goal;
+        }
+      } else {
+        idle();
+        const { client } = await this.handleFor(session.profileId);
+        idle();
+        if (name === "goal-clear") {
+          await client.request("thread/goal/clear", { threadId });
+          goal = null;
+        } else {
+          const activating = name !== "goal-pause";
+          const params: codex.v2.ThreadGoalSetParams = { threadId, origin: "user", status: activating ? "active" : "paused" };
+          if (name === "goal" || name === "goal-set") {
+            let value: { objective?: unknown; tokenBudget?: unknown };
+            try { value = name === "goal-set" ? JSON.parse(args) : { objective: args }; } catch { throw invalid("目标格式无效"); }
+            if (typeof value?.objective !== "string" || !value.objective.trim() || value.objective.length > 4000) throw invalid("请输入 1–4000 字的目标");
+            params.objective = value.objective.trim();
+            if (value.tokenBudget !== undefined) {
+              if (!Number.isSafeInteger(value.tokenBudget) || Number(value.tokenBudget) <= 0) throw invalid("Token 预算必须是正整数");
+              params.tokenBudget = Number(value.tokenBudget);
+            }
+          }
+          goal = (await client.request("thread/goal/set", params)).goal;
+          if (activating) plan = false;
+        }
+      }
+      // Change the local next-turn setting only after the native mutation succeeds; keep concurrent model/permission edits.
+      const current = this.requireSession(id);
+      if (current.options.plan !== plan) this.updateSession(id, { options: { ...current.options, plan } });
+      return { mode: "done", codexMode: { plan: plan === true, ...(goal !== undefined ? { goal } : {}) } };
+    } finally { this.modeEdits.delete(id); unlock(); }
+  }
+
+  async codexMode(sessionId: Id): Promise<CodexModeState> {
+    const session = this.requireSession(sessionId);
+    try {
+      const goal = await this.readGoal(session);
+      return { plan: this.requireSession(sessionId).options.plan === true, goal };
+    } catch (err) {
+      return { plan: this.requireSession(sessionId).options.plan === true, goalError: `目标暂不可用：${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+
   /**
    * Codex has no command line in app-server: its `/` commands are requests. Offered: review mode (review/start) and the
    * project's skills (skills/list); `compact` is Studio's own and maps to thread/compact/start.
    */
   async listCommands(sessionId: Id): Promise<SlashCommandList> {
     const session = this.requireSession(sessionId);
-    const native: NonNullable<SlashCommandList["codex"]> = { plan: session.options.plan === true, apps: [], unavailable: [] };
     const handle = await this.handleFor(session.profileId);
     const [goal, apps] = await Promise.allSettled([
-      handle.client.request("thread/goal/get", { threadId: session.runtimeRef! }, { timeoutMs: 8000 }),
+      this.readGoal(session),
       handle.client.request("app/installed", { threadId: session.runtimeRef! }, { timeoutMs: 8000 }),
     ]);
-    if (goal.status === "fulfilled") native.goal = (goal.value as codex.v2.ThreadGoalGetResponse).goal;
+    const native: NonNullable<SlashCommandList["codex"]> = { plan: this.requireSession(sessionId).options.plan === true, apps: [], unavailable: [] };
+    if (goal.status === "fulfilled") native.goal = goal.value;
     else native.unavailable.push(`目标暂不可用：${String(goal.reason)}`);
     if (apps.status === "fulfilled") native.apps = (apps.value as codex.v2.AppsInstalledResponse).apps.filter((a) => a.enabled && a.callable).map((a) => ({ id: a.id, name: a.runtimeName || a.id }));
     else native.unavailable.push(`应用暂不可用：${String(apps.reason)}`);
@@ -526,26 +604,7 @@ export class CodexRuntime extends RuntimeBase {
   async runCommand(sessionId: Id, name: string, args: string): Promise<SlashCommandResult> {
     const session = this.writable(sessionId);
     const st = this.sessionState(sessionId);
-    if (["plan", "goal", "goal-set", "goal-pause", "goal-resume", "goal-clear"].includes(name)) {
-      if (st.activeTurnId || inTurn(session.status)) throw Object.assign(new Error("请等待当前回复或审批结束后切换模式或目标"), { code: "conflict" });
-      if (name === "plan") {
-        if (args && args !== "on" && args !== "off") throw Object.assign(new Error("计划模式参数只能是 on 或 off"), { code: "bad_request" });
-        const on = args ? args === "on" : session.options.plan !== true;
-        this.updateSession(session.id, { options: { ...session.options, plan: on } });
-        return { mode: "done" };
-      }
-      const handle = await this.handleFor(session.profileId);
-      if (name === "goal-clear") await handle.client.request("thread/goal/clear", { threadId: session.runtimeRef! });
-      else if (name === "goal-pause" || name === "goal-resume") await handle.client.request("thread/goal/set", { threadId: session.runtimeRef!, origin: "user", status: name === "goal-pause" ? "paused" : "active" });
-      else {
-        const value = name === "goal-set" ? JSON.parse(args) as { objective?: unknown; tokenBudget?: unknown } : { objective: args };
-        if (!value || typeof value.objective !== "string" || !value.objective.trim() || value.objective.length > 4000) throw Object.assign(new Error("请输入 1–4000 字的目标"), { code: "bad_request" });
-        const budget = value.tokenBudget;
-        if (budget !== undefined && (!Number.isSafeInteger(budget) || Number(budget) <= 0)) throw Object.assign(new Error("Token 预算必须是正整数"), { code: "bad_request" });
-        await handle.client.request("thread/goal/set", { threadId: session.runtimeRef!, origin: "user", objective: value.objective.trim(), status: "active", ...(budget === undefined ? {} : { tokenBudget: Number(budget) }) });
-      }
-      return { mode: "done" };
-    }
+    if (["plan", "goal", "goal-set", "goal-pause", "goal-resume", "goal-clear"].includes(name)) return this.changeMode(session, name, args);
     if (name === "app") {
       const { id, text } = JSON.parse(args) as { id: string; text: string };
       if (typeof id !== "string" || typeof text !== "string" || !text.trim()) throw Object.assign(new Error("请选择应用并填写要求"), { code: "bad_request" });
@@ -683,11 +742,18 @@ export class CodexRuntime extends RuntimeBase {
    */
   private async collaborationMode(session: Session) {
     if (session.options.plan === undefined) return {};
-    const choices = await this.choices(session.profileId);
-    const model = choices.models.find((m) => m.id === session.options.model) ?? choices.models.find((m) => m.isDefault) ?? choices.models[0];
-    if (!model) throw new Error("读不到 Codex 模型，无法设置计划模式");
+    const profile = this.profile(session.profileId);
+    let id = session.options.model || profile.model;
+    let effort = session.options.effort ?? (id === profile.model ? profile.reasoningEffort : undefined);
+    // Never switch a picked model to some other catalog entry just to leave plan mode.
+    if (!id) {
+      const { models } = await this.choices(session.profileId);
+      const m = models.find(m => m.isDefault) ?? models[0];
+      if (!m) throw new Error("读不到此会话的 Codex 模型，请在输入框选择模型后再发送。");
+      id = m.id; effort ??= m.defaultEffort;
+    }
     // Experimental field omitted by the stable protocol generator; passed through as a typed object spread.
-    return { collaborationMode: { mode: session.options.plan ? "plan" : "default", settings: { model: model.id, reasoning_effort: session.options.effort ?? model.defaultEffort ?? null, developer_instructions: null } } };
+    return { collaborationMode: { mode: session.options.plan ? "plan" : "default", settings: { model: id, reasoning_effort: effort ?? null, developer_instructions: null } } };
   }
 
   private turnOptions(options: SessionOptions) {

@@ -8,6 +8,7 @@ import type { CodexServerHandle } from "./server-manager.js";
 
 export interface SessionState {
   activeTurnId: string | null;
+  goalStatus?: string | null;
   /** codex item id -> our item id */
   items: Map<string, Id>;
   /** streaming text per codex item id (agent messages, reasoning) */

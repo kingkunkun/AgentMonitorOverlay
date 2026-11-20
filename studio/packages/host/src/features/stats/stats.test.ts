@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -9,6 +10,7 @@ import { FakeServers } from "../../runtime/codex/fake-servers.test-support.js";
 import { HostService } from "../../service.js";
 import { Store } from "../../store/store.js";
 import { localDate } from "./service.js";
+import { reconcileCodex } from "./ledger.js";
 
 // 设置 → 统计 (2026-10-27): tokens per day and model, from the turns.
 
@@ -63,9 +65,10 @@ describe("token stats", () => {
     turn(claude.id, day2); // no usage (interrupted before any call): not counted
     turn(claude.id, day2, { input: 0, cachedInput: 0, output: 0 });
 
-    const stats = host.stats.tokens();
+    const stats = await host.stats.tokens();
     expect(stats.turns).toBe(6);
-    expect(stats.days).toEqual([
+    expect(stats.days.every(d => d.source === "studio" && d.unclassified === 0)).toBe(true);
+    expect(stats.days).toMatchObject([
       { date: "2026-10-26", profileId: "p-ds", input: 900, cached: 600, output: 70, turns: 2 },
       { date: "2026-10-27", profileId: "ch-deleted", input: 10, cached: 0, output: 1, turns: 1 },
       { date: "2026-10-27", profileId: "p-claude", input: 500, cached: 1500, output: 100, turns: 1 },
@@ -79,8 +82,54 @@ describe("token stats", () => {
     expect(Date.parse(stats.generatedAt)).not.toBeNaN();
   });
 
+  it("unions local meters with Studio, charges native children once, excludes remote copies and keeps lifetime gaps out of today", async () => {
+    host.options.meterPaths = { codex: root, claude: root, claudeConfig: join(root, "test-claude.json") };
+    const ws = host.projects.addWorkspace({ path: join(root, "alpha") });
+    const task = (await host.tasks.createTask({ title: "用量", workspaceId: ws.id })).task;
+    const ds = session(task.id, ws.id, "p-ds"), cs = session(task.id, ws.id, "claude-subscription"), remote = session(task.id, ws.id, "remote-copy");
+    const ownClaude = "aaaaaaaa-0000-4000-8000-000000000001", otherClaude = "aaaaaaaa-0000-4000-8000-000000000002";
+    store.db.prepare("UPDATE sessions SET runtime_ref=? WHERE id=?").run("studio-thread", ds.id);
+    store.db.prepare("UPDATE sessions SET runtime_ref=? WHERE id=?").run(ownClaude, cs.id);
+    store.db.prepare("UPDATE sessions SET runtime='remote' WHERE id=?").run(remote.id);
+    const when = new Date(2026,8,12,10), date = localDate(when.toISOString())!;
+    turn(ds.id, when.toISOString(), { input: 90, cachedInput: 70, output: 10 });
+    turn(cs.id, when.toISOString(), { input: 42, cachedInput: 30, output: 8 });
+    turn(remote.id, when.toISOString(), { input: 9000, cachedInput: 0, output: 0 });
+    const db = new DatabaseSync(join(root, "state_5.sqlite"));
+    db.exec("CREATE TABLE threads (id TEXT, tokens_used INTEGER, created_at INTEGER, updated_at INTEGER, originator TEXT, title TEXT); CREATE TABLE thread_spawn_edges(parent_thread_id TEXT,child_thread_id TEXT)");
+    const ts = when.getTime()/1000, ins = db.prepare("INSERT INTO threads VALUES (?,?,?,?,?,?)");
+    ins.run("studio-thread", 120, ts, ts, null, "private-transcript-marker");
+    ins.run("its-child", 10, ts, ts, null, "private-transcript-marker");
+    db.exec("INSERT INTO thread_spawn_edges VALUES ('studio-thread','its-child')");
+    ins.run("standalone", 200, ts-86400, ts, null, "private-transcript-marker");
+    db.close();
+    const receipt = (id: string, input: number) => ({ lastSessionId: id, lastTotalInputTokens: input, lastTotalCacheCreationInputTokens: 2, lastTotalCacheReadInputTokens: 30, lastTotalOutputTokens: 8, lastStartTime: ts*1000, lastDuration: 1000 });
+    writeFileSync(host.options.meterPaths.claudeConfig, JSON.stringify({ account: "private-account-marker", projects: { "private-project-marker": receipt(ownClaude, 10), other: receipt(otherClaude, 20) } }));
+    writeFileSync(join(root, "stats-cache.json"), JSON.stringify({ lastComputedDate: date, modelUsage: { test: { inputTokens: 45, outputTokens: 55, cacheCreationInputTokens: 10, cacheReadInputTokens: 50 } } }));
+    store.db.prepare("INSERT INTO studio_request_usage VALUES(?,?,?,?,?)").run(date, "gpt-6.2-sol", 3, 5, 2);
+    const stats = await host.stats.tokens();
+    expect(stats.sources.map(s => [s.source,s.total])).toEqual([["studio",190],["codex",200],["claude",60],["claude-shared",50]]);
+    expect(stats.total).toBe(500);
+    expect(stats.turns).toBe(2);
+    expect(stats.days.find(d => d.source === "codex")).toMatchObject({ date: "", unclassified: 200, turns: 0 });
+    expect(stats.days.find(d => d.source === "claude")).toMatchObject({ date, input: 22, cached: 30, output: 8 });
+    expect((await host.stats.tokens(true)).days).toEqual(stats.days);
+    expect(await host.stats.tokens()).toBe(await host.stats.tokens());
+    const serialized = JSON.stringify([stats, store.db.prepare("SELECT * FROM device_token_meters").all()]);
+    for (const marker of [ownClaude,otherClaude,"private-","studio-thread","its-child"]) expect(serialized).not.toContain(marker);
+  });
+
   it("dates by the local day", () => {
     expect(localDate(new Date(2026, 0, 5, 0, 30).toISOString())).toBe("2026-01-05");
     expect(localDate("not a time")).toBeNull();
+  });
+
+  it("keeps cross-midnight balance changes undated and does not replay a reset or a pruned meter", () => {
+    const at = (day: number, hour: number, min = 0) => new Date(2026, 8, day, hour, min).getTime();
+    const read = (tokens: number, end: number) => reconcileCodex(store.db, [{ key: "synthetic-meter", tokens, start: at(1,10), end, studio: 0 }], new Set(), end);
+    read(100, at(1,23,50)); read(110, at(2,0,10)); read(120, at(2,12));
+    read(20, at(2,13)); read(120, at(2,14));
+    const saved = reconcileCodex(store.db, [], new Set(), at(3,10)).get("synthetic-meter");
+    expect(saved).toMatchObject({ tokens: 120, days: { "2026-09-01": 100, "": 10, "2026-09-02": 10 } });
   });
 });

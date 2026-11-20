@@ -20,6 +20,14 @@
 .stats-top { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .stats-top .spacer { flex: 1; }
 .stats-note { font-size: var(--fs-cap); color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.stats-sources { display: grid; gap: 8px; }
+.stats-source-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.stats-source-options button { border: 1px solid var(--border); background: var(--panel); border-radius: var(--r-btn); color: var(--text-dim); font: inherit; font-size: var(--fs-cap); padding: 4px 8px; cursor: pointer; }
+.stats-source-options button[aria-pressed="true"] { border-color: var(--primary); color: var(--text); background: var(--selected); }
+.stats-source-options b { font-variant-numeric: tabular-nums; margin-left: 4px; }
+.stats-sources details { font-size: var(--fs-cap); color: var(--text-dim); }
+.stats-sources summary { cursor: pointer; }
+.stats-sources p { margin: 6px 0; }
 
 .stats-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .stats-tile { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-l); background: var(--panel); color: var(--text); font: inherit; text-align: left; cursor: pointer; min-width: 0; }

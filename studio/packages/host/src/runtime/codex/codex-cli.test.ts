@@ -92,6 +92,7 @@ describe("Codex CLI features", () => {
     const { commands } = await runtime.listCommands(s.id);
     expect(commands).toEqual([
       expect.objectContaining({ name: "plan", group: "runtime" }),
+      expect.objectContaining({ name: "goal", group: "runtime" }),
       expect.objectContaining({ name: "code-review", group: "runtime" }),
       { name: "release-notes", description: "写发布说明", group: "skill" },
     ]);
@@ -146,12 +147,53 @@ describe("Codex CLI features", () => {
     expect(spy.mock.calls).toHaveLength(count);
   });
 
-  it("does not change a live turn's mode or goal", async () => {
+  it("changes the next collaboration mode without interrupting a live turn, but cannot activate a goal in it", async () => {
     const s = await start("[[slow]]");
     await until(() => store.getSession(s.id)!.status === "running");
-    await expect(runtime.runCommand(s.id, "plan", "on")).rejects.toThrow(/当前回复/);
+    const fake = servers.fakes.get("p-ds")!;
+    await expect(runtime.runCommand(s.id, "plan", "on")).resolves.toMatchObject({ codexMode: { plan: true } });
     await expect(runtime.runCommand(s.id, "goal", "finish this")).rejects.toThrow(/当前回复/);
     expect(servers.fakes.get("p-ds")!.calls.some((c) => c.method === "thread/goal/set")).toBe(false);
+    expect(fake.calls.some(c => c.method === "turn/interrupt" || c.method === "turn/steer")).toBe(false);
+    expect(fake.calls.filter(c => c.method === "turn/start")).toHaveLength(1);
+  });
+
+  it("keeps the explicitly selected model when changing mode even if the model catalog is stale", async () => {
+    const s = await start(), fake = servers.fakes.get("p-ds")!;
+    await runtime.setOptions(s.id, { plan: true, model: "picked-model-not-in-catalog", effort: "high" });
+    await runtime.runCommand(s.id, "plan", "off");
+    await runtime.sendMessage(s.id, "run");
+    await until(() => replied(s.id, "FAKE: run"));
+    expect(fake.calls.filter(c => c.method === "turn/start").at(-1)?.params).toMatchObject({ collaborationMode: { mode: "default", settings: { model: "picked-model-not-in-catalog", reasoning_effort: "high" } } });
+  });
+
+  it("plan → goal → execution preserves the objective, sends no hidden turn, and resumes in default mode", async () => {
+    const s = await start(), fake = servers.fakes.get("p-ds")!;
+    await runtime.runCommand(s.id, "plan", "on");
+    await runtime.runCommand(s.id, "goal", "Finish the fixture");
+    expect(await runtime.codexMode(s.id)).toMatchObject({ plan: false, goal: { objective: "Finish the fixture", status: "active" } });
+    const execution = await runtime.runCommand(s.id, "plan", "off");
+    expect(execution.codexMode).toMatchObject({ plan: false, goal: { objective: "Finish the fixture", status: "paused" } });
+    expect(fake.calls.some(c => ["thread/goal/clear","skills/list","app/installed","turn/start"].includes(c.method))).toBe(false);
+    await runtime.runCommand(s.id, "plan", "on");
+    await runtime.runCommand(s.id, "goal-resume", "");
+    await runtime.sendMessage(s.id, "continue");
+    await until(() => replied(s.id, "FAKE: continue"));
+    expect(fake.calls.filter(c => c.method === "turn/start").at(-1)?.params).toMatchObject({ collaborationMode: { mode: "default" } });
+  });
+
+  it("keeps plan on when setting a goal fails, and supports leaving plan on servers without goal support", async () => {
+    const s = await start(), client = servers.handles.get("p-ds")!.client, original = client.request.bind(client);
+    const { RpcError } = await import("./rpc-client.js");
+    await runtime.runCommand(s.id, "plan", "on");
+    vi.spyOn(client, "request").mockImplementation((method, params, options) => {
+      if (method.startsWith("thread/goal/")) return Promise.reject(new RpcError(method, -32601, "method not found"));
+      return original(method, params, options) as never;
+    });
+    await expect(runtime.runCommand(s.id, "goal", "keep my plan")).rejects.toThrow(/method not found/);
+    expect(await runtime.codexMode(s.id)).toMatchObject({ plan: true, goalError: expect.any(String) });
+    await runtime.runCommand(s.id, "plan", "off");
+    expect(store.getSession(s.id)?.options.plan).toBe(false);
   });
 
   it("only attaches callable apps and sends a native mention", async () => {

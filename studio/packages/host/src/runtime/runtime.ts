@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { ApprovalDecision, Attachment, ChatSettings, HostEvent, Id, ModelProfile, ProfileChoices, QuestionReply, Session, SessionItem, SessionOptions, SessionRuntime, SessionStatus, SlashCommandList, SlashCommandResult, Workspace, AccountUsage, McpApply, OutsideSessionList, OutsideSessionPreview } from "@amo-studio/protocol";
+import type { ApprovalDecision, Attachment, ChatSettings, CodexModeState, HostEvent, Id, ModelProfile, ProfileChoices, QuestionReply, Session, SessionItem, SessionOptions, SessionRuntime, SessionStatus, SlashCommandList, SlashCommandResult, Workspace, AccountUsage, McpApply, OutsideSessionList, OutsideSessionPreview } from "@amo-studio/protocol";
 import { parseRemoteProfileId } from "@amo-studio/protocol";
 import { newId, type HostEventInput, type SessionItemInput, type Store } from "../store/store.js";
 import { withDelivery } from "./items.js";
@@ -77,6 +77,7 @@ export interface SessionRuntimeApi {
   reclaim?(sessionId: Id): Promise<Session>;
   /** The runtime's own `/` commands and skills for the session (stage 12, S12-E); Studio's are added by the Host. */
   listCommands?(sessionId: Id): Promise<SlashCommandList>;
+  codexMode?(sessionId: Id): Promise<CodexModeState>;
   /** Runs one (`compact` included); see `POST /api/sessions/:id/commands`. */
   runCommand?(sessionId: Id, name: string, args: string): Promise<SlashCommandResult>;
   /** Stops a background command (Claude only). */
@@ -97,7 +98,7 @@ export interface SessionRuntimeApi {
 }
 
 /** The optional operations: a router made `around` one runtime offers only those that runtime has. */
-const OPTIONAL = ["usage", "cachedUsage", "handoff", "reclaim", "listCommands", "runCommand", "stopBackground", "setWakeChoice", "applyChatSettings", "refreshMcp", "mcpStatus", "outsideSessions", "outsidePreview", "checkResume"] as const;
+const OPTIONAL = ["usage", "cachedUsage", "handoff", "reclaim", "listCommands", "codexMode", "runCommand", "stopBackground", "setWakeChoice", "applyChatSettings", "refreshMcp", "mcpStatus", "outsideSessions", "outsidePreview", "checkResume"] as const;
 
 /**
  * Routes calls to the runtime of the session, or of the profile for new sessions. The Host's own (host-process.ts) has
@@ -267,6 +268,11 @@ export class RuntimeRouter extends EventEmitter<RuntimeEvents> implements Sessio
     const r = this.forSession(sessionId);
     if (!r.runCommand) throw new Error("this runtime has no commands");
     return r.runCommand(sessionId, name, args);
+  }
+  codexMode(sessionId: Id): Promise<CodexModeState> {
+    const r = this.forSession(sessionId);
+    if (!r.codexMode) throw new Error("这个会话不支持 Codex 模式");
+    return r.codexMode(sessionId);
   }
   stopBackground(sessionId: Id, taskId: string): Promise<void> {
     const r = this.forSession(sessionId);

@@ -20,14 +20,15 @@ test("设置 → 统计 counts the turns' tokens by model, as a line, an area or
   for (const profileId of ["codex-mock", "claude-mock"]) {
     await studio.api<{ task: Task; session: Session }>("POST", "/api/tasks", { title: profileId, workspaceId: ws.id, firstSession: { profileId, text: `hello ${profileId}` } });
   }
-  await expect.poll(async () => (await studio!.api<TokenStats>("GET", "/api/stats/tokens")).models.map((m) => m.profileId).sort(), { timeout: 60_000 }).toEqual(["claude-mock", "codex-mock"]);
+  await expect.poll(async () => (await studio!.api<TokenStats>("GET", "/api/stats/tokens?refresh=1")).models.map((m) => m.profileId).sort(), { timeout: 60_000 }).toEqual(["claude-mock", "codex-mock"]);
   const counted = await studio.api<TokenStats>("GET", "/api/stats/tokens");
   expect(counted.days.every((d) => d.input + d.cached + d.output > 0 && d.turns >= 1)).toBe(true);
 
-  await page.getByRole("button", { name: "设置" }).click();
+  await page.getByTestId("device-token-total").click();
   const dialog = page.getByRole("dialog", { name: "设置" });
-  await dialog.getByRole("tab", { name: "统计" }).click();
-  await expect(dialog.getByTestId("stats-counted")).toContainText("打开时已重新统计");
+  await expect(dialog.getByRole("tab", { name: "统计" })).toHaveAttribute("aria-selected", "true");
+  await dialog.getByRole("button", { name: "重新统计" }).click();
+  await expect(dialog.getByTestId("stats-counted")).toContainText("每 30 分钟更新");
   await expect(dialog.getByTestId("stats-tile")).toHaveCount(4);
   await expect(dialog.getByTestId("stats-tile").first()).toContainText("今天");
   await expect(dialog.getByTestId("stats-model")).toHaveCount(2);

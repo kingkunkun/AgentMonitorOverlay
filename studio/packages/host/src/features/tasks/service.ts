@@ -7,6 +7,7 @@ import { HostError, sessionOptions, sessionMoving, LEGACY_COMMON_WORKSPACE_KEY, 
 import { Feature } from "../../core/feature.js";
 import { fillDefaults, readModelPrefs } from "../../core/model-prefs.js";
 import { checkSetups } from "../sessions/setups.js";
+import { newId } from "../../store/store.js";
 
 /** Tasks: creating, renaming, moving, archiving, their sessions; bringing older data into structure v2. */
 export class TasksFeature extends Feature<"canvases" | "config" | "mcp" | "remote" | "sessions"> {
@@ -148,6 +149,7 @@ export class TasksFeature extends Feature<"canvases" | "config" | "mcp" | "remot
     const topic = input.topicId ? this.requireLiveTopic(input.topicId) : null;
     if (input.firstSession) {
       this.requireProfile(input.firstSession.profileId);
+      this.checkInitialGoal(input.firstSession);
       if (input.firstSession.workspaceId && input.firstSession.workspaceId !== workspace.id) throw new HostError("bad_request", "a task's sessions run in the task's own workspace");
       this.firstImages(input.firstSession);
       const resumeFrom = this.resumeFrom(input.firstSession);
@@ -298,8 +300,16 @@ export class TasksFeature extends Feature<"canvases" | "config" | "mcp" | "remot
     for (const s of sessions.filter((x) => !x.parentId && x.archivedAt && x.archivedAt >= since)) await this.wrap(() => this.runtime.unarchive(s.id));
   }
 
+  private checkInitialGoal(input: NewSessionInput) {
+    if (input.initialGoal === undefined) return;
+    if (this.requireProfile(input.profileId).runtime !== "codex" || !this.runtime.runCommand || typeof input.initialGoal !== "string" || !input.initialGoal.trim() || input.initialGoal.length > 4000 || typeof input.text !== "string" || !input.text.trim()) throw new HostError("bad_request", "新聊天的目标需要本机 Codex、第一条消息及 1–4000 字的目标");
+    if (this.host.buildJob.matches(input.text)) throw new HostError("bad_request", "要运行打包预设，请选择执行模式");
+  }
+
   async startSession(owner: { taskId: Id | null; topicId: Id | null }, workspace: Workspace, input: NewSessionInput): Promise<Session> {
+    this.checkInitialGoal(input);
     const options = await this.withDefaults(input.profileId, sessionOptions(input.options));
+    if (input.initialGoal) options.plan = false;
     // MCP 设置 (2026-11-04): no level of its own for a task; a new session goes on with the task's latest choices.
     if (!options.mcp) {
       const inherited = this.f.mcp.inherited(owner.taskId);
@@ -310,8 +320,21 @@ export class TasksFeature extends Feature<"canvases" | "config" | "mcp" | "remot
     const resumeFrom = this.resumeFrom(input);
     const automated = this.host.buildJob.matches(input.text);
     if (automated && images.length) throw new HostError("bad_request", "打包预设不能附带本机文件，请分开发送");
-    const session = await this.wrap(() => this.runtime.startSession({ ...owner, profileId: input.profileId, workspace, ...(input.text && !images.length && !automated ? { text: input.text } : {}), options, ...(resumeFrom ? { resumeFrom } : {}) }));
-    if (automated) await this.host.buildJob.command(session.id, input.text!);
+    const session = await this.wrap(() => this.runtime.startSession({ ...owner, profileId: input.profileId, workspace, ...(input.text && !images.length && !automated && !input.initialGoal ? { text: input.text } : {}), options, ...(resumeFrom ? { resumeFrom } : {}) }));
+    if (input.initialGoal) {
+      try { await this.runtime.runCommand!(session.id, "goal", input.initialGoal); }
+      catch (err) {
+        // The thread now exists. Open that conversation with the unsent draft instead of starting an ordinary
+        // turn, or returning a generic creation error which invites creating a second task.
+        const createdAt = new Date().toISOString();
+        const saved = this.store.appendItem({ id: newId("item"), sessionId: session.id, createdAt, type: "user", text: input.text!, images: this.f.sessions.images(images).map(a => ({ id: a.id, path: a.path })), delivery: "unsent" });
+        this.publish({ type: "item.appended", item: saved });
+        const error = this.store.appendItem({ id: newId("item"), sessionId: session.id, createdAt, type: "error", message: `未确认目标已设置，首条消息尚未发送。请在此会话打开「目标模式」核对目标后再发送：${err instanceof Error ? err.message : String(err)}` });
+        this.publish({ type: "item.appended", item: error });
+        return session;
+      }
+      await this.f.sessions.sendMessage(session.id, input.text!, images);
+    } else if (automated) await this.host.buildJob.command(session.id, input.text!);
     else if (images.length) await this.f.sessions.sendMessage(session.id, input.text ?? "", images);
     // The owner's updatedAt moves with its sessions so the board can sort by activity.
     if (owner.taskId) this.publish({ type: "task.upserted", task: this.store.updateTask(owner.taskId, {}) });

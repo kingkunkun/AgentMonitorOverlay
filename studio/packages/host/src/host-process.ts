@@ -24,6 +24,7 @@ import { CodexServerManager } from "./runtime/codex/server-manager.js";
 import { localCodexProxy, LOCAL_CODEX_PROXY, profilesWithLocalProxy } from "./runtime/codex/local-proxy.js";
 import { codexHomeOf } from "./runtime/codex/desktop-tools.js";
 import { translateText, translationEndpoint } from "./runtime/codex/translate.js";
+import { localDate } from "./features/stats/meters.js";
 import { WindowsCredentialReader, type CredentialReader } from "./runtime/credentials.js";
 import { BUILTIN_BALANCES, BUILTIN_PROFILES, CODEX_PROVIDERS, type CodexProviderDef } from "./runtime/profiles.js";
 import { ChannelRegistry } from "./runtime/channels.js";
@@ -313,15 +314,26 @@ export async function startHost(options: StartHostOptions): Promise<RunningHost>
     });
     const runtime = new RuntimeRouter(store, profiles, { codex, claude, dsh });
     const liveStore = store;
+    const claudeConfigFile = options.claudeConfigFile ?? personClaudeConfig(localClaudeHome, !!options.localClaudeHome || !!(options.claudeBaseEnv ?? process.env).CLAUDE_CONFIG_DIR?.trim());
     const service = new HostService(store, runtime, profiles, {
       launcher: options.launcher ?? new WindowsTerminalLauncher(),
       credentials,
       localClaudeHome,
-      claudeConfigFile: options.claudeConfigFile ?? personClaudeConfig(localClaudeHome, !!options.localClaudeHome || !!(options.claudeBaseEnv ?? process.env).CLAUDE_CONFIG_DIR?.trim()),
+      claudeConfigFile,
+      ...(!options.profiles && process.env.AMO_STUDIO_TEST !== "1" ? { meterPaths: {
+        codex: process.env.CODEX_SQLITE_HOME || codexHomeOf(options.codexEnv ?? process.env), claude: localClaudeHome, claudeConfig: claudeConfigFile,
+      } } : {}),
       ...(options.codexEnv?.CODEX_HOME ? { codexHome: options.codexEnv.CODEX_HOME } : {}),
       claudeAccounts,
       channels,
-      translateText: async (profile, model, input) => translateText(await translationEndpoint(profile, channels.codexProviders, credentials, servers, options.codexEnv ?? process.env), model, input),
+      translateText: async (profile, model, input) => {
+        const day = localDate(Date.now())!;
+        return translateText(await translationEndpoint(profile, channels.codexProviders, credentials, servers, options.codexEnv ?? process.env), model, input, fetch, (allInput, cached, output) => {
+          // Direct Responses requests never create a Codex thread. Persist only daily counters, never a draft or an account.
+          liveStore.db.prepare(`INSERT INTO studio_request_usage(day,model,input,cached,output) VALUES(?,?,?,?,?)
+            ON CONFLICT(day,model) DO UPDATE SET input=input+excluded.input,cached=cached+excluded.cached,output=output+excluded.output`).run(day, model, allInput-cached, cached, output);
+        });
+      },
       dsh,
       // A Codex channel's address or key is fixed when its app-server starts: restart it, unless a session on it is busy.
       restartProfileServer: async (profileId) => {
@@ -372,6 +384,7 @@ export async function startHost(options: StartHostOptions): Promise<RunningHost>
     service.duty.start();
     const info: HostInfo = { url: http.url, port: http.port, pid: process.pid, startedAt: new Date().toISOString() };
     writeFileSync(paths.info, JSON.stringify(info, null, 2));
+    service.stats.startSampling();
 
     let stopped = false;
     const finalStore = store;
@@ -414,6 +427,7 @@ export async function startHost(options: StartHostOptions): Promise<RunningHost>
         service.remote.stop();
         service.teamLink.stop();
         await finalHttp.close();
+        await service.stats.stopSampling();
         await finalClaude.closeAll();
         await finalDsh.closeAll();
         const s = finalManager ?? options.servers;

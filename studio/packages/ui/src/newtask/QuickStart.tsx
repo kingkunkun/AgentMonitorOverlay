@@ -104,7 +104,7 @@ export function QuickStart({
             ref={input}
             value={draft.text}
             aria-label="快速新聊天"
-            placeholder="一句话开始新任务，@ 引用项目或任务"
+            placeholder={draft.asGoal ? "写下希望 Codex 持续完成的目标" : "一句话开始新任务，@ 引用项目或任务"}
             onChange={(e) => {
               update({ text: e.target.value });
               mentions.track(e.target);

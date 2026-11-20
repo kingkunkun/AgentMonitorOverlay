@@ -6,6 +6,9 @@ import { IconClock } from "../chat/icons.js";
 import { useSettings } from "../settings/useSettings.js";
 import { balanceText, money, useBalance, useProfiles } from "../lib/balance.js";
 import { quotaOf } from "../lib/quota.js";
+import { useDeviceTokens } from "../settings/useDeviceTokens.js";
+import { fmtTokens } from "../settings/statsData.js";
+import { OPEN_SETTINGS_EVENT } from "../mcp/shared.js";
 import { readStored, writeStored, readStoredJson, writeStoredJson } from "../lib/stored.js";
 
 // Bottom of the left column: whether the Host runs, how much of the GPT and Claude subscriptions is used, and the
@@ -65,6 +68,7 @@ export function UsageFooter({ link, live, sessions = [] }: { link: HostLink; liv
   const [usage, setUsage] = useState<AccountUsage[]>(readSavedUsage);
   const [loading, setLoading] = useState(false);
   const now = useNow(open);
+  const device = useDeviceTokens(link);
   const settings = useSettings(link);
   const balances = (useProfiles(link) ?? []).filter((p) => p.balance && quotaOf(settings, p.id).footer);
   const shown = usage.filter((u) => quotaOf(settings, u.profileId).footer);
@@ -128,8 +132,14 @@ export function UsageFooter({ link, live, sessions = [] }: { link: HostLink; liv
 
   return (
     <div className={open ? "nav-footer open" : "nav-footer"}>
+      <button type="button" className="device-token-total" data-testid="device-token-total"
+        title={device.error ?? `本机可计量的累计 Token · 每 30 分钟更新${device.stats ? " · " + new Date(device.stats.generatedAt).toLocaleString() : ""}。点击查看来源。`}
+        onClick={() => window.dispatchEvent(new CustomEvent(OPEN_SETTINGS_EVENT, { detail: "stats" }))}>
+        <span>本机总 Token 用量</span><b>{device.stats ? fmtTokens(device.stats.total) : device.error ? "未能读取" : "读取中…"}</b><span aria-hidden="true">›</span>
+      </button>
       {open && (
         <div className="usage-list" data-testid="usage-list">
+          <span className="usage-note">账号额度 · 可能包含其他设备用量，不计入本机 Token。</span>
           {shown.length === 0 && balances.length === 0 && <span className="usage-note">没有要显示的额度。在 设置 → 额度 里选。</span>}
           {shown
             .filter((u) => !u.account || u.account.current)

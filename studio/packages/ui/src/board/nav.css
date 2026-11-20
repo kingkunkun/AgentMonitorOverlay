@@ -67,6 +67,9 @@
 
 /* Footer: Host status and subscription usage */
 .nav-footer { margin: 0; padding: 0; border-top: 1px solid var(--border); display: flex; flex-direction: column; background: var(--bg-nav); }
+.device-token-total { display: flex; align-items: center; gap: 6px; width: 100%; padding: 7px 14px; background: none; color: var(--text-dim); border: 0; border-bottom: 1px solid var(--divider); font: inherit; font-size: var(--fs-cap); text-align: left; cursor: pointer; }
+.device-token-total b { margin-left: auto; color: var(--text); font-variant-numeric: tabular-nums; }
+.device-token-total:hover { background: var(--chip); }
 .usage-toggle {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap; width: 100%; padding: 9px 14px; border: none; background: transparent;
   color: var(--text-faint); font-size: var(--fs-cap); text-align: left; cursor: pointer;

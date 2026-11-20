@@ -3,12 +3,13 @@ import { RUNTIME_LABELS, type TokenStats } from "@amo-studio/protocol";
 // 设置 → 统计 (2026-10-27): the Host's tokens per day and model, cut into days, weeks (from Monday) and months here.
 
 export type Grain = "day" | "week" | "month" | "total";
-export type Metric = "all" | "input" | "cached" | "output";
+export type Metric = "all" | "input" | "cached" | "output" | "unclassified";
 
 export interface Usage {
   input: number;
   cached: number;
   output: number;
+  unclassified: number;
   turns: number;
 }
 
@@ -25,17 +26,18 @@ export interface StatModel {
 /** Six hues in a fixed order (stats.css; checked for colour-blind separation in both themes); more models fold into 其他. */
 export const SLOTS = 6;
 
-const empty = (): Usage => ({ input: 0, cached: 0, output: 0, turns: 0 });
+const empty = (): Usage => ({ input: 0, cached: 0, output: 0, unclassified: 0, turns: 0 });
 function add(to: Usage, u: Usage): void {
   to.input += u.input;
   to.cached += u.cached;
   to.output += u.output;
+  to.unclassified += u.unclassified;
   to.turns += u.turns;
 }
 
 export function value(u: Usage | undefined, metric: Metric): number {
   if (!u) return 0;
-  return metric === "all" ? u.input + u.cached + u.output : u[metric];
+  return metric === "all" ? u.input + u.cached + u.output + u.unclassified : u[metric];
 }
 
 /**
@@ -44,7 +46,7 @@ export function value(u: Usage | undefined, metric: Metric): number {
  */
 export function statModels(stats: TokenStats): StatModel[] {
   const total = new Map<string, number>();
-  for (const d of stats.days) total.set(d.profileId, (total.get(d.profileId) ?? 0) + d.input + d.cached + d.output);
+  for (const d of stats.days) total.set(d.profileId, (total.get(d.profileId) ?? 0) + value(d, "all"));
   const sorted = [...stats.models].sort((a, b) => (total.get(b.profileId) ?? 0) - (total.get(a.profileId) ?? 0));
   // Two channels may share a name (DeepSeek on Codex and on DSH): the runtime tells them apart.
   const same = (label: string) => stats.models.filter((m) => m.label === label).length > 1;
@@ -154,14 +156,14 @@ export function activeModels(data: ByDate, models: readonly StatModel[], from: s
 }
 
 /** The first day with any use, or null. */
-export const firstDate = (data: ByDate): string | null => [...data.keys()].sort()[0] ?? null;
+export const firstDate = (data: ByDate): string | null => [...data.keys()].filter(Boolean).sort()[0] ?? null;
 
 /** Where each grain's chart and table start. */
 export function rangeStart(grain: Grain, today: Date, data: ByDate): string {
   if (grain === "day") return ymd(addDays(today, -29));
   if (grain === "week") return ymd(addDays(mondayOf(today), -77));
   if (grain === "month") return ymd(new Date(today.getFullYear(), today.getMonth() - 11, 1));
-  return firstDate(data) ?? ymd(today);
+  return ""; // includes lifetime-only counters
 }
 
 /** 1.23 亿 / 4,560 万 / 8.2 万 / 960 */

@@ -1,19 +1,20 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
-import type { TokenStats } from "@amo-studio/protocol";
-import { call, HostApiError, type HostLink } from "../host/client.js";
+import { TOKEN_SOURCE_LABELS, type TokenSource, type TokenStats } from "@amo-studio/protocol";
+import { useDeviceTokens } from "./useDeviceTokens.js";
+import type { HostLink } from "../host/client.js";
 import {
   activeModels, addDays, byDate, columns, firstDate, fmtTokens, mondayOf, niceMax, rangeStart, smoothPath, statModels, sumRange, value, ymd,
   type ByDate, type Column, type Grain, type Metric, type StatModel, type Usage,
 } from "./statsData.js";
 
 // 设置 → 统计 (2026-10-27, design: plans/token-stats-prototype.html v2): tokens per day, week and month, per model and
-// all of them. Counted again by the Host each time the page opens (重新统计 does it again).
+// all of them. The footer shares the Host's half-hour snapshot; 重新统计 explicitly samples again.
 
 type Style = "line" | "area" | "bar";
 type View = "chart" | "table";
 
 const GRAINS: Array<{ id: Grain; label: string }> = [{ id: "day", label: "日" }, { id: "week", label: "周" }, { id: "month", label: "月" }, { id: "total", label: "总计" }];
-const METRICS: Array<{ id: Metric; label: string }> = [{ id: "all", label: "全部" }, { id: "input", label: "输入" }, { id: "cached", label: "缓存命中" }, { id: "output", label: "输出" }];
+const METRICS: Array<{ id: Metric; label: string }> = [{ id: "all", label: "全部" }, { id: "input", label: "输入" }, { id: "cached", label: "缓存命中" }, { id: "output", label: "输出" }, { id: "unclassified", label: "未分类型" }];
 const STYLES: Array<{ id: Style; label: string }> = [{ id: "line", label: "折线" }, { id: "area", label: "面积" }, { id: "bar", label: "柱状" }];
 const VIEWS: Array<{ id: View; label: string }> = [{ id: "chart", label: "图" }, { id: "table", label: "表" }];
 const NOW_WORD: Record<Exclude<Grain, "total">, string> = { day: "今天", week: "本周", month: "本月" };
@@ -59,9 +60,8 @@ function split(n: number): [string, string] {
 }
 
 export function StatsPage({ link }: { link: HostLink }) {
-  const [stats, setStats] = useState<TokenStats | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const { stats, error, busy, refresh } = useDeviceTokens(link);
+  const [source, setSource] = useState<TokenSource | "all">("all");
   const [grain, setGrain] = useState(last.grain);
   const [metric, setMetric] = useState(last.metric);
   const [style, setStyle] = useState(last.style);
@@ -71,30 +71,20 @@ export function StatsPage({ link }: { link: HostLink }) {
     Object.assign(last, { grain, metric, style, view, hidden });
   }, [grain, metric, style, view, hidden]);
 
-  const load = useCallback(async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      setStats(await call(link, "GET /api/stats/tokens"));
-    } catch (err) {
-      setError(err instanceof HostApiError ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }, [link]);
-  useEffect(() => {
-    void load();
-  }, [load]);
-
   const today = useMemo(() => (stats ? new Date(stats.generatedAt) : new Date()), [stats]);
-  const models = useMemo(() => (stats ? statModels(stats) : []), [stats]);
-  const data = useMemo<ByDate>(() => (stats ? byDate(stats, models) : new Map()), [stats, models]);
+  const filtered = useMemo(() => {
+    if (!stats || source === "all") return stats;
+    const days = stats.days.filter(d => d.source === source), ids = new Set(days.map(d => d.profileId));
+    return { ...stats, days, models: stats.models.filter(m => ids.has(m.profileId)) };
+  }, [stats, source]);
+  const models = useMemo(() => (filtered ? statModels(filtered) : []), [filtered]);
+  const data = useMemo<ByDate>(() => (filtered ? byDate(filtered, models) : new Map()), [filtered, models]);
   // Only the models with use in the range picked: one unused there leaves the legend, the charts and the tables.
   const { active, per: inRange } = useMemo(() => activeModels(data, models, rangeStart(grain, today, data), ymd(today)), [data, models, grain, today]);
   const picked = active.filter((m) => !hidden.has(m.id));
   // Those hidden in another range may be all there is here: then they show.
   const shown = picked.length ? picked : active;
-  const ids = models.filter((m) => !hidden.has(m.id)).map((m) => m.id);
+  const ids = models.map(m => m.id); // the summary always covers the selected source, irrespective of chart legend
   const cols = useMemo(() => (grain === "total" ? [] : columns(data, grain, today)), [data, grain, today]);
 
   const head = (
@@ -102,25 +92,27 @@ export function StatsPage({ link }: { link: HostLink }) {
       <span className="settings-heading">Token 用量</span>
       {stats && (
         <span className="stats-note" data-testid="stats-counted">
-          打开时已重新统计 · {new Date(stats.generatedAt).toLocaleTimeString("zh-CN", { hour12: false })} · {stats.turns.toLocaleString("en")} 轮 · 用时 {(stats.ms / 1000).toFixed(1)} 秒
+          每 30 分钟更新 · 最近 {new Date(stats.generatedAt).toLocaleString("zh-CN", { hour12: false })}
         </span>
       )}
       <span className="spacer" />
-      <button type="button" className="btn-ghost small" disabled={busy} onClick={() => void load()}>
+      <button type="button" className="btn-ghost small" disabled={busy} onClick={refresh}>
         {busy ? "统计中…" : "重新统计"}
       </button>
     </div>
   );
+  const coverage = stats && <SourceCoverage stats={stats} source={source} select={s => { setSource(s); setHidden(new Set()); }} />;
   if (!stats || !models.length) {
     return (
       <section className="settings-section stats" aria-label="统计">
         {head}
+        {coverage}
         {error ? (
           <span className="form-error" role="alert">
             {error}
           </span>
         ) : (
-          <span className="settings-hint">{stats ? "还没有记到用量：会话跑完一轮之后这里就有数。" : "正在统计…"}</span>
+          <span className="settings-hint">{stats ? "所选来源暂无可计入的本机记录。" : "正在统计…"}</span>
         )}
       </section>
     );
@@ -137,6 +129,7 @@ export function StatsPage({ link }: { link: HostLink }) {
   return (
     <section className="settings-section stats" aria-label="统计">
       {head}
+      {coverage}
       {error && (
         <span className="form-error" role="alert">
           {error}
@@ -222,11 +215,25 @@ export function StatsPage({ link }: { link: HostLink }) {
       </div>
         </>
       )}
-      <span className="settings-hint">
-        按每一轮开始的那天算（本机时间）。输入不含缓存命中；子 agent 和委派会话算在它们自己用的模型下。只算 Studio 记下用量的轮次：Studio 开始记之前的、和中途被打断没回报用量的不在里面。
-      </span>
     </section>
   );
+}
+
+function SourceCoverage({ stats, source, select }: { stats: TokenStats; source: TokenSource | "all"; select: (s: TokenSource | "all") => void }) {
+  const undated = stats.days.filter(d => !d.date && (source === "all" || d.source === source)).reduce((n,d) => n + value(d, "all"), 0);
+  return <div className="stats-sources">
+    <div className="stats-source-options" role="group" aria-label="统计来源">
+      <button type="button" aria-pressed={source === "all"} onClick={() => select("all")}>本机全部 <b>{fmtTokens(stats.total)}</b></button>
+      {stats.sources.map(r => <button type="button" key={r.source} title={r.note} aria-pressed={source === r.source} onClick={() => select(r.source)}>
+        {TOKEN_SOURCE_LABELS[r.source]} <b>{r.status === "unavailable" ? "未覆盖" : fmtTokens(r.total)}</b></button>)}
+    </div>
+    <div className="stats-note">只统计当前系统用户可读取的本机 Token。账号额度可能跨设备，不计入。{undated > 0 && <>其中 <b>{fmtTokens(undated)}</b> 无法分到具体日期，仅计入总计。</>}</div>
+    <details><summary>统计规则与来源覆盖</summary>
+      {stats.sources.map(r => <p key={r.source}><b>{TOKEN_SOURCE_LABELS[r.source]}</b> · {r.note}</p>)}
+      <p>同一计数反复刷新不累加。非缓存输入、缓存读取、输出和未分类型各计一次；缓存写入归输入，推理已含在输出中。原生累计计数没有可靠分类时保留为「未分类型」。轮数仅指 WorkStudio 聊天回合。</p>
+      <p>日期按本机时区。代理转发同一请求不另计一次。网页、其他系统用户、未提供本地计数的程序以及其他设备不在范围内；缺少记录不等于零。计算不调用模型，不消耗 Token，不读取聊天正文。</p>
+    </details>
+  </div>;
 }
 
 function Tiles({ data, ids, today, metric, grain, onGrain }: { data: ByDate; ids: string[]; today: Date; metric: Metric; grain: Grain; onGrain(g: Grain): void }) {
@@ -241,7 +248,7 @@ function Tiles({ data, ids, today, metric, grain, onGrain }: { data: ByDate; ids
     { g: "day", label: "今天", cur: sum(d, d), prev: sum(addDays(today, -1), addDays(today, -1)), cmp: "昨天" },
     { g: "week", label: "本周", cur: sum(mon, d), prev: sum(addDays(mon, -7), addDays(today, -7)), cmp: "上周同期" },
     { g: "month", label: "本月", cur: sum(first, d), prev: sum(prevFirst, prevSame), cmp: "上月同期" },
-    { g: "total", label: "总计", cur: sum("0000-00-00", "9999-99-99"), prev: null, cmp: start ? `自 ${start} 起` : "" },
+    { g: "total", label: "总计", cur: sum("", "9999-99-99"), prev: null, cmp: data.has("") ? "含未分日期" : start ? `自 ${start} 起` : "" },
   ];
   return (
     <div className="stats-tiles">
@@ -257,9 +264,9 @@ function Tiles({ data, ids, today, metric, grain, onGrain }: { data: ByDate; ids
               {num}
               <small>{unit}</small>
             </span>
-            {metric === "all" && <span className="stats-tile-d">不含缓存 {fmtTokens(t.cur.input + t.cur.output)}</span>}
+            {metric === "all" && <span className="stats-tile-d">{t.cur.unclassified ? `未分类型 ${fmtTokens(t.cur.unclassified)}` : `不含缓存读取 ${fmtTokens(t.cur.input + t.cur.output)}`}</span>}
             <span className="stats-tile-d">
-              {change} · {t.cur.turns.toLocaleString("en")} 轮
+              {change}{t.cur.turns > 0 ? ` · Studio ${t.cur.turns.toLocaleString("en")} 轮` : ""}
             </span>
           </button>
         );
@@ -442,7 +449,7 @@ function Tip({ col, models, metric, total, left, top }: { col: Column; models: S
       <div className="stats-tip-sum">
         <span>合计</span>
         <span>
-          {fmtTokens(total)} · {turns} 轮
+          {fmtTokens(total)}{turns ? ` · Studio ${turns} 轮` : ""}
         </span>
       </div>
     </div>
@@ -451,7 +458,7 @@ function Tip({ col, models, metric, total, left, top }: { col: Column; models: S
 
 function TotalChart({ data, models, metric, metricLabel, table }: { data: ByDate; models: StatModel[]; metric: Metric; metricLabel: string; table: boolean }) {
   const [ref, width] = useWidth();
-  const per = sumRange(data, models.map((m) => m.id), "0000-00-00", "9999-99-99").per;
+  const per = sumRange(data, models.map((m) => m.id), "", "9999-99-99").per;
   const rows = models.map((m) => ({ m, v: value(per[m.id], metric) })).sort((a, b) => b.v - a.v);
   const sum = rows.reduce((s, r) => s + r.v, 0);
   const pct = (v: number) => (sum ? Math.round((v / sum) * 100) : 0);
@@ -600,8 +607,8 @@ function Mini({ model, cols, metric }: { model: StatModel; cols: Column[]; metri
 
 function Detail({ data, models, from, to }: { data: ByDate; models: StatModel[]; from: string; to: string }) {
   const { total, per } = sumRange(data, models.map((m) => m.id), from, to);
-  const all = (u: Usage) => u.input + u.cached + u.output;
-  const rows = models.map((m) => ({ m, u: per[m.id] ?? { input: 0, cached: 0, output: 0, turns: 0 } })).sort((a, b) => all(b.u) - all(a.u));
+  const all = (u: Usage) => value(u, "all");
+  const rows = models.map((m) => ({ m, u: per[m.id] ?? { input: 0, cached: 0, output: 0, unclassified: 0, turns: 0 } })).sort((a, b) => all(b.u) - all(a.u));
   const sum = all(total);
   const pct = (v: number) => (sum ? Math.round((v / sum) * 100) : 0);
   const cells = (u: Usage) => (
@@ -609,6 +616,7 @@ function Detail({ data, models, from, to }: { data: ByDate; models: StatModel[];
       <td>{fmtTokens(u.input)}</td>
       <td>{fmtTokens(u.cached)}</td>
       <td>{fmtTokens(u.output)}</td>
+      <td>{fmtTokens(u.unclassified)}</td>
       <td>
         <b>{fmtTokens(all(u))}</b>
       </td>
@@ -623,9 +631,10 @@ function Detail({ data, models, from, to }: { data: ByDate; models: StatModel[];
             <th>输入</th>
             <th>缓存命中</th>
             <th>输出</th>
+            <th>未分类型</th>
             <th>合计</th>
             <th>占比</th>
-            <th>轮数</th>
+            <th>Studio 轮数</th>
           </tr>
         </thead>
         <tbody>

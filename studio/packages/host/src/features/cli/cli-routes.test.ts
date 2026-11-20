@@ -96,7 +96,7 @@ describe("/ commands over HTTP", () => {
   it("puts Studio's commands first, /review only in a git project", async () => {
     const plain = await session("plain");
     const list = (await api<SlashCommandList>("GET", `/api/sessions/${plain.id}/commands`)).data;
-    expect(list.commands.map((c) => `${c.group}:${c.name}`)).toEqual(["studio:compact", "runtime:plan", "runtime:code-review", "skill:release-notes"]);
+    expect(list.commands.map((c) => `${c.group}:${c.name}`)).toEqual(["studio:compact", "runtime:plan", "runtime:goal", "runtime:code-review", "skill:release-notes"]);
     const repo = await session("repo");
     const inRepo = (await api<SlashCommandList>("GET", `/api/sessions/${repo.id}/commands`)).data;
     expect(inRepo.commands.slice(0, 2)).toMatchObject([{ name: "compact" }, { name: "review", local: "open-review" }]);
@@ -110,6 +110,17 @@ describe("/ commands over HTTP", () => {
     expect((await api("POST", path, { name: "review" })).status).toBe(400);
     expect((await api("POST", path, { name: "nope" })).status).toBe(400);
     expect(await api("POST", path, { name: "/release-notes", args: "v2" })).toEqual({ status: 200, data: { mode: "start" } });
+  });
+
+  it("keeps the unsent goal draft in the created session if the native server refuses it", async () => {
+    const refuse = vi.spyOn(service.runtime, "runCommand").mockRejectedValueOnce(new Error("fixture unavailable"));
+    try {
+      const r = await api<{ session: Session }>("POST", "/api/tasks", { firstSession: { profileId: "p-ds", initialGoal: "synthetic objective", text: "synthetic objective" } });
+      expect(r.status).toBe(200);
+      const items = store.listItems(r.data.session.id);
+      expect(items).toEqual(expect.arrayContaining([expect.objectContaining({ type: "user", text: "synthetic objective", delivery: "unsent" }), expect.objectContaining({ type: "error" })]));
+      expect(servers.fakes.get("p-ds")!.calls.some(c => c.method === "turn/start")).toBe(false);
+    } finally { refuse.mockRestore(); }
   });
 });
 

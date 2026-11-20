@@ -130,6 +130,8 @@ export class HostService extends EventEmitter<HostServiceEvents> {
       claudeConfigFile?: string;
       /** The Codex home its app-servers run with (tests: a stand-in); default CODEX_HOME or ~/.codex. 设置 → 模型 reads GPT's address there. */
       codexHome?: string;
+      /** Explicit native meter locations in production; test Hosts never fall back to the developer's personal data. */
+      meterPaths?: import("./features/stats/meters.js").MeterPaths;
       /** Claude 多账号: the Claude runtime's accounts (one for the person's own dir when absent). */
       claudeAccounts?: ClaudeAccounts;
       /** The person's own model channels (设置 → 模型); `profiles` is its list. */

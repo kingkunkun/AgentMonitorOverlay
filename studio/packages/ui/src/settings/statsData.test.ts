@@ -4,10 +4,10 @@ import { activeModels, byDate, columns, fmtTokens, niceMax, rangeStart, statMode
 
 // 设置 → 统计 (2026-10-27).
 
-const day = (date: string, profileId: string, input: number, cached = 0, output = 0, turns = 1): TokenStatsDay => ({ date, profileId, input, cached, output, turns });
+const day = (date: string, profileId: string, input: number, cached = 0, output = 0, turns = 1): TokenStatsDay => ({ date, profileId, source: "studio", input, cached, output, unclassified: 0, turns });
 function stats(days: TokenStatsDay[]): TokenStats {
   const ids = [...new Set(days.map((d) => d.profileId))];
-  return { generatedAt: "2026-10-27T12:00:00.000Z", ms: 1, turns: days.length, days, models: ids.map((id) => ({ profileId: id, label: id.toUpperCase(), runtime: "codex", model: id === "a" ? "m-a" : null, removed: false })) };
+  return { generatedAt: "2026-10-27T12:00:00.000Z", sources: [], total: days.reduce((s,d) => s + value(d, "all"),0), ms: 1, turns: days.length, days, models: ids.map((id) => ({ profileId: id, label: id.toUpperCase(), runtime: "codex", model: id === "a" ? "m-a" : null, removed: false })) };
 }
 
 describe("token stats in 设置", () => {
@@ -50,8 +50,8 @@ describe("token stats in 设置", () => {
     expect(value(months[0]!.values.a, "all")).toBe(7);
     expect(value(months.at(-2)!.values.a, "all")).toBe(1000);
     expect(rangeStart("week", today, data)).toBe("2026-08-10");
-    expect(rangeStart("total", today, data)).toBe("2025-11-15");
-    expect(sumRange(data, ["a"], "2026-10-26", "2026-10-27").total).toEqual({ input: 15, cached: 3, output: 1, turns: 2 });
+    expect(rangeStart("total", today, data)).toBe("");
+    expect(sumRange(data, ["a"], "2026-10-26", "2026-10-27").total).toEqual({ input: 15, cached: 3, output: 1, unclassified: 0, turns: 2 });
     // A model unused in the range is left out of it.
     const two = stats([day("2026-10-27", "a", 5), day("2026-08-01", "b", 9)]);
     const twoModels = statModels(two);
@@ -65,5 +65,15 @@ describe("token stats in 设置", () => {
       "960", "8.2 万", "386 万", "4,560 万", "1.00 亿", "1.31 亿", "187 亿",
     ]);
     expect([niceMax(0), niceMax(1.31e8), niceMax(2.3e9), niceMax(7)]).toEqual([1, 1.6e8, 2.4e9, 8]);
+  });
+
+  it("keeps lifetime-only balances out of daily trends, but includes unclassified tokens in the total and ranks those models", () => {
+    const rows = [day("2026-10-26","a",10), { ...day("","b",0,0,0,0), unclassified: 1000 }];
+    const s = stats(rows), models = statModels(s), data = byDate(s,models);
+    expect(models.map(m => m.id)).toEqual(["b","a"]);
+    const sum = (from: string) => sumRange(data,["a","b"],from,"2026-10-27").total;
+    expect(value(sum(""),"all")).toBe(1010);
+    expect(value(sum(""),"input")).toBe(10);
+    expect(value(sum("2026-10-01"),"all")).toBe(10);
   });
 });
