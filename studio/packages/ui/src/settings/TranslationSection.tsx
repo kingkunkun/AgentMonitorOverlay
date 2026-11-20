@@ -12,7 +12,7 @@ export function TranslationSection({ link }: { link: HostLink }) {
     void call(link, "GET /api/settings/translation").then(s => { if (live) setModel(s.model); }, e => { if (live) setError(String(e)); });
     return () => { live = false; };
   }, [link]);
-  const models = choices?.models.filter(m => isTranslationModel(m.id)) ?? [];
+  const models = choices?.models.filter(m => isTranslationModel(m.id)).sort((a, b) => Number(a.id.startsWith("gorilla/")) - Number(b.id.startsWith("gorilla/"))) ?? [];
   const missing = model !== null && !models.some(m => m.id === model);
   const save = async (next: string) => {
     setSaving(true); setError("");

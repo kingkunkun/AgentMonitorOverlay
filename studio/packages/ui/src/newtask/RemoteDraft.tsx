@@ -332,7 +332,7 @@ export function RemoteDraft({
         />
         <MentionList mentions={mentions} />
         <div className="cbar">
-          <DraftTranslation key={deviceKey} link={link} text={draft.text} onReplace={text => update({ text })} disabled={busy} />
+          <DraftTranslation key={deviceKey} link={link} input={input} text={draft.text} onReplace={text => update({ text })} disabled={busy} />
           <button type="button" className="round-btn attach" aria-label="添加图片或文件" title="添加图片或文件（也可以粘贴截图或拖进来）：开始时一起传到那台电脑" onClick={() => picker.current?.click()} data-testid="remote-draft-attach">
             <IconPaperclip />
           </button>

@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BackgroundOutput, ChatSettings, ModelProfile, Session, SlashCommandList, Task, Workspace } from "@amo-studio/protocol";
 import { removeTempDir } from "@amo-studio/testkit";
 import { CodexRuntime } from "../../runtime/codex/codex-runtime.js";
@@ -22,6 +22,8 @@ let root: string;
 let store: Store;
 let servers: FakeServers;
 let http: HostServer;
+let service: HostService;
+const translator = vi.fn(async () => "Check the build.");
 
 beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), "amo-studio-test-cli-routes-"));
@@ -31,7 +33,8 @@ beforeEach(async () => {
   store = new Store(join(root, "studio.db"));
   servers = new FakeServers(PROFILES);
   const runtime = new RuntimeRouter(store, PROFILES, { codex: new CodexRuntime({ store, servers, profiles: PROFILES }) });
-  const service = new HostService(store, runtime, PROFILES);
+  service = new HostService(store, runtime, PROFILES, { translateText: translator });
+  translator.mockClear();
   http = await startHostServer({ service, token: TOKEN, allowedOrigins: [] });
 });
 
@@ -55,6 +58,30 @@ async function session(folder: string): Promise<Session> {
   const ws = (await api<Workspace>("POST", "/api/workspaces", { path: join(root, folder) })).data;
   return (await api<{ task: Task; session: Session }>("POST", "/api/tasks", { title: "t", workspaceId: ws.id, firstSession: { profileId: "p-ds" } })).data.session;
 }
+
+describe("chat translation over HTTP", () => {
+  it("persists a distinct GPT model, rechecks the catalog and translates text without creating a chat", async () => {
+    const gpt = { id: "codex-default", runtime: "codex" as const, model: null, provider: null, label: "GPT" };
+    PROFILES.push(gpt);
+    const catalog = vi.spyOn(service.runtime, "choices").mockResolvedValue({ profileId: gpt.id, models: ["gpt-6.2-sol", "gpt-6.2-astra", "gorilla-claude/opus"].map(id => ({ id, label: id, efforts: [] })), permissions: [], defaultPermission: "", source: "cli" });
+    try {
+      expect((await api("GET", "/api/settings/translation")).data).toEqual({ model: "gpt-6.2-sol" });
+      for (const model of ["claude-opus", "gorilla-claude/opus", "gpt-99"]) expect((await api("PUT", "/api/settings/translation", { model })).status).toBe(400);
+      expect((await api("PUT", "/api/settings/translation", { model: "gpt-6.2-astra" })).status).toBe(200);
+      expect((await api("GET", "/api/settings/translation")).data).toEqual({ model: "gpt-6.2-astra" });
+      for (const body of [{ text: "", target: "en" }, { text: "x", target: "de" }, { text: "a".repeat(16001), target: "zh" }])
+        expect((await api("POST", "/api/translate", body)).status).toBe(400);
+      expect(translator).not.toHaveBeenCalled();
+      const before = store.listSessions().map(s => s.id);
+      expect((await api("POST", "/api/translate", { text: "检查构建。", target: "en", profileId: "claude-subscription", model: "claude-opus", attachments: ["ignored"] })).data).toEqual({ text: "Check the build.", model: "gpt-6.2-astra" });
+      expect(translator).toHaveBeenCalledExactlyOnceWith(gpt, "gpt-6.2-astra", { text: "检查构建。", target: "en" });
+      expect(store.listSessions().map(s => s.id)).toEqual(before);
+      catalog.mockResolvedValue({ profileId: gpt.id, models: [], permissions: [], defaultPermission: "", source: "cli" });
+      expect((await api("POST", "/api/translate", { text: "gone", target: "zh" })).status).toBe(400);
+      expect(translator).toHaveBeenCalledTimes(1);
+    } finally { catalog.mockRestore(); PROFILES.pop(); }
+  });
+});
 
 describe("/ commands over HTTP", () => {
   it("puts Studio's commands first, /review only in a git project", async () => {

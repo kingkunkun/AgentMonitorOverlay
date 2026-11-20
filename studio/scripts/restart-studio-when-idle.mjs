@@ -5,8 +5,8 @@ import { fileURLToPath } from "node:url";
 import { spawn, execFileSync } from "node:child_process";
 import { DatabaseSync, backup } from "node:sqlite";
 
-const [dataArg, hostArg, shellArg, downloadArg, mode] = process.argv.slice(2);
-if (!dataArg || !/^\d+$/.test(hostArg ?? "") || !/^\d+$/.test(shellArg ?? "") || !/^\d+$/.test(downloadArg ?? "") || ![undefined, "--check", "--build-when-idle"].includes(mode)) throw new Error("Usage: restart-studio-when-idle.mjs <dataDir> <hostPid> <shellPid> <temporaryDownloadPid or 0> [--check | --build-when-idle]");
+const [dataArg, hostArg, shellArg, downloadArg, mode, apkFlag] = process.argv.slice(2);
+if (!dataArg || !/^\d+$/.test(hostArg ?? "") || !/^\d+$/.test(shellArg ?? "") || !/^\d+$/.test(downloadArg ?? "") || ![undefined, "--check", "--build-when-idle"].includes(mode) || apkFlag !== undefined && (apkFlag !== "--with-apk" || mode !== "--build-when-idle")) throw new Error("Usage: restart-studio-when-idle.mjs <dataDir> <hostPid> <shellPid> <temporaryDownloadPid or 0> [--check | --build-when-idle [--with-apk]]");
 const dataDir = resolve(dataArg), studio = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const expected = { host: Number(hostArg), shell: Number(shellArg), download: Number(downloadArg) };
 const json = (p) => JSON.parse(readFileSync(p, "utf8"));
@@ -26,9 +26,17 @@ const shellIdentity = identity(expected.shell), downloadIdentity = expected.down
 if (!shellIdentity?.CommandLine?.includes("packages/app") || (expected.download && (!downloadIdentity?.CommandLine?.includes("tool-downloads.mjs") || !downloadIdentity.CommandLine.includes("serve")))) throw new Error("Unexpected process identity; restart cancelled");
 const token = readFileSync(join(dataDir, "host-token"), "utf8").trim();
 async function api(path, method = "GET", body, base = original.url) {
-  const res = await fetch(base + path, { method, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(10000) });
-  if (!res.ok) throw Object.assign(new Error(`${method} ${path}: ${res.status}`), { status: res.status });
-  return res.json();
+  for (let attempt = 0;; attempt++) {
+    try {
+      // The Node event loop may have been blocked for minutes by a build. Do not reuse a pre-build HTTP socket.
+      const res = await fetch(base + path, { method, headers: { Connection: "close", Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(15000) });
+      if (!res.ok) { await res.body?.cancel(); throw Object.assign(new Error(`${method} ${path}: ${res.status}`), { status: res.status }); }
+      return await res.json();
+    } catch (err) {
+      if (method !== "GET" || attempt >= 2 || !(err instanceof TypeError || err.name === "TimeoutError" || err.status >= 500)) throw err;
+      await pause(1000 * (attempt + 1));
+    }
+  }
 }
 if (mode === "--check") {
   const health = await api("/api/health"), state = await api("/api/state");
@@ -39,7 +47,7 @@ async function activity() {
   const [health, duty, builds, work] = await Promise.all(["/api/health", "/api/duty", "/api/build-job", "/api/company/work"].map(path => api(path)));
   if (health.pid !== expected.host || json(join(dataDir, "host.json")).pid !== expected.host) throw new Error("Host changed while waiting");
   return {
-    sessions: health.running, duty: duty.running.length,
+    sessions: health.running, translations: health.translations ?? 0, duty: duty.running.length,
     builds: [...Object.values(builds.runs), builds.last].some(run => run && ["queued", "running", "unknown"].includes(run.status)) ? 1 : 0,
     work: work.filter(item => ["dispatching", "running"].includes(item.status) || (item.status === "queued" && !item.manualStart)).length,
   };
@@ -53,6 +61,7 @@ async function waitForIdle() {
     try {
       busy = await activity();
     } catch (err) {
+      if (!alive(expected.host) || json(join(dataDir, "host.json")).pid !== expected.host) throw new Error("Original Host is no longer running; idle restart cancelled");
       if (mode !== "--build-when-idle" || (err.name !== "TimeoutError" && !(err instanceof TypeError && err.cause) && !(err.status >= 500))) throw err;
       quiet = 0;
       record("waiting-for-host", { lastCheckError: String(err) });
@@ -71,6 +80,18 @@ try {
     record("building");
     execFileSync("cmd.exe", ["/d", "/c", "npm run build"], { cwd: studio, windowsHide: true, stdio: "inherit" });
     record("built", { builtAt: new Date().toISOString() });
+    await waitForIdle();
+  }
+  if (apkFlag) {
+    const id = "duty-delivery-apk", since = Date.now();
+    record("building-apk");
+    // On an unknown POST outcome inspect the run. Never start a second build just because the reply was lost.
+    try { await api(`/api/duty/items/${id}/run`, "POST", {}); }
+    catch (err) { if (err.status !== 409 && !(err instanceof TypeError || err.name === "TimeoutError")) throw err; }
+    await waitForIdle();
+    const duty = await api("/api/duty");
+    const run = duty.runs.find(r => r.itemId === id && r.endedAt && Date.parse(r.endedAt) >= since);
+    record("apk-checked", { apk: { ok: run?.ok === true, summary: run?.summary ?? "未收到 APK 打包完成记录" } });
   }
   const before = await api("/api/state");
   const backupDir = join(dataDir, `backup-before-downloads-${new Date().toISOString().replace(/[:.]/g, "-")}`);
@@ -82,7 +103,7 @@ try {
   for (;;) {
     await waitForIdle();
     try {
-      await api("/api/shutdown", "POST", { interrupt: false });
+      await api("/api/shutdown", "POST", { interrupt: false, requireIdleJobs: true });
       break;
     } catch (err) {
       if (err.status !== 409) throw err;
@@ -125,7 +146,7 @@ try {
   const company = await api("/api/company", "GET", undefined, next.url);
   if (!company.agents?.some((a) => a.id === "company-platform")) throw new Error("Platform agent not loaded");
   if (expected.download && (!downloads.running || !downloads.items.length)) throw new Error("New download service unavailable");
-  if (downloads.running && !(await fetch(downloads.urls[0], { signal: AbortSignal.timeout(10000) })).ok) throw new Error("Download landing page unavailable");
-  record("complete", { hostPid: next.pid, after: { tasks: after.tasks.length, sessions: after.sessions.length }, downloads: downloads.urls, companyLoaded: Boolean(company) });
+  if (downloads.running && !(await fetch(`http://127.0.0.1:${downloads.port}/`, { signal: AbortSignal.timeout(10000) })).ok) throw new Error("Download landing page unavailable");
+  record(apkFlag && !receipt.apk?.ok ? "desktop-ready-apk-unconfirmed" : "complete", { hostPid: next.pid, after: { tasks: after.tasks.length, sessions: after.sessions.length }, downloads: downloads.urls, companyLoaded: Boolean(company) });
 } catch (e) { record("failed", { error: String(e) }); process.exitCode = 1; }
 finally { if (existsSync(lock)) unlinkSync(lock); }

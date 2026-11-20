@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { TRANSLATION_TEXT_LIMIT, type TranslationResult, type TranslationTarget } from "@amo-studio/protocol";
 import { call, copyText, type HostLink } from "../host/client.js";
 import { Modal } from "../lib/Modal.js";
@@ -12,8 +12,9 @@ const translate = (link: HostLink, text: string, target: TranslationTarget) => t
   : call(link, "POST /api/translate", {}, { text, target });
 
 /** Keyed by the composer/session at the call site. Editing or sending invalidates the request, even after undoing an edit. */
-export function DraftTranslation({ link, text, onReplace, disabled = false }: { link: HostLink; text: string; onReplace(text: string): void; disabled?: boolean }) {
+export function DraftTranslation({ link, text, onReplace, input, disabled = false }: { link: HostLink; text: string; onReplace(text: string): void; input: RefObject<HTMLInputElement | HTMLTextAreaElement | null>; disabled?: boolean }) {
   const serial = useRef(0);
+  const button = useRef<HTMLButtonElement>(null);
   const active = useRef(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
@@ -25,22 +26,30 @@ export function DraftTranslation({ link, text, onReplace, disabled = false }: { 
     return () => { serial.current++; };
   }, [link, text, disabled]);
   const restore = !!undo && undo.after === text;
+  function replace(value: string) {
+    onReplace(value);
+    if (document.activeElement === button.current) {
+      const field = input.current;
+      field?.focus({ preventScroll: true });
+      requestAnimationFrame(() => { if (field && document.activeElement === field && field.value === value) field.setSelectionRange(value.length, value.length); });
+    }
+  }
   async function click() {
     if (active.current || disabled || !text.trim()) return;
-    if (undo && restore) { setUndo(null); onReplace(undo.before); return; }
+    if (undo && restore) { setUndo(null); replace(undo.before); return; }
     const id = ++serial.current;
     active.current = true; setPending(true); setError("");
     try {
       const result = await translate(link, text, "en");
       if (serial.current !== id) return;
       setUndo({ before: text, after: result.text });
-      onReplace(result.text);
+      replace(result.text);
     } catch (err) { if (serial.current === id) setError(message(err)); }
     finally { if (serial.current === id) { active.current = false; setPending(false); } }
   }
   const label = pending ? "翻译中…" : restore ? "撤销翻译" : "译成英文";
   return <span className="draft-translation">
-    <button className="draft-translate-btn" type="button" disabled={disabled || !text.trim() || pending} aria-busy={pending} onClick={() => void click()} title={restore ? "恢复翻译前的草稿" : "把草稿翻译成英文，可编辑后发送"}>{label}</button>
+    <button ref={button} className="draft-translate-btn" type="button" disabled={disabled || !text.trim()} aria-disabled={pending || disabled || !text.trim()} aria-busy={pending} onClick={() => void click()} title={restore ? "恢复翻译前的草稿" : "把草稿翻译成英文，可编辑后发送"}>{label}</button>
     {error && <span className="draft-translate-error" role="alert">{error}<button type="button" aria-label="关闭翻译提示" onClick={() => setError("")}>×</button></span>}
   </span>;
 }

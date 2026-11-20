@@ -22,13 +22,24 @@ export async function translationEndpoint(profile: ModelProfile, providers: Reco
   const { client } = await servers.ensure(profile.id);
   const { config } = await client.request("config/read", { includeLayers: false });
   // Do not silently send text to OpenAI when this installation is configured for a different route.
-  const custom = config.model_provider && config.model_provider !== "openai" || config.openai_base_url || config.chatgpt_base_url || env.OPENAI_BASE_URL;
+  const official = (value: unknown, urls: string[]) => value == null || typeof value === "string" && urls.includes(value.replace(/\/+$/, ""));
+  const builtin = config.model_providers && typeof config.model_providers === "object" && !Array.isArray(config.model_providers) ? config.model_providers.openai : null;
+  const custom = config.model_provider && config.model_provider !== "openai"
+    || !official(config.openai_base_url, [OPENAI_DEFAULT_URL]) || !official(env.OPENAI_BASE_URL, [OPENAI_DEFAULT_URL])
+    || !official(config.chatgpt_base_url, [CHATGPT_DEFAULT_URL, "https://chatgpt.com/backend-api"])
+    || builtin && typeof builtin === "object" && !Array.isArray(builtin) && !official(builtin.base_url, [OPENAI_DEFAULT_URL]);
   if (custom) throw problem("此 Codex 自定义地址未配置为 WorkStudio 的 GPT 翻译渠道，请检查本机 OpenCodex 代理设置");
   const auth = await client.request("getAuthStatus", { includeToken: true, refreshToken: false });
   if (!auth.authToken) throw problem("请先登录 Codex，再使用翻译");
   const headers: Record<string, string> = { Authorization: `Bearer ${auth.authToken}` };
   if (auth.authMethod === "apikey") return { url: OPENAI_DEFAULT_URL, headers };
   if (auth.authMethod !== "chatgpt" && auth.authMethod !== "chatgptAuthTokens") throw problem("当前 GPT 登录方式不支持翻译");
+  // Mirror Codex's workspace header when the signed-in account token carries one. Opaque tokens need no hint.
+  try {
+    const claims = JSON.parse(Buffer.from(auth.authToken.split(".")[1] ?? "", "base64url").toString("utf8"));
+    const account = claims["https://api.openai.com/auth"]?.chatgpt_account_id;
+    if (typeof account === "string" && /^[\w-]{1,128}$/.test(account)) headers["ChatGPT-Account-ID"] = account;
+  } catch { /* Opaque token. */ }
   return { url: CHATGPT_DEFAULT_URL, headers };
 }
 

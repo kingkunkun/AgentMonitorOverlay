@@ -1,9 +1,8 @@
 import { open, stat } from "node:fs/promises";
-import { BACKGROUND_OUTPUT_LIMIT, type BackgroundOutput, type ChatSettings, type Id, type SlashCommand, type SlashCommandList, type SlashCommandResult } from "@amo-studio/protocol";
+import { BACKGROUND_OUTPUT_LIMIT, DEFAULT_TRANSLATION_MODEL, TRANSLATION_PROFILE, TRANSLATION_TEXT_LIMIT, isTranslationModel, type BackgroundOutput, type ChatSettings, type Id, type SlashCommand, type SlashCommandList, type SlashCommandResult, type TranslationResult, type TranslationSettings } from "@amo-studio/protocol";
 import { HostError } from "../../core/shared.js";
 import { Feature } from "../../core/feature.js";
 import { readChatSettings, writeChatSettings } from "../../runtime/chat-settings.js";
-import { DEFAULT_TRANSLATION_MODEL, TRANSLATION_PROFILE, TRANSLATION_TEXT_LIMIT, isTranslationModel, type TranslationResult, type TranslationSettings } from "@amo-studio/protocol";
 
 const TRANSLATION_MODEL_KEY = "translation.model";
 
@@ -18,6 +17,7 @@ const REVIEW_COMMAND: SlashCommand = { name: "review", description: "打开这�
  * command, background commands (stop, output) and the conversation settings.
  */
 export class CliFeature extends Feature<"gitReview"> {
+  activeTranslations = 0;
   translationSettings(): TranslationSettings {
     return { model: this.store.getKv(TRANSLATION_MODEL_KEY)?.value ?? DEFAULT_TRANSLATION_MODEL };
   }
@@ -43,9 +43,12 @@ export class CliFeature extends Feature<"gitReview"> {
     if (typeof text !== "string" || !text.trim() || text.length > TRANSLATION_TEXT_LIMIT) throw new HostError("bad_request", `请选择或输入 1 至 ${TRANSLATION_TEXT_LIMIT} 个字符再翻译`);
     if (target !== "en" && target !== "zh") throw new HostError("bad_request", "请选择翻译为中文或英文");
     const { model } = this.translationSettings();
-    const profile = await this.translationProfile(model);
     if (!this.options.translateText) throw new HostError("bad_request", "此 Host 未配置 GPT 翻译");
-    return { model, text: await this.wrap(() => this.options.translateText!(profile, model, { text, target })) };
+    this.activeTranslations++;
+    try {
+      const profile = await this.translationProfile(model);
+      return { model, text: await this.wrap(() => this.options.translateText!(profile, model, { text, target })) };
+    } finally { this.activeTranslations--; }
   }
 
   async listCommands(sessionId: Id): Promise<SlashCommandList> {

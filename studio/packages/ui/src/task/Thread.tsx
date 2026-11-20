@@ -121,6 +121,7 @@ interface ThreadProps {
 /** Conversation of one session plus its composer. */
 export function Thread({ link, presets, session, firstMessage, profile, profiles = [], subsessionNotes = [], tasks = [], sessions = [], projects, items, annotations, annotationRefs, model, busy, onApprove, onJump, onContinued, onSend, onInterrupt, onDelivery, onSaveAnnotation, onEditAnnotation, onDeleteAnnotation, onBookmark, initialScroll, atPassage = false, onError, decisions = [], remote }: ThreadProps) {
   const scroller = useRef<HTMLDivElement>(null);
+  const composerInput = useRef<HTMLTextAreaElement>(null);
   const stick = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
   // The composer's text, kept per session across switching and restarts (sessionDraft.ts).
@@ -746,6 +747,7 @@ ${d}` : back));
               <MentionBackdrop text={draft} names={mentions.names} scrollTop={inputScroll} />
               <textarea
                 aria-label="输入消息"
+                ref={composerInput}
                 value={draft}
                 onScroll={(e) => setInputScroll(e.currentTarget.scrollTop)}
                 onChange={(e) => {
@@ -785,7 +787,7 @@ ${d}` : back));
                 {...(sending && sending === session?.id && !blocked && !attachHold ? { title: `Host 还没回应这条消息；${SEND_GIVE_UP_MS / 1000} 秒内还没有，文字会放回输入框` } : halting && !blocked && !attachHold ? { title: "模型手上的命令或回复收住可能要几秒，这一轮结束前会一直显示" } : {})}
               >{blocked || attachHold || (sending && sending === session?.id ? "正在发送…" : "") || (halting === "stop" ? "正在停止…" : halting === "now" ? "正在打断，停下后马上发出…" : "") || (generating && !readOnly && !planReview ? (session?.runtime === "dsh" ? "本轮结束后发出 · Ctrl+Enter 立即发送" : `${sendsNow ? "" : "生成中："}${queues ? "工具调用后或本轮结束后读到" : "发送会插入到当前回合"}${sendsNow ? " · Ctrl+Enter 立即发送" : ""}`) : "")}</span>
             <div className="chat-bar codex-chat-bar">
-              <DraftTranslation key={session.id} link={link} text={draft} disabled={readOnly || !!sending} onReplace={setDraft} />
+              <DraftTranslation key={session.id} link={link} input={composerInput} text={draft} disabled={readOnly || !!sending} onReplace={setDraft} />
               <HashPresetButton link={link} onPick={(text) => setDraft(`${text}${draft.trim() ? `\n\n${draft}` : ""}`)} />
               <button
                 type="button"

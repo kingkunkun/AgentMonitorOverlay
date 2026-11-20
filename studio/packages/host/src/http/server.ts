@@ -77,7 +77,7 @@ export async function startHostServer(options: HostServerOptions): Promise<HostS
     // without the token, with how many sessions are at work (counted as the board's 进行中, sessionMoving), so the AMO
     // platform can ask before it updates Studio. A number only: no titles or other content. 2026-10-29: and the version
     // of the Studio that started it, so the platform can tell a Host older than the Studio it has installed.
-    route("GET /api/health", () => ({ ok: true, pid: process.pid, running: runningCount(), version: options.version ?? "dev" }), { open: true }),
+    route("GET /api/health", () => ({ ok: true, pid: process.pid, running: runningCount(), version: options.version ?? "dev", ...(service.cli.activeTranslations ? { translations: service.cli.activeTranslations } : {}) }), { open: true }),
     // 完全退出 / 重启 Studio (2026-10-29): stops the Host, with the token (POST is never open). Sessions at work are not cut
     // unless the caller says so ({ interrupt: true }, after asking the person): otherwise 409 with how many there are.
     // The platform never sends it (AGENTS.md, constraint 6).
@@ -86,6 +86,10 @@ export async function startHostServer(options: HostServerOptions): Promise<HostS
           route("POST /api/shutdown", (ctx) => {
             const running = runningCount();
             if (running > 0 && obj(ctx.body).interrupt !== true) return new JsonReply(409, { ok: false, running, error: { code: "conflict", message: `${running} 个会话正在进行，没有关闭后台` } });
+            if (obj(ctx.body).requireIdleJobs === true && (running || service.cli.activeTranslations || service.duty.state().running.length ||
+              Object.values(service.buildJob.state().runs).some(r => r && ["queued", "running", "unknown"].includes(r.status)) ||
+              service.company.work.list().some(w => ["dispatching", "running"].includes(w.status) || w.status === "queued" && !w.manualStart)))
+              return new JsonReply(409, { ok: false, running, error: { code: "conflict", message: "仍有任务正在处理，没有关闭后台" } });
             if (!shuttingDown) {
               shuttingDown = true;
               // After the answer has gone out: stopping closes every connection.
