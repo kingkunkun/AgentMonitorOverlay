@@ -35,7 +35,7 @@ beforeEach(async () => {
   const runtime = new RuntimeRouter(store, PROFILES, { codex: new CodexRuntime({ store, servers, profiles: PROFILES }) });
   service = new HostService(store, runtime, PROFILES, { translateText: translator });
   translator.mockClear();
-  http = await startHostServer({ service, token: TOKEN, allowedOrigins: [] });
+  http = await startHostServer({ service, token: TOKEN, allowedOrigins: [], onShutdown: () => {} });
 });
 
 afterEach(async () => {
@@ -73,7 +73,16 @@ describe("chat translation over HTTP", () => {
         expect((await api("POST", "/api/translate", body)).status).toBe(400);
       expect(translator).not.toHaveBeenCalled();
       const before = store.listSessions().map(s => s.id);
-      expect((await api("POST", "/api/translate", { text: "检查构建。", target: "en", profileId: "claude-subscription", model: "claude-opus", attachments: ["ignored"] })).data).toEqual({ text: "Check the build.", model: "gpt-6.2-astra" });
+      let entered!: () => void, release!: (text: string) => void;
+      const started = new Promise<void>(r => { entered = r; });
+      translator.mockImplementationOnce(() => new Promise<string>(r => { release = r; entered(); }));
+      const ask = api("POST", "/api/translate", { text: "检查构建。", target: "en", profileId: "claude-subscription", model: "claude-opus", attachments: ["ignored"] });
+      await started;
+      try {
+        expect((await api("GET", "/api/health")).data).toMatchObject({ running: 0, translations: 1 });
+        expect((await api("POST", "/api/shutdown", { interrupt: false, requireIdleJobs: true })).status).toBe(409);
+      } finally { release("Check the build."); }
+      expect((await ask).data).toEqual({ text: "Check the build.", model: "gpt-6.2-astra" });
       expect(translator).toHaveBeenCalledExactlyOnceWith(gpt, "gpt-6.2-astra", { text: "检查构建。", target: "en" });
       expect(store.listSessions().map(s => s.id)).toEqual(before);
       catalog.mockResolvedValue({ profileId: gpt.id, models: [], permissions: [], defaultPermission: "", source: "cli" });

@@ -68,6 +68,10 @@ it("phone accounts are independent of the signed-in team account; chat/options/p
   expect((await client.ask("rt.list")).tasks).toContainEqual(expect.objectContaining({ taskId: task.id }));
   expect((await client.ask("rt.items", { sessionId: session.id })).items).toContainEqual(expect.objectContaining({ markdown: "手机应该看到的本机聊天" }));
   expect((await client.ask("rt.presets", { sessionId: session.id })).presets).toHaveLength(6);
+  const translate = vi.spyOn(host.cli, "translate").mockResolvedValueOnce({ text: "Run the tests.", model: "gpt-6.2-sol" });
+  expect(await client.ask("rt.translate", { text: "运行测试。", target: "en", profileId: "claude-subscription", sessionId: session.id })).toEqual({ text: "Run the tests.", model: "gpt-6.2-sol" });
+  expect(translate).toHaveBeenCalledExactlyOnceWith({ text: "运行测试。", target: "en" });
+  translate.mockRestore();
   expect((await client.ask("rt.choices", { sessionId: session.id, all: true })).profiles).toContainEqual(expect.objectContaining({ profileId: "p" }));
   await client.ask("rt.options", { sessionId: session.id, options: { effort: "high", permission: "full-auto", fast: true } });
   expect(host.store.getSession(session.id)?.options).toMatchObject({ effort: "high", permission: "full-auto", fast: true });

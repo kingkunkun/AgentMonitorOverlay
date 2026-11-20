@@ -47,20 +47,27 @@ import kotlinx.coroutines.launch
     val selection = original.selection
     val passage = if (selection.collapsed) source else source.substring(selection.min, selection.max)
     var target by remember(passage) { mutableStateOf(if (passage.any { it in '\u3400'..'\u9fff' }) "en" else "zh") }
-        var busy by remember(passage, target) { mutableStateOf(false) }
-        var result by remember(passage, target) { mutableStateOf("") }
-        val scope = key(passage, target, peer.identity) { rememberCoroutineScope() }
-        AlertDialog(onDismissRequest = { open = false }, title = { Text("选段翻译") }, text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                OutlinedTextField(original, { original = it }, readOnly = true, label = { Text("原文（长按选择片段）") }, maxLines = 6)
-                Row { listOf("zh" to "中文", "en" to "英文").forEach { (id, label) -> FilterChip(selected = target == id, onClick = { target = id }, label = { Text(label) }) } }
-                if (result.isNotBlank()) SelectionContainer { Text(result) }
+    var busy by remember(passage, target) { mutableStateOf(false) }
+    var result by remember(passage, target) { mutableStateOf("") }
+    val scope = key(passage, target, peer.identity) { rememberCoroutineScope() }
+    AlertDialog(onDismissRequest = { open = false }, title = { Text("选段翻译") }, text = {
+        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            OutlinedTextField(original, { original = it }, readOnly = true, label = { Text("原文（长按选择片段）") }, maxLines = 6)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf("zh" to "中文", "en" to "英文").forEach { (id, label) -> FilterChip(selected = target == id, onClick = { target = id }, label = { Text(label) }) }
             }
-        }, confirmButton = { TextButton(enabled = !busy, onClick = { if (!busy) { busy = true; scope.launch {
-            try { result = repo.translate(peer, passage, target) }
-            catch (e: CancellationException) { throw e }
-            catch (e: Exception) { result = e.message ?: "翻译失败，请重试" }
-            finally { busy = false }
-        } } }) { Text(if (busy) "翻译中…" else if (selection.collapsed) "翻译全文" else "翻译选段") } },
-            dismissButton = { TextButton(onClick = { open = false }) { Text("关闭") } })
+            if (result.isNotBlank()) SelectionContainer { Text(result) }
+        }
+    }, confirmButton = { TextButton(enabled = !busy, onClick = {
+        if (!busy) {
+            busy = true
+            scope.launch {
+                try { result = repo.translate(peer, passage, target) }
+                catch (e: CancellationException) { throw e }
+                catch (e: Exception) { result = e.message ?: "翻译失败，请重试" }
+                finally { busy = false }
+            }
+        }
+    }) { Text(if (busy) "翻译中…" else if (selection.collapsed) "翻译全文" else "翻译选段") } },
+        dismissButton = { TextButton(onClick = { open = false }) { Text("关闭") } })
 }
