@@ -23,6 +23,7 @@ import { McpIdentities } from "./mcp/identity.js";
 import { CodexServerManager } from "./runtime/codex/server-manager.js";
 import { localCodexProxy, LOCAL_CODEX_PROXY, profilesWithLocalProxy } from "./runtime/codex/local-proxy.js";
 import { codexHomeOf } from "./runtime/codex/desktop-tools.js";
+import { translateText, translationEndpoint } from "./runtime/codex/translate.js";
 import { WindowsCredentialReader, type CredentialReader } from "./runtime/credentials.js";
 import { BUILTIN_BALANCES, BUILTIN_PROFILES, CODEX_PROVIDERS, type CodexProviderDef } from "./runtime/profiles.js";
 import { ChannelRegistry } from "./runtime/channels.js";
@@ -320,6 +321,7 @@ export async function startHost(options: StartHostOptions): Promise<RunningHost>
       ...(options.codexEnv?.CODEX_HOME ? { codexHome: options.codexEnv.CODEX_HOME } : {}),
       claudeAccounts,
       channels,
+      translateText: async (profile, model, input) => translateText(await translationEndpoint(profile, channels.codexProviders, credentials, servers, options.codexEnv ?? process.env), model, input),
       dsh,
       // A Codex channel's address or key is fixed when its app-server starts: restart it, unless a session on it is busy.
       restartProfileServer: async (profileId) => {

@@ -67,6 +67,19 @@ export interface ChatSettings {
 // Off by default: each suggestion is one more model request per turn, and the subscriptions have budgets.
 export const DEFAULT_CHAT_SETTINGS: ChatSettings = { promptSuggestions: false };
 
+// Translation is a text-only utility. It never inherits a chat's runtime, provider or tools.
+export const TRANSLATION_PROFILE = "codex-default";
+export const DEFAULT_TRANSLATION_MODEL = "gpt-6.2-sol";
+export const TRANSLATION_TEXT_LIMIT = 16_000;
+export type TranslationTarget = "en" | "zh";
+export interface TranslationSettings { model: string }
+export interface TranslationRequest { text: string; target: TranslationTarget }
+export interface TranslationResult { text: string; model: string }
+
+/** The Codex catalog may also contain Claude CLI routes, including namespaced ones. */
+export const isTranslationModel = (id: unknown): id is string =>
+  typeof id === "string" && /^(?:(?:gorilla|openai)\/)?(?:gpt-\d|o[1-9])[a-z0-9.-]*$/i.test(id) && !/claude|anthropic/i.test(id);
+
 /** Most bytes of a background command's output the Host returns. */
 export const BACKGROUND_OUTPUT_LIMIT = 8_000;
 
@@ -95,4 +108,7 @@ export interface CliRoutes {
   "GET /api/sessions/:id/background/:taskId/output": { req: void; res: BackgroundOutput };
   "GET /api/settings/chat": { req: void; res: ChatSettings };
   "PUT /api/settings/chat": { req: Partial<ChatSettings>; res: ChatSettings };
+  "GET /api/settings/translation": { req: void; res: TranslationSettings };
+  "PUT /api/settings/translation": { req: TranslationSettings; res: TranslationSettings };
+  "POST /api/translate": { req: TranslationRequest; res: TranslationResult };
 }

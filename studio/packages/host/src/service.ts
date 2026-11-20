@@ -134,6 +134,7 @@ export class HostService extends EventEmitter<HostServiceEvents> {
       claudeAccounts?: ClaudeAccounts;
       /** The person's own model channels (设置 → 模型); `profiles` is its list. */
       channels?: ChannelRegistry;
+      translateText?: (profile: ModelProfile, model: string, input: import("@amo-studio/protocol").TranslationRequest) => Promise<string>;
       /** DeepSeek on a DSH clone (stage 17): 设置 → 模型 →「检查」 runs through it. */
       dsh?: DshRuntime;
       /** Restarts a Codex profile's app-server so it picks up a channel's new address or key; false while it is busy. */

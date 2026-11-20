@@ -12,6 +12,8 @@ export type ServerRequest = codex.ServerRequest;
 
 /** Responses for the methods the Host uses. Others resolve to `unknown`. */
 export interface ResponseMap {
+  "config/read": codex.v2.ConfigReadResponse;
+  getAuthStatus: codex.GetAuthStatusResponse;
   initialize: codex.InitializeResponse;
   "thread/start": codex.v2.ThreadStartResponse;
   "thread/resume": codex.v2.ThreadResumeResponse;

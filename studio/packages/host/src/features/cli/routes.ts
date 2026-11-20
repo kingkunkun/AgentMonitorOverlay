@@ -10,5 +10,8 @@ export function cliRoutes(service: HostService): Route[] {
     route("GET /api/sessions/:id/background/:taskId/output", ({ params }) => service.cli.backgroundOutput(params.id!, params.taskId!)),
     route("GET /api/settings/chat", () => service.cli.chatSettings()),
     route("PUT /api/settings/chat", ({ body }) => service.cli.updateChatSettings(body)),
+    route("GET /api/settings/translation", () => service.cli.translationSettings()),
+    route("PUT /api/settings/translation", ({ body }) => service.cli.updateTranslationSettings(body)),
+    route("POST /api/translate", ({ body }) => service.cli.translate(body)),
   ];
 }

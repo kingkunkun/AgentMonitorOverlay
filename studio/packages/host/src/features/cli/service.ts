@@ -3,6 +3,9 @@ import { BACKGROUND_OUTPUT_LIMIT, type BackgroundOutput, type ChatSettings, type
 import { HostError } from "../../core/shared.js";
 import { Feature } from "../../core/feature.js";
 import { readChatSettings, writeChatSettings } from "../../runtime/chat-settings.js";
+import { DEFAULT_TRANSLATION_MODEL, TRANSLATION_PROFILE, TRANSLATION_TEXT_LIMIT, isTranslationModel, type TranslationResult, type TranslationSettings } from "@amo-studio/protocol";
+
+const TRANSLATION_MODEL_KEY = "translation.model";
 
 /** Studio's own `/` commands, offered for every session (before the runtime's). */
 const STUDIO_COMMANDS: readonly SlashCommand[] = [
@@ -15,6 +18,36 @@ const REVIEW_COMMAND: SlashCommand = { name: "review", description: "打开这�
  * command, background commands (stop, output) and the conversation settings.
  */
 export class CliFeature extends Feature<"gitReview"> {
+  translationSettings(): TranslationSettings {
+    return { model: this.store.getKv(TRANSLATION_MODEL_KEY)?.value ?? DEFAULT_TRANSLATION_MODEL };
+  }
+
+  private async translationProfile(model: unknown) {
+    const p = this.profiles.find(p => p.id === TRANSLATION_PROFILE && p.runtime === "codex" && !p.hidden && !p.unavailable);
+    if (!p || !isTranslationModel(model)) throw new HostError("bad_request", "翻译只支持 GPT 渠道中的 GPT 模型，请检查「设置 → 模型 → 翻译」。");
+    const choices = await this.wrap(() => this.runtime.choices(p.id));
+    if (!choices.models.some(m => m.id === model)) throw new HostError("bad_request", `当前 GPT 渠道没有模型 ${model}，请在「设置 → 模型 → 翻译」中重新选择。`);
+    return p;
+  }
+
+  async updateTranslationSettings(body: unknown): Promise<TranslationSettings> {
+    const model = (body as Partial<TranslationSettings> | null)?.model;
+    if (!isTranslationModel(model)) throw new HostError("bad_request", "请选择 GPT 翻译模型");
+    await this.translationProfile(model);
+    this.store.setKv(TRANSLATION_MODEL_KEY, model);
+    return { model };
+  }
+
+  async translate(body: unknown): Promise<TranslationResult> {
+    const { text, target } = (body ?? {}) as Record<string, unknown>;
+    if (typeof text !== "string" || !text.trim() || text.length > TRANSLATION_TEXT_LIMIT) throw new HostError("bad_request", `请选择或输入 1 至 ${TRANSLATION_TEXT_LIMIT} 个字符再翻译`);
+    if (target !== "en" && target !== "zh") throw new HostError("bad_request", "请选择翻译为中文或英文");
+    const { model } = this.translationSettings();
+    const profile = await this.translationProfile(model);
+    if (!this.options.translateText) throw new HostError("bad_request", "此 Host 未配置 GPT 翻译");
+    return { model, text: await this.wrap(() => this.options.translateText!(profile, model, { text, target })) };
+  }
+
   async listCommands(sessionId: Id): Promise<SlashCommandList> {
     const session = this.requireSession(sessionId);
     const [runtime, repo] = await Promise.all([
