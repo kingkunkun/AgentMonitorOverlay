@@ -758,9 +758,9 @@ describe("Host API", () => {
     const expected = composeAnnotationRefs("按批注改", [
       { n: 2, quote: "first", note: "这里不对，换一种写法" },
       { n: 1, quote: "second", note: "这里要改" },
-    ]);
+    ], "追问");
     await until(async () => (await items(session.id)).some((i) => i.type === "user" && i.text === expected), "message with references");
-    expect(expected).toBe("按批注改\n\n【引用的批注】\n【批注1】针对你回复中的这段：\n> second\n我的批注：这里要改\n\n【批注2】针对你回复中的这段：\n> first\n我的批注：这里不对，换一种写法");
+    expect(expected).toBe("按批注改\n\n【引用的追问】\n【追问1】针对你回复中的这段：\n> second\n我的追问：这里要改\n\n【追问2】针对你回复中的这段：\n> first\n我的追问：这里不对，换一种写法");
     const after = await ok<Annotation[]>("GET", `/api/sessions/${session.id}/annotations`);
     expect(after.every((a) => a.sentAt)).toBe(true);
 
@@ -777,7 +777,7 @@ describe("Host API", () => {
     expect((await api("POST", `/api/sessions/${session.id}/annotations/send`)).status).toBe(400);
     await until(async () => (await lastAgentText(session.id)) === `FAKE: ${expected}`, "reply to the references");
     await ok("POST", `/api/sessions/${session.id}/messages`, { annotations: [later.id] });
-    await until(async () => (await items(session.id)).some((i) => i.type === "user" && i.text.startsWith("【引用的批注】\n【批注1】")), "referred again");
+    await until(async () => (await items(session.id)).some((i) => i.type === "user" && i.text.startsWith("【引用的追问】\n【追问1】")), "referred again");
     // Annotations of another session are refused.
     const other = await createTask("other");
     expect((await api("POST", `/api/sessions/${other.session.id}/messages`, { text: "x", annotations: [later.id] })).status).toBe(400);
@@ -785,7 +785,7 @@ describe("Host API", () => {
     // The one-click summary of the unsent ones still exists and writes the same block.
     const fresh = await ok<Annotation>("POST", `/api/sessions/${session.id}/annotations`, { itemId: agents[0]!.id, quote: "reply", start: 12, end: 17, note: "再看看" });
     expect(fresh.n).toBe(4);
-    await until(async () => ((await lastAgentText(session.id)) ?? "").startsWith("FAKE: 【引用的批注】"), "second reply to the references");
+    await until(async () => ((await lastAgentText(session.id)) ?? "").startsWith("FAKE: 【引用的追问】"), "second reply to the references");
     const result = await ok<{ mode: string; sent: Annotation[] }>("POST", `/api/sessions/${session.id}/annotations/send`);
     expect(result.sent.map((a) => a.id)).toEqual([fresh.id]);
     expect(result.sent[0]!.sentAt).not.toBeNull();

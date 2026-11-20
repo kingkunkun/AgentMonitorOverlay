@@ -137,7 +137,7 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
                 items(reversed, key = { it.key }, contentType = { if (it is OpsRow) "ops" else (it as ItemRow).entry.type }) { row ->
                     when (row) {
                         is OpsRow -> OpsLine(row, row.key in expanded, { if (row.key in expanded) expanded.remove(row.key) else expanded.add(row.key) }) { detail = it }
-                        is ItemRow -> ChatItem(row.entry, writable, repo, state.sessions)
+                        is ItemRow -> ChatItem(row.entry, writable, repo, state.sessions, task?.peer?.takeIf { state.connected && !task.revoked })
                     }
                 }
             }
@@ -164,6 +164,7 @@ private fun pending(e: Entry) = (e.type == "approval" || e.type == "question") &
         }
         if (submitted.isNotEmpty()) Notice("这条消息还没确认送到；草稿留在手机上。先刷新核对最新对话。", Tone.Attention, "已核对", { verify = true }, tag = "chat-unconfirmed")
         if (verify) AlertDialog(onDismissRequest = { verify = false }, title = { Text("处理待确认消息") }, text = { Text("请先在最新对话或电脑上核对这条消息。解除等待后可以继续编辑并发送；若原消息实际已送达，重发会让模型再次执行。") }, confirmButton = { AmoTextButton(onClick = { clearPending(); verify = false }) { Text("已确认未送达，继续编辑") } }, dismissButton = { AmoTextButton(onClick = { verify = false }) { Text("继续等待") } })
+        key(draftKey) { DraftTranslate(repo, task?.peer, draft, writable && submitted.isEmpty(), ::saveDraft) }
         Composer(draft, ::saveDraft, running, writable, canSend = writable && draft.isNotBlank() && submitted.isEmpty(), stop = repo::interrupt,
             leading = {
                 ComposerMenuButton("#", writable, "chat-presets") { presetMenu = !presetMenu; if (presetMenu) repo.chatPresets { presets = it.objects("presets") } }
@@ -369,7 +370,7 @@ private fun prettyInput(input: String): String {
     return o.keys().asSequence().joinToString("\n") { k -> val v = o.opt(k); "$k: " + if (v is String) v else v.toString() }
 }
 
-@Composable private fun ChatItem(e: Entry, enabled: Boolean, repo: StudioRepository, sessions: List<RemoteSession>) {
+@Composable private fun ChatItem(e: Entry, enabled: Boolean, repo: StudioRepository, sessions: List<RemoteSession>, peer: Peer?) {
     val item = e.json; val c = LocalAmoColors.current
     when (e.type) {
         "user" -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
@@ -383,6 +384,7 @@ private fun prettyInput(input: String): String {
                         if (expandedContext) Column(Modifier.heightIn(max = 240.dp).verticalScroll(rememberScrollState())) { context.objects("messages").forEach { m -> Text((if (m.str("role") == "user") "你：" else "AI：") + m.str("text"), style = MaterialTheme.typography.bodySmall) } }
                     }
                     if (carried.first.isNotBlank()) SelectionContainer { Text(carried.first) }
+                    PassageTranslate(repo, peer, carried.first)
                     item.objects("images").forEachIndexed { index, image -> AmoTextButton(onClick = { repo.openFile(image.str("path")) }) { Text("查看图片 ${index + 1}：${image.str("path").replace('\\', '/').substringAfterLast('/')}") } }
                 }
             }
@@ -391,6 +393,7 @@ private fun prettyInput(input: String): String {
             val blocks = markdownOf(item, "markdown")
             if (blocks.isEmpty() && item.optBoolean("streaming")) Text("正在回复…", color = c.dim)
             else SelectionContainer { MarkdownBlocks(blocks, { repo.openFile(it) }) }
+            if (!item.optBoolean("streaming")) PassageTranslate(repo, peer, item.str("markdown"))
         }
         "approval" -> ApprovalCard(item, enabled, repo)
         "question" -> QuestionCard(item, enabled) { repo.answer(item, it) }

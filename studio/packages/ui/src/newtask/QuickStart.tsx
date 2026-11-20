@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ModelProfile, Session, Task, Topic, Workspace } from "@amo-studio/protocol";
 import { useTopicsVisible } from "../lib/topicsVisible.js";
 import { HashPresetButton } from "../attach/HashPresets.js";
+import { DraftTranslation } from "../chat/Translation.js";
 import { HostApiError, type HostLink } from "../host/client.js";
 import { activeModel, useProfileChoices } from "../lib/choices.js";
 import { samePick } from "../lib/recents.js";
@@ -132,6 +133,7 @@ export function QuickStart({
           />
         </div>
         <div className="quick-picks">
+          <DraftTranslation link={link} text={draft.text} disabled={busy} onReplace={text => update({ text })} />
           {topicsOn && <button type="button" className="quick-pick" aria-label={`专题：${topic?.title ?? "不选"}`} onClick={() => setPicking("topic")} data-testid="quick-topic">
             <span className="quick-pick-lab">专题</span>
             <span className={topic ? "quick-pick-value" : "quick-pick-value none"}>{topic?.title ?? "不选"}</span>

@@ -933,36 +933,36 @@ export const ANNOTATION_QUOTE_LIMIT = 300;
 
 // A message that refers to annotations (2026-10-15, like quoting in a chat app): the person's text, then one block the
 // model reads as plain text and the conversation shows as small 「批注1」 tags.
-const REFS_HEAD = "【引用的批注】";
-const REF_LINE = /^【批注(\d+)】针对你回复中的这段：$/;
+// Older chats and plan review use 批注. Both formats must remain readable without rewriting history.
+const REF_LINE = /^【(?:批注|追问)(\d+)】针对你回复中的这段：$/;
 
 /** The person's text followed by the annotations it refers to, in their numbers' order. */
-export function composeAnnotationRefs(text: string, refs: ReadonlyArray<{ n: number; quote: string; note: string }>): string {
+export function composeAnnotationRefs(text: string, refs: ReadonlyArray<{ n: number; quote: string; note: string }>, noun: "追问" | "批注" = "批注"): string {
   if (!refs.length) return text;
   const parts = [...refs]
     .sort((a, b) => a.n - b.n)
     .map((a) => {
       const quote = a.quote.length > ANNOTATION_QUOTE_LIMIT ? `${a.quote.slice(0, ANNOTATION_QUOTE_LIMIT)}…` : a.quote;
-      return `【批注${a.n}】针对你回复中的这段：\n${quote.split("\n").map((line) => `> ${line}`).join("\n")}\n我的批注：${a.note.trim()}`;
+      return `【${noun}${a.n}】针对你回复中的这段：\n${quote.split("\n").map((line) => `> ${line}`).join("\n")}\n我的${noun}：${a.note.trim()}`;
     });
-  return `${text.trim() ? `${text.trim()}\n\n` : ""}${REFS_HEAD}\n${parts.join("\n\n")}`;
+  return `${text.trim() ? `${text.trim()}\n\n` : ""}【引用的${noun}】\n${parts.join("\n\n")}`;
 }
 
 /** The other way: the person's text and the annotations a sent message referred to (none: the text as it is). */
 export function splitAnnotationRefs(message: string): { text: string; refs: Array<{ n: number; quote: string; note: string }> } {
-  const at = message.startsWith(`${REFS_HEAD}\n`) ? 0 : message.indexOf(`\n\n${REFS_HEAD}\n`);
-  if (at < 0) return { text: message, refs: [] };
-  const block = message.slice(at === 0 ? REFS_HEAD.length + 1 : at + REFS_HEAD.length + 3);
+  const header = /(?:^|\n\n)【引用的(批注|追问)】\n/.exec(message);
+  if (!header) return { text: message, refs: [] };
+  const at = header.index, block = message.slice(at + header[0].length), prefix = `我的${header[1]}：`;
   const refs: Array<{ n: number; quote: string; note: string }> = [];
-  for (const entry of block.split(/\n\n(?=【批注\d+】)/)) {
+  for (const entry of block.split(/\n\n(?=【(?:批注|追问)\d+】)/)) {
     const lines = entry.split("\n");
     const head = REF_LINE.exec(lines[0] ?? "");
-    const noteAt = lines.findIndex((l) => l.startsWith("我的批注："));
+    const noteAt = lines.findIndex((l) => l.startsWith(prefix));
     if (!head || noteAt < 1) return { text: message, refs: [] };
     refs.push({
       n: Number(head[1]),
       quote: lines.slice(1, noteAt).map((l) => l.replace(/^> ?/, "")).join("\n"),
-      note: [lines[noteAt]!.slice("我的批注：".length), ...lines.slice(noteAt + 1)].join("\n"),
+      note: [lines[noteAt]!.slice(prefix.length), ...lines.slice(noteAt + 1)].join("\n"),
     });
   }
   return { text: at === 0 ? "" : message.slice(0, at), refs };

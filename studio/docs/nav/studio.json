@@ -520,12 +520,15 @@
     {
       "id": "ui.chat",
       "label": "对话区",
-      "aliases": ["对话", "Transcript", "chat", "详细", "完全展开", "思考", "审批", "提问", "questions", "全部模型", "切换模型", "跨渠道接续", "Fast额度", "权限菜单", "分隔线", "预览比例", "单聊天", "加号菜单", "目标模式", "计划模式", "草图", "插件技能"],
+      "aliases": ["对话", "Transcript", "chat", "详细", "完全展开", "思考", "审批", "提问", "追问", "草稿翻译", "选段翻译", "questions", "全部模型", "切换模型", "跨渠道接续", "Fast额度", "权限菜单", "分隔线", "预览比例", "单聊天", "加号菜单", "目标模式", "计划模式", "草图", "插件技能"],
       "category": "ui",
       "purpose": "会话的对话区：轮次和折叠、思考、工具行、审批和提问；Codex 风格输入框的模型/思考强度浮层、搜索型号、权限和工具菜单，以及无衬线正文排版。",
       "anchors": [
         { "label": "对话区", "path": "studio/packages/ui/src/chat/Transcript.tsx", "anchor": "export const Transcript" },
         { "label": "轮次折叠", "path": "studio/packages/ui/src/chat/turns.ts" },
+        { "label": "草稿和选段翻译", "path": "studio/packages/ui/src/chat/Translation.tsx" },
+        { "label": "翻译模型设置", "path": "studio/packages/ui/src/settings/TranslationSection.tsx" },
+        { "label": "GPT 纯文本翻译请求", "path": "studio/packages/host/src/runtime/codex/translate.ts" },
         { "label": "会话选项栏", "path": "studio/packages/ui/src/chat/SessionOptionsBar.tsx" },
         { "label": "Codex 原生加号功能", "path": "studio/packages/ui/src/chat/CodexAddMenu.tsx", "anchor": "export function CodexAddMenu" },
         { "label": "草图附件", "path": "studio/packages/ui/src/chat/SketchDialog.tsx", "anchor": "export function SketchDialog" },

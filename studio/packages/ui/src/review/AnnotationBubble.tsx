@@ -43,6 +43,8 @@ export function SelectionBar({
   scroller,
   at,
   canQuote,
+  noun = "批注",
+  onTranslate,
   onAnnotate,
   onQuote,
   onCopy,
@@ -51,6 +53,8 @@ export function SelectionBar({
   scroller: RefObject<HTMLElement | null>;
   at: ContentRect;
   canQuote: boolean;
+  noun?: "批注" | "追问";
+  onTranslate?(): void;
   onAnnotate(): void;
   onQuote(): void;
   /** 复制 (2026-10-19, in place of the right-click menu): the bar stays, saying 已复制 a moment. */
@@ -64,15 +68,16 @@ export function SelectionBar({
     const t = setTimeout(() => setCopied(false), 1200);
     return () => clearTimeout(t);
   }, [copied]);
-  const { style, ref } = usePlacement(scroller, at, 132 + (onBookmark ? 54 : 0) + (onCopy ? 64 : 0));
+  const { style, ref } = usePlacement(scroller, at, 132 + (BOOKMARKS_ENABLED && onBookmark ? 54 : 0) + (onCopy ? 64 : 0) + (onTranslate ? 54 : 0));
   return (
     <div ref={ref} className="sel-bar" style={style} role="toolbar" aria-label="选中的文字" data-testid="selection-bar" onMouseDown={(e) => e.preventDefault()}>
       <button type="button" onClick={onAnnotate}>
-        批注
+        {noun}
       </button>
       <button type="button" disabled={!canQuote} onClick={onQuote}>
         引用
       </button>
+      {onTranslate && <button type="button" onClick={onTranslate}>翻译</button>}
       {onCopy && (
         <button
           type="button"
@@ -100,12 +105,14 @@ export type BubbleTarget = { kind: "new"; anchor: SelectionAnchor; at: ContentRe
 export function AnnotationBubble({
   scroller,
   target,
+  noun = "批注",
   onSave,
   onDelete,
   onClose,
 }: {
   scroller: RefObject<HTMLElement | null>;
   target: BubbleTarget;
+  noun?: "批注" | "追问";
   /** Resolves true once saved (the bubble then closes). */
   onSave(note: string): Promise<boolean>;
   onDelete?(): void;
@@ -154,8 +161,8 @@ export function AnnotationBubble({
       fromBottom={above}
       bounds={{ left, inner }}
       resetKey={target}
-      title={target.kind === "edit" ? "修改批注" : "添加批注"}
-      label={target.kind === "edit" ? "修改批注" : "添加批注"}
+      title={(target.kind === "edit" ? "修改" : "添加") + noun}
+      label={(target.kind === "edit" ? "修改" : "添加") + noun}
       testId="annotation-bubble"
       onKeyDown={(e) => {
         if (e.key === "Escape") {
@@ -170,7 +177,7 @@ export function AnnotationBubble({
       <blockquote className="anno-bubble-quote" title={quote}>
         {quote}
       </blockquote>
-      <textarea ref={input} value={note} onChange={(e) => setNote(e.target.value)} rows={3} placeholder="对这段的意见或问题（Ctrl+Enter 保存）" aria-label="批注内容" />
+      <textarea ref={input} value={note} onChange={(e) => setNote(e.target.value)} rows={3} placeholder={noun === "追问" ? "想就这段问什么？（Ctrl+Enter 保存）" : "对这段的意见或问题（Ctrl+Enter 保存）"} aria-label={noun + "内容"} />
       <div className="anno-bubble-actions">
         {target.kind === "edit" && onDelete && (
           <button type="button" className="link-btn danger" disabled={busy} onClick={onDelete}>

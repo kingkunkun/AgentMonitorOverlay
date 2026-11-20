@@ -4,7 +4,7 @@ import { onAnnotationsPainted, paintedEnds } from "../review/highlights.js";
 import { annotationNumber } from "../review/annotationRefs.js";
 
 /**
- * Where the 批注N marks go: just after the end of each painted annotation, in the scroller's content coordinates, kept
+ * Where the 追问N marks go: just after the end of each painted annotation, in the scroller's content coordinates, kept
  * up to date as the highlights repaint and the conversation resizes.
  */
 export function useAnnotationMarks(scroller: RefObject<HTMLDivElement | null>, shown: readonly Annotation[], all: readonly Annotation[]): Array<{ id: string; n: number; top: number; left: number; title: string }> {

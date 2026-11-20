@@ -343,11 +343,16 @@ class StudioRepository(private val platform: Platform) {
         val frame = JSONObject().put("type", "relay").put("to", JSONObject().put("account", peer.account).put("device", peer.device)).put("id", id).put("kind", kind).put("body", body)
         try {
             check(socket?.outgoing?.trySend(Frame.Text(frame.toString()))?.isSuccess == true) { "未连接团队服务器" }
-            val answer = withTimeout(30000) { result.await() }
+            val answer = withTimeout(if (kind == "rt.translate") 100_000L else 30_000L) { result.await() }
             check(epoch == generation) { "连接已切换，此操作结果未确认" }
             return answer
         } catch (e: TimeoutCancellationException) { error("远端没有回音，结果未确认；请先刷新再决定是否重试") }
         finally { pending.remove(id) }
+    }
+
+    suspend fun translate(peer: Peer, text: String, target: String): String {
+        require(text.isNotBlank() && text.length <= 16_000) { "一次可翻译 1 至 16000 个字符" }
+        return command(peer, "rt.translate", JSONObject().put("text", text).put("target", target)).str("text").also { check(it.isNotBlank()) { "没有收到译文" } }
     }
 
     /** Every granted task again, a few at a time; a second call while one runs makes it go once more after. */

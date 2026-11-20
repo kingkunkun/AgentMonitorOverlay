@@ -5,7 +5,10 @@ import { call, copyText, HostApiError, type HostLink } from "../host/client.js";
 import { SessionOptionsBar } from "../chat/SessionOptionsBar.js";
 import { SketchDialog } from "../chat/SketchDialog.js";
 import { AddFilesDialog } from "../attach/AddFilesDialog.js";
-import { readSelection, type SelectionAnchor } from "../lib/selection.js";
+import { readSelection, selectedChatText, type SelectionAnchor } from "../lib/selection.js";
+import { ContextMenu } from "../lib/ContextMenu.js";
+import { DraftTranslation, readingTarget, targetLabel, TranslationDialog } from "../chat/Translation.js";
+import type { TranslationTarget } from "@amo-studio/protocol";
 import { ReplyNav } from "./ReplyNav.js";
 import { navHistory } from "../shell/navHistory.js";
 import { FindBar } from "../gitreview/FindBar.js";
@@ -80,7 +83,7 @@ interface ThreadProps {
   items: readonly SessionItem[];
   /** Unsent annotations are highlighted in the replies they point at. */
   annotations: readonly Annotation[];
-  /** The annotations the next message refers to (批注N tags in the composer, 2026-10-15). */
+  /** The annotations the next message refers to (追问N tags in the composer, 2026-10-15). */
   annotationRefs?: AnnotationRefs;
   model: string;
   busy: boolean;
@@ -233,9 +236,16 @@ export function Thread({ link, presets, session, firstMessage, profile, profiles
   // its highlighted passage).
   const [bar, setBar] = useState<{ anchor: SelectionAnchor; at: ContentRect } | null>(null);
   const [bubble, setBubble] = useState<BubbleTarget | null>(null);
+  const [selectionMenu, setSelectionMenu] = useState<{ id: string | null; text: string; x: number; y: number } | null>(null);
+  const [translation, setTranslation] = useState<{ id: string | null; source: string; target: TranslationTarget } | null>(null);
+  const readTranslation = (source: string, target = readingTarget(source)) => {
+    setBar(null); setSelectionMenu(null); setTranslation({ id: sessionId, source, target });
+  };
   useEffect(() => {
     setBar(null);
     setBubble(null);
+    setSelectionMenu(null);
+    setTranslation(null);
   }, [session?.id]);
   const selectionRect = (): ContentRect | null => {
     const sel = window.getSelection();
@@ -247,7 +257,7 @@ export function Thread({ link, presets, session, firstMessage, profile, profiles
   const inBubble = (t: EventTarget | null) => t instanceof Element && !!t.closest(".anno-bubble, .sel-bar");
 
   const sources = new Map(items.filter((i) => i.type === "agent").map((i) => [i.id, (i as { markdown: string }).markdown]));
-  // Painted: the unsent ones, and sent ones the next message refers to again; each gets its 批注N mark.
+  // Painted: the unsent ones, and sent ones the next message refers to again; each gets its 追问N mark.
   const shownAnnotations = annotations.filter((a) => !a.sentAt || annotationRefs?.has(a.id));
   useAnnotationHighlights(scroller, shownAnnotations, sources);
   const marks = useAnnotationMarks(scroller, shownAnnotations, annotations);
@@ -541,7 +551,13 @@ ${d}` : back));
             }
           }}
           onMouseDown={(e) => {
-            if (!inBubble(e.target)) setBar(null);
+            if (e.button === 0 && !inBubble(e.target)) setBar(null);
+          }}
+          onContextMenu={(e) => {
+            const text = selectedChatText(e.currentTarget, e.target);
+            if (!text) return;
+            e.preventDefault(); e.stopPropagation(); setBar(null);
+            setSelectionMenu({ id: sessionId, text, x: e.clientX, y: e.clientY });
           }}
           onMouseUp={(e) => {
             if (inBubble(e.target) || e.button !== 0) return;
@@ -587,7 +603,7 @@ ${d}` : back));
               onClick={() => flashAnnotation(m.id)}
               data-testid="annotation-mark"
             >
-              批注{m.n}
+              追问{m.n}
             </button>
           ))}
           <div className="thread-inner">
@@ -611,6 +627,8 @@ ${d}` : back));
           </div>
           {bar && !bubble && (
             <SelectionBar
+              noun="追问"
+              onTranslate={() => readTranslation(bar.anchor.quote)}
               scroller={scroller}
               at={bar.at}
               canQuote={!readOnly}
@@ -636,6 +654,7 @@ ${d}` : back));
           )}
           {bubble && (
             <AnnotationBubble
+              noun="追问"
               key={bubble.kind === "edit" ? bubble.annotation.id : `${bubble.anchor.itemId}:${bubble.anchor.start}`}
               scroller={scroller}
               target={bubble}
@@ -655,6 +674,11 @@ ${d}` : back));
             />
           )}
         </div>
+        {selectionMenu && selectionMenu.id === sessionId && <ContextMenu at={selectionMenu} label="选中文字" onClose={() => setSelectionMenu(null)}>
+          <button type="button" role="menuitem" onClick={() => readTranslation(selectionMenu.text)}>翻译成{targetLabel(readingTarget(selectionMenu.text))}</button>
+          <button type="button" role="menuitem" onClick={() => { void copyText(selectionMenu.text); setSelectionMenu(null); }}>复制原文</button>
+        </ContextMenu>}
+        {translation && translation.id === sessionId && <TranslationDialog link={link} source={translation.source} initialTarget={translation.target} onClose={() => setTranslation(null)} />}
         {turnStart.shown && <TurnStartHint raised={!atBottom} onJump={turnStart.jump} />}
         {!atBottom && (
           <button
@@ -761,6 +785,7 @@ ${d}` : back));
                 {...(sending && sending === session?.id && !blocked && !attachHold ? { title: `Host 还没回应这条消息；${SEND_GIVE_UP_MS / 1000} 秒内还没有，文字会放回输入框` } : halting && !blocked && !attachHold ? { title: "模型手上的命令或回复收住可能要几秒，这一轮结束前会一直显示" } : {})}
               >{blocked || attachHold || (sending && sending === session?.id ? "正在发送…" : "") || (halting === "stop" ? "正在停止…" : halting === "now" ? "正在打断，停下后马上发出…" : "") || (generating && !readOnly && !planReview ? (session?.runtime === "dsh" ? "本轮结束后发出 · Ctrl+Enter 立即发送" : `${sendsNow ? "" : "生成中："}${queues ? "工具调用后或本轮结束后读到" : "发送会插入到当前回合"}${sendsNow ? " · Ctrl+Enter 立即发送" : ""}`) : "")}</span>
             <div className="chat-bar codex-chat-bar">
+              <DraftTranslation key={session.id} link={link} text={draft} disabled={readOnly || !!sending} onReplace={setDraft} />
               <HashPresetButton link={link} onPick={(text) => setDraft(`${text}${draft.trim() ? `\n\n${draft}` : ""}`)} />
               <button
                 type="button"

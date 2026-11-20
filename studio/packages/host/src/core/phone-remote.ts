@@ -204,6 +204,8 @@ class PhoneConnection {
     this.syncGrants();
     const b = f.body && typeof f.body === "object" ? f.body as Record<string, unknown> : {};
     if (f.kind === "ping") return { kind: "pong", body: { at: Date.now() } };
+    // Only the authenticated, paired phone above. No lookup of a conversation or file: the phone supplies the text.
+    if (f.kind === "rt.translate") return { kind: REMOTE_KINDS.ok, body: await this.phone.host.cli.translate({ text: b.text, target: b.target }) };
     if (f.kind === REMOTE_KINDS.catalog) return { kind: REMOTE_KINDS.ok, body: this.creates.serveCatalog(f.from) };
     if (f.kind === REMOTE_KINDS.createTemplates) return { kind: REMOTE_KINDS.ok, body: { templates: this.creates.templates(f.from, b.workspaceId) } };
     if (f.kind === REMOTE_KINDS.create) return { kind: REMOTE_KINDS.ok, body: await this.creates.create(f.from, b) };

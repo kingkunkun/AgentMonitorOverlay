@@ -26,16 +26,16 @@ export function composerPlaceholder(s: { readOnly: boolean; claudeSub: boolean; 
           : "和 WorkStudio 一起工作";
 }
 
-/** The 批注N tags of the annotations the next message refers to. */
+/** The 追问N tags of the annotations the next message refers to. */
 export function AnnotationRefChips({ refs, annotations }: { refs: AnnotationRefs; annotations: readonly Annotation[] }) {
   return (
-    <div className="anno-refs" aria-label="这条消息引用的批注" data-testid="annotation-refs">
+    <div className="anno-refs" aria-label="这条消息引用的追问" data-testid="annotation-refs">
       {refs.list.map((a) => (
         <span key={a.id} className="anno-ref" title={`「${a.quote}」\n${a.note}`} data-testid="annotation-ref">
           <button type="button" className="anno-ref-name" onClick={() => flashAnnotation(a.id)}>
-            批注{annotationNumber(a, annotations)}
+            追问{annotationNumber(a, annotations)}
           </button>
-          <button type="button" className="anno-ref-x" aria-label={`不引用批注${annotationNumber(a, annotations)}`} title="这条消息不引用它" onClick={() => refs.remove(a.id)}>
+          <button type="button" className="anno-ref-x" aria-label={`不引用追问${annotationNumber(a, annotations)}`} title="这条消息不引用它" onClick={() => refs.remove(a.id)}>
             ×
           </button>
         </span>

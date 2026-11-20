@@ -39,22 +39,22 @@ export function AnnotationPanel({ annotations, busy, canSend, onEdit, onDelete, 
     );
 
   return (
-    <aside className="anno-panel" aria-label="批注">
+    <aside className="anno-panel" aria-label="追问">
       {header}
       <div className="anno-head">
-        <span className="anno-title">批注</span>
+        <span className="anno-title">追问</span>
         <span className="anno-count" data-testid="annotation-count">
           {unsent.length}
         </span>
       </div>
 
-      {!annotations.length && <div className="anno-empty">选中回复里的文字，点旁边的「批注」即可添加；点高亮的段落可以修改。</div>}
+      {!annotations.length && <div className="anno-empty">选中回复里的文字，点旁边的「追问」即可添加；点高亮的段落可以修改。</div>}
 
       {pinned.map(card)}
 
       {unsent.filter((a) => !a.pinnedAt).map(card)}
 
-      {unsent.length > 0 && <div className="anno-hint">会作为「批注N」带进你的下一条消息，不会单独发出。</div>}
+      {unsent.length > 0 && <div className="anno-hint">会作为「追问N」带进你的下一条消息，不会单独发出。</div>}
 
       {sent.length > 0 && (
         <div className="anno-sent">
@@ -77,8 +77,8 @@ function PinButton({ annotation, n, onPin }: { annotation: Annotation; n: number
       type="button"
       className="anno-pin"
       aria-pressed={pinned}
-      aria-label={pinned ? `取消置顶批注${n}` : `置顶批注${n}`}
-      title={pinned ? "取消置顶" : "置顶：排在批注栏最上面，发送后也留着"}
+      aria-label={pinned ? `取消置顶追问${n}` : `置顶追问${n}`}
+      title={pinned ? "取消置顶" : "置顶：排在追问栏最上面，发送后也留着"}
       onClick={() => onPin(annotation.id, !pinned)}
       data-testid="annotation-pin"
     >
@@ -109,7 +109,7 @@ function SentCard({
   return (
     <div className={annotation.pinnedAt ? "anno-card sent pinned" : "anno-card sent"} data-testid="annotation-sent">
       <button type="button" className="anno-quote-btn" onClick={() => onLocate(annotation)} title="定位到原文">
-        <span className="anno-num">批注{n}</span>「{annotation.quote}」
+        <span className="anno-num">追问{n}</span>「{annotation.quote}」
       </button>
       <span className="anno-note">{annotation.note}</span>
       <div className="anno-actions">
@@ -160,7 +160,7 @@ function AnnotationCard({
   return (
     <div className={annotation.pinnedAt ? "anno-card pinned" : "anno-card"} data-testid="annotation">
       <button type="button" className="anno-quote-btn" onClick={() => onLocate(annotation)} title="定位到原文">
-        <span className="anno-num">批注{n}</span>「{annotation.quote}」
+        <span className="anno-num">追问{n}</span>「{annotation.quote}」
       </button>
       {editing ? (
         <form
@@ -172,7 +172,7 @@ function AnnotationCard({
             setEditing(false);
           }}
         >
-          <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} aria-label="修改批注" />
+          <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} aria-label="修改追问" />
           <div className="add-ws-actions">
             <button type="submit" className="btn-primary" disabled={busy || !note.trim()}>
               保存

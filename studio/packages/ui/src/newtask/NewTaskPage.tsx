@@ -13,6 +13,7 @@ import { FastUsageHint } from "../chat/FastUsageHint.js";
 import { ComposerModelPicker } from "../chat/ComposerModelPicker.js";
 import { PermissionPicker } from "../chat/PermissionPicker.js";
 import { SketchDialog } from "../chat/SketchDialog.js";
+import { DraftTranslation } from "../chat/Translation.js";
 import { AddFilesDialog } from "../attach/AddFilesDialog.js";
 import { DSH_FULL_ACCESS, SandboxHint } from "../settings/SandboxHint.js";
 import { draftText, submitDraft, useTaskDraft } from "./draft.js";
@@ -358,6 +359,7 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
                 </div>}
               </div>
               {draft.options.plan && profiles.find((p) => p.id === draft.pick.profileId)?.runtime === "codex" && <span className="composer-mode-badge">计划模式</span>}
+              <DraftTranslation link={link} text={draft.text} disabled={busy} onReplace={text => update({ text })} />
               <HashPresetButton link={link} onPick={(text) => update({ text: `${text}${draft.text.trim() ? `\n\n${draft.text}` : ""}` })} />
               <button type="button" className="round-btn attach" aria-label="添加图片或文件" title="添加图片或文件（也可以粘贴或拖进来）" onClick={() => picker.current?.click()}>
                 <IconPaperclip />

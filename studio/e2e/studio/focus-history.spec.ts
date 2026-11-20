@@ -80,14 +80,14 @@ test("the annotation bubble moves by its head and keeps what is written", async 
   studio = await launchStudio();
   const { page } = studio;
   const ws = await studio.api<Workspace>("POST", "/api/workspaces", { path: studio.workspace("alpha") });
-  await studio.api("POST", "/api/tasks", { title: "批注", workspaceId: ws.id, firstSession: { profileId: "codex-mock", text: "[[markdown]]" } });
+  await studio.api("POST", "/api/tasks", { title: "追问", workspaceId: ws.id, firstSession: { profileId: "codex-mock", text: "[[markdown]]" } });
   await page.getByTestId("task-card").first().click();
   const reply = page.getByTestId("msg-agent").first();
   await expect(reply.locator("table.md-table")).toBeVisible({ timeout: 30_000 });
   await selectAndRelease(reply, "发现 3 张表");
-  await page.getByTestId("selection-bar").getByRole("button", { name: "批注" }).click();
+  await page.getByTestId("selection-bar").getByRole("button", { name: "追问" }).click();
   const bubble = page.getByTestId("annotation-bubble");
-  await bubble.getByLabel("批注内容").fill("说明是哪三张");
+  await bubble.getByLabel("追问内容").fill("说明是哪三张");
 
   // The bubble keeps where it was put as an offset from its place by the passage (it still scrolls with the text).
   const head = (await bubble.getByTestId("annotation-bubble-drag").boundingBox())!;
@@ -97,7 +97,7 @@ test("the annotation bubble moves by its head and keeps what is written", async 
   await page.mouse.up();
   await expect(bubble).toHaveAttribute("style", /translate\(60px, 90px\)/);
   // Still open, still holding the note; it saves as before.
-  await expect(bubble.getByLabel("批注内容")).toHaveValue("说明是哪三张");
+  await expect(bubble.getByLabel("追问内容")).toHaveValue("说明是哪三张");
   await bubble.getByRole("button", { name: "保存" }).click();
   await expect(bubble).toHaveCount(0);
   await expect(page.getByTestId("annotation-count")).toHaveText("1");

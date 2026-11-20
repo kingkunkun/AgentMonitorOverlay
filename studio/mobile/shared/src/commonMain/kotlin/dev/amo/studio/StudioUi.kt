@@ -267,6 +267,7 @@ private fun taskTone(t: RemoteTask): Tone {
             }
             Choice("模型", models, profile) { profile = it }
             OutlinedTextField(text, { text = it }, label = { Text("给模型的第一条消息") }, minLines = 3, maxLines = 8, shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth().testTag("create-text"))
+            DraftTranslate(repo, if (task) state.selectedPeer else state.selectedTask?.peer, text, state.connected && !state.busy) { text = it }
             if (models.isEmpty()) Text("电脑还没有允许手机用的模型，请在电脑的「远程」设置里打开。", style = MaterialTheme.typography.bodySmall, color = LocalAmoColors.current.attention)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End), verticalAlignment = Alignment.CenterVertically) {
                 Text(if (task) "建好后马上开始第一个会话" else "在这个任务下开一个新会话", style = MaterialTheme.typography.bodySmall, color = LocalAmoColors.current.dim, modifier = Modifier.weight(1f))

@@ -19,7 +19,7 @@ export function sessionsRoutes(service: HostService): Route[] {
       if (!Array.isArray(annotations) || annotations.some((a) => typeof a !== "string")) throw new HostError("bad_request", "annotations must be a list of ids");
       if (b.now !== undefined && typeof b.now !== "boolean") throw new HostError("bad_request", "now must be true or false");
       if (service.buildJob.matches(b.text)) {
-        if (attachments.length || annotations.length) throw new HostError("bad_request", "打包预设不能同时附带本机文件或批注，请分开发送");
+        if (attachments.length || annotations.length) throw new HostError("bad_request", "打包预设不能同时附带本机文件或追问，请分开发送");
         return service.buildJob.command(params.id!, b.text as string);
       }
       // 子会话设定 named in the message (2026-11-05): kept for this session's session_start before it reads the message.

@@ -2,7 +2,7 @@ package dev.amo.studio
 
 /** Phone protocol has no device-file upload, native bridge or remotely executable command. */
 internal object PhonePrivacy {
-    private val commands = setOf("rt.list", "rt.task", "rt.items", "rt.catalog", "rt.create", "rt.start", "rt.send", "rt.approve", "rt.answer", "rt.interrupt", "rt.file", "rt.rename", "rt.task-archive", "rt.presets", "rt.people", "rt.choices", "rt.options", "rt.continue")
+    private val commands = setOf("rt.list", "rt.task", "rt.items", "rt.catalog", "rt.create", "rt.start", "rt.send", "rt.approve", "rt.answer", "rt.interrupt", "rt.file", "rt.rename", "rt.task-archive", "rt.presets", "rt.people", "rt.choices", "rt.options", "rt.continue", "rt.translate")
     fun requireCommand(kind: String, body: JSONObject) {
         require(kind in commands) { "手机隐私规则禁止此命令" }
         require(!body.has("uploads") || body.isNull("uploads") || body.optJSONArray("uploads")?.length() == 0) { "手机端不支持上传设备文件" }

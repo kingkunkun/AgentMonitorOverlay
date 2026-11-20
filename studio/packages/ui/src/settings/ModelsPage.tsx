@@ -6,6 +6,7 @@ import { PresetsSection } from "./PresetsSection.js";
 import { ChannelNavItem, ChannelPage, SCHEME, useChannels } from "./ChannelsSection.js";
 import { ChannelDialog } from "./ChannelDialog.js";
 import { QuickModelsSection } from "./QuickModelsSection.js";
+import { TranslationSection } from "./TranslationSection.js";
 import { DshSection } from "./DshSection.js";
 import { ClaudeCodeSection } from "./ClaudeCodeSection.js";
 import { ClaudeAccountsSection } from "./ClaudeAccountsSection.js";
@@ -26,7 +27,7 @@ const ADD_HINT = {
 /** The built-in Claude subscription channel: it signs in through the person's own Claude Code. */
 const CLAUDE_SUBSCRIPTION = "claude-subscription";
 
-type View = { kind: "channel"; id: string } | { kind: "quick" } | { kind: "presets" };
+type View = { kind: "channel"; id: string } | { kind: "quick" } | { kind: "presets" } | { kind: "translation" };
 
 /** What was open last: 设置 opens on it again (for this window). */
 let lastView: View | null = null;
@@ -92,6 +93,7 @@ export function ModelsPage({ link, settings }: { link: HostLink; settings: Studi
         <button type="button" aria-current={current.kind === "presets" ? "page" : undefined} className="models-nav-item plain" onClick={() => select({ kind: "presets" })} data-testid="models-nav-presets">
           常用预设
         </button>
+        <button type="button" aria-current={current.kind === "translation" ? "page" : undefined} className="models-nav-item plain" onClick={() => select({ kind: "translation" })}>翻译</button>
       </nav>
       <div className="models-detail" key={current.kind === "channel" ? current.id : current.kind}>
         <CredentialMessage message={message} />
@@ -112,6 +114,7 @@ export function ModelsPage({ link, settings }: { link: HostLink; settings: Studi
         )}
         {current.kind === "quick" && <QuickModelsSection link={link} settings={settings} profiles={profiles} />}
         {current.kind === "presets" && <PresetsSection link={link} presets={settings?.presets ?? []} />}
+        {current.kind === "translation" && <TranslationSection link={link} />}
       </div>
       {dialog && (
         <ChannelDialog

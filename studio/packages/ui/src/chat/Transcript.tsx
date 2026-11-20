@@ -327,7 +327,7 @@ function StandaloneItem({ item, busy, highlights, onApprove }: { item: SessionIt
 }
 
 /**
- * The person's message: images first, then the annotations it referred to (批注N tags, 2026-10-15), the text, then the
+ * The person's message: images first, then the annotations it referred to (追问N tags, 2026-10-15), the text, then the
  * files it referenced (both read back from the text), and a small 「AMO 更新」 tag when the Host told the session what
  * changed about its task (2026-10-17; the tag shows the lines on hover).
  */
@@ -347,7 +347,7 @@ function UserBubble({ item }: { item: Extract<SessionItem, { type: "user" }> }) 
           <span className="msg-anno-refs">
             {annotations.map((r) => (
               <span key={r.n} className="anno-ref sent" title={`「${r.quote}」\n${r.note}`} data-testid="msg-annotation-ref">
-                批注{r.n}
+                追问{r.n}
               </span>
             ))}
           </span>

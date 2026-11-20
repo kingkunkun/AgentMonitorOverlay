@@ -23,9 +23,7 @@ async function openMarkdownReply(s: Studio) {
   return { reply, session: created.session };
 }
 
-// 2026-10-19: what was the right-click menu on selected text (添加批注 / 引用到输入框 / 复制) is the bar that comes up
-// with the selection — 批注 / 引用 / 复制 / 书签; a right-click on a selection opens nothing.
-test("selection bar: annotate, quote into the composer, copy; no right-click menu", async () => {
+test("selection bar: follow up, quote and copy; right-click translates just the selection", async () => {
   studio = await launchStudio();
   const { page } = studio;
   const { reply, session } = await openMarkdownReply(studio);
@@ -33,13 +31,13 @@ test("selection bar: annotate, quote into the composer, copy; no right-click men
 
   // 批注: the bubble by the selection shows the quote; saving stores it with its source range and context.
   await selectAndRelease(reply, "发现 3 张表");
-  await expect(bar.getByRole("button")).toHaveText(["批注", "引用", "复制", "书签"]);
-  await screenshot(studio.app, "stage-2", "S2-03-context-menu", page);
-  await bar.getByRole("button", { name: "批注" }).click();
+  await expect(bar.getByRole("button")).toHaveText(["追问", "引用", "翻译", "复制"]);
+  await screenshot(studio.app, "studio", "follow-up-selection", page);
+  await bar.getByRole("button", { name: "追问" }).click();
   await expect(bar).toHaveCount(0);
   const draft = page.getByTestId("annotation-bubble");
   await expect(draft).toContainText("发现 3 张表");
-  await draft.getByLabel("批注内容").fill("这里应该说明是哪三张");
+  await draft.getByLabel("追问内容").fill("这里应该说明是哪三张");
   await draft.getByRole("button", { name: "保存" }).click();
   await expect(draft).toHaveCount(0);
   const [saved] = await studio.api<Annotation[]>("GET", `/api/sessions/${session.id}/annotations`);
@@ -60,7 +58,18 @@ test("selection bar: annotate, quote into the composer, copy; no right-click men
   await expect(page.getByTestId("selection-copy")).toHaveText("已复制");
   await expect(page.getByTestId("selection-copy")).toHaveText("复制");
 
-  // A right-click on a selection: no menu of its own any more.
-  await selectAndRightClick(page, reply, "校验结果");
-  await expect(page.getByRole("menu", { name: "选中文字" })).toHaveCount(0);
+  const requests: unknown[] = [];
+  await page.route("**/api/translate", route => {
+    requests.push(route.request().postDataJSON());
+    return route.fulfill({ json: { model: "gpt-6.2-sol", text: "首领等级 20" } });
+  });
+  await selectAndRightClick(page, reply, "Boss_Lv20");
+  await page.getByRole("menuitem", { name: "翻译成中文" }).click();
+  const dialog = page.getByRole("dialog", { name: "选段翻译" });
+  await expect(dialog.getByLabel("译文")).toHaveText("首领等级 20");
+  await dialog.getByText("查看原文").click();
+  expect(requests).toEqual([{ text: "Boss_Lv20", target: "zh" }]);
+  await screenshot(studio.app, "studio", "conversation-translation", page);
+  await page.keyboard.press("Escape");
+  await expect(page.getByLabel("输入消息")).toHaveValue("> 先修正概率\n\n");
 });

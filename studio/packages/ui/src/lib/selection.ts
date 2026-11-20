@@ -45,6 +45,24 @@ function closestElement(node: Node | null): Element | null {
   return node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
 }
 
+/** User/assistant message text only. A selection spanning replies leaves out tools, timestamps and controls. */
+export function selectedChatText(container: HTMLElement, target: EventTarget | null): string | null {
+  const sel = window.getSelection();
+  if (!sel?.rangeCount || sel.isCollapsed) return null;
+  const range = sel.getRangeAt(0), selector = ".msg-agent, .msg-user .msg-text";
+  const start = closestElement(range.startContainer)?.closest(selector), end = closestElement(range.endContainer)?.closest(selector);
+  const hit = target instanceof Element ? target.closest(selector) : null;
+  if (!start || !end || !hit || !container.contains(start) || !container.contains(end) || !range.intersectsNode(hit)) return null;
+  if (start === end) return sel.toString().trim() || null;
+  return Array.from(container.querySelectorAll(selector)).filter(el => range.intersectsNode(el)).map(el => {
+    const part = document.createRange();
+    part.selectNodeContents(el);
+    if (el === start) part.setStart(range.startContainer, range.startOffset);
+    if (el === end) part.setEnd(range.endContainer, range.endOffset);
+    return part.toString();
+  }).join("\n\n").trim() || null;
+}
+
 /** Reads the current selection; returns null unless it lies within a single agent reply. */
 export function readSelection(sources: ReadonlyMap<string, string>): SelectionAnchor | null {
   const sel = window.getSelection();

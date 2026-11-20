@@ -137,7 +137,7 @@ export class SessionsFeature extends Feature<"attachments" | "collab" | "config"
     this.requireSession(sessionId);
     const referenced = annotations.length ? this.f.review.referencedAnnotations(sessionId, annotations) : null;
     if (referenced) {
-      const result = await this.sendMessage(sessionId, composeAnnotationRefs(text ?? "", referenced.refs), attachments, [], options);
+      const result = await this.sendMessage(sessionId, composeAnnotationRefs(text ?? "", referenced.refs, "追问"), attachments, [], options);
       referenced.markSent();
       return result;
     }
