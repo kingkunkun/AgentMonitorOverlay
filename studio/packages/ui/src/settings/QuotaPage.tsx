@@ -7,6 +7,7 @@ import { quotaOf } from "../lib/quota.js";
 
 // 设置 → 额度 (2026-10-15): every account whose quota Studio can follow — the subscriptions' use (GPT, Claude) and the
 // balance of channels whose site tells it (设置 → 模型) — and where each shows: the bottom of the left column, Focus.
+// 2026-11-23 (the user): the bottom of the left column shows the Claude subscription only; the others are read here.
 
 export function QuotaPage({ link, settings }: { link: HostLink; settings: StudioSettings | null }) {
   const profiles = useProfiles(link);
@@ -31,7 +32,7 @@ export function QuotaPage({ link, settings }: { link: HostLink; settings: Studio
   return (
     <section className="settings-section" aria-label="额度">
       <span className="settings-heading">额度</span>
-      <span className="settings-hint">Studio 能跟踪的额度：GPT、Claude 订阅的用量，和设置了余额查询的渠道（在 设置 → 模型 里给渠道选查询方式）。左下角点开能看每个窗口剩多少、什么时候重置。</span>
+      <span className="settings-hint">Studio 能跟踪的额度：GPT、Claude 订阅的用量，和设置了余额查询的渠道（在 设置 → 模型 里给渠道选查询方式）。左下角只显示 Claude 订阅，点开能看每个窗口剩多少、什么时候重置；其他额度在这里看。</span>
       {profiles && usage && rows.length === 0 && <span className="settings-hint">还没有能跟踪的额度。</span>}
       <div className="quota-list">
         {rows.map((p) => (
@@ -55,6 +56,7 @@ function usageText(u: AccountUsage): string {
 function QuotaRow({ link, profile, usage, display, onChange }: { link: HostLink; profile: ModelProfile; usage: AccountUsage | undefined; display: QuotaDisplay; onChange(d: QuotaDisplay): void }) {
   const { balance } = useBalance(link, profile);
   const now = usage ? usageText(usage) : balance ? balanceText(balance) : profile.balance ? "正在查询…" : "—";
+  const inFooter = !!usage && profile.runtime === "claude";
   return (
     <div className="quota-row" data-testid="quota-row" data-id={profile.id}>
       <Mark profile={profile} small />
@@ -64,10 +66,14 @@ function QuotaRow({ link, profile, usage, display, onChange }: { link: HostLink;
           {usage ? "订阅用量" : "余额"} · {now}
         </span>
       </span>
-      <label className="channel-hide">
-        <input type="checkbox" checked={display.footer} onChange={(e) => onChange({ ...display, footer: e.target.checked })} aria-label={`在左下角显示 ${profile.label} 的额度`} data-testid="quota-footer" />
-        左下角
-      </label>
+      {inFooter ? (
+        <label className="channel-hide">
+          <input type="checkbox" checked={display.footer} onChange={(e) => onChange({ ...display, footer: e.target.checked })} aria-label={`在左下角显示 ${profile.label} 的额度`} data-testid="quota-footer" />
+          左下角
+        </label>
+      ) : (
+        <span className="channel-hide quota-here" data-testid="quota-here">只在这里看</span>
+      )}
       {/* Focus no longer shows 额度 (2026-10-29 evening, the user); the setting's `focus` stays in the data, unused. */}
     </div>
   );

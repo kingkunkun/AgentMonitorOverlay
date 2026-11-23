@@ -21,6 +21,8 @@ export default defineConfig({
     },
   },
   test: {
+    // The asking permission defaults most tests are written against; people get full access (runtime/choices.ts).
+    env: { AMO_STUDIO_ASKING_DEFAULTS: "1" },
     // scripts/: the release scripts' testable parts (platform-publish.mjs).
     include: ["packages/*/src/**/*.test.ts", "scripts/**/*.test.mjs"],
     // A node:test smoke against a running android-fixture.mjs (node --test), not a vitest suite: vitest finds none in it and fails the run.

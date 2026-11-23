@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { taskProject, type Task, type Topic, type Workspace } from "@amo-studio/protocol";
+import type { Task, Topic, Workspace } from "@amo-studio/protocol";
 import { relativeTime } from "../lib/status.js";
 import type { Scope } from "./Board.js";
+import { folderOf } from "./timeline.js";
 
 // 已归档: archived tasks are never on the board; this lists the ones of the current scope (newest archived first) to
 // open them — read-only, with 恢复任务 on their page.
@@ -44,7 +45,7 @@ export function ArchivedTasks({ tasks, workspaces, topics, scope, onOpen }: { ta
           {archived.length > 6 && <input className="field" autoFocus value={query} onChange={(e) => setQuery(e.target.value)} placeholder="按名称筛选" aria-label="筛选已归档的任务" />}
           <div className="archived-rows">
             {shown.map((t) => {
-              const project = scope.kind === "workspace" ? null : taskProject(t, workspaces)?.name;
+              const project = scope.kind === "workspace" ? null : folderOf(t, workspaces).label;
               const topic = scope.kind === "topic" || !t.topicId ? null : topics.find((x) => x.id === t.topicId)?.title;
               return (
                 <button

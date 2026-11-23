@@ -105,27 +105,24 @@ test("a third-party Claude channel runs Claude Code against its address; the las
   await expect(studio.api("PUT", `/api/profiles/${channel.id}/hidden`, { hidden: true })).rejects.toThrow(/至少要留一个/);
 });
 
-test("设置 → 额度: which accounts show at the bottom of the left column (Focus shows none since 2026-10-29)", async () => {
+test("设置 → 额度: the bottom of the left column shows Claude only (2026-11-23); other accounts are seen here", async () => {
   studio = await launchStudio();
   const { page, app } = studio;
   const channel = await studio.api<ModelChannel>("POST", "/api/channels", { kind: "codex", label: "中转 GPT", baseUrl: studio.mock!.baseUrl, key: "mock-channel-key", balance: { template: "general" } });
-  const footer = page.locator(".usage-toggle");
-  await expect(footer).toContainText("中转 GPT $12.50");
 
   await page.getByRole("button", { name: "设置" }).click();
   const dialog = page.getByRole("dialog", { name: "设置" });
   await dialog.getByRole("tab", { name: "额度" }).click();
   const row = dialog.locator(`[data-testid="quota-row"][data-id="${channel.id}"]`);
   await expect(row).toContainText("余额 · 余额 $12.50");
-  await expect(row.getByTestId("quota-footer")).toBeChecked();
+  await expect(row.getByTestId("quota-here")).toHaveText("只在这里看");
+  await expect(row.getByTestId("quota-footer")).toHaveCount(0);
   await expect(row.getByTestId("quota-focus")).toHaveCount(0);
-  await row.getByTestId("quota-footer").click();
-  await expect(row.getByTestId("quota-footer")).not.toBeChecked();
   await screenshot(app, "stage-14", "S14-H-quota", page);
-  const settings = await studio.api<StudioSettings>("GET", "/api/settings");
-  expect(settings.quotaDisplay[channel.id]).toMatchObject({ footer: false });
   await page.keyboard.press("Escape");
-  await expect(footer).not.toContainText("中转 GPT");
+  await expect(page.locator(".nav-footer", { hasText: "中转 GPT" })).toHaveCount(0);
+  // 本机总 Token 的数值默认藏起来。
+  await expect(page.getByTestId("device-token-value")).toHaveText("***");
 });
 
 test("设置 → 模型 → 快速选择: the automatic row, dragged into the person's own order (2026-10-18)", async () => {

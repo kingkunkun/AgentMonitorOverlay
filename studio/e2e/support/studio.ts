@@ -45,6 +45,11 @@ export async function launchStudio(
     taskSidebar?: boolean;
     /** Adds the 「Mock DSH」 model, whose sessions run the scripted ACP agent (stage 17). */
     dsh?: boolean;
+    /**
+     * 看板的视图 (2026-11-23): people start on the timeline; most board specs drag between columns, so tests start on
+     * 分列 unless a spec checks the timeline.
+     */
+    boardMode?: "timeline" | "columns";
   } = {},
 ): Promise<Studio> {
   const root = options.root ?? mkdtempSync(join(tmpdir(), "amo-studio-e2e-"));
@@ -73,6 +78,8 @@ export async function launchStudio(
     env: {
       ...withoutDataDir(process.env),
       AMO_STUDIO_TEST: "1",
+      // People's new chats run with full access (2026-11-23); the specs are written against the asking defaults.
+      AMO_STUDIO_ASKING_DEFAULTS: "1",
       // This machine may have the DeepSeek Harness desktop app; tests set up their own DSH.
       AMO_STUDIO_DSH_DESKTOP: "",
       ...(options.portable ? { AMO_STUDIO_PORTABLE_DIR: options.portable.dir } : { AMO_STUDIO_DATA_DIR: dataDir }),
@@ -90,13 +97,15 @@ export async function launchStudio(
   const page = await app.firstWindow();
   await page.waitForLoadState("domcontentloaded");
   await page.evaluate(
-    ({ view, sidebar }) => {
+    ({ view, sidebar, board }) => {
       localStorage.setItem("amo.transcriptView", view);
       window.dispatchEvent(new CustomEvent("amo:transcript-view", { detail: view }));
       // The task page's right column is off for people by default; most specs work in it, so it starts on here.
       localStorage.setItem("amo.taskSidebar", sidebar ? "1" : "0");
+      localStorage.setItem("amo.boardMode", board);
+      window.dispatchEvent(new Event("amo:pref:amo.boardMode"));
     },
-    { view: options.transcriptView ?? "verbose", sidebar: options.taskSidebar ?? true },
+    { view: options.transcriptView ?? "verbose", sidebar: options.taskSidebar ?? true, board: options.boardMode ?? "columns" },
   );
 
   async function api<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {

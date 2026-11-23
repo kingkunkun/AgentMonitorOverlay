@@ -1,7 +1,7 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { removeTempDir } from "@amo-studio/testkit";
 import { CLAUDE_PERMISSIONS, claudePermissionMode, codexPermission, codexPermissions, codexWindowsSandbox } from "./choices.js";
 
@@ -40,6 +40,27 @@ describe("Claude permissions", () => {
     expect(claudePermissionMode("auto")).toBe("auto");
     // Modes Studio does not offer fall back (dontAsk would deny what is not pre-approved, without a card).
     expect(claudePermissionMode("dontAsk")).toBe("default");
+  });
+});
+
+// Every other test here runs with AMO_STUDIO_ASKING_DEFAULTS=1 (vitest.config.ts); people's Studio does not.
+describe("defaults for people", () => {
+  it("give a new chat full access when no permission is chosen (2026-11-23); unknown ids still ask", async () => {
+    vi.stubEnv("AMO_STUDIO_ASKING_DEFAULTS", "");
+    vi.resetModules();
+    try {
+      const c = await import("./choices.js");
+      expect([c.CODEX_DEFAULT_PERMISSION, c.CLAUDE_DEFAULT_PERMISSION, c.DSH_DEFAULT_PERMISSION]).toEqual(["full-auto", "bypassPermissions", "full-access"]);
+      expect(c.codexPermission(undefined)).toEqual({ approvalPolicy: "never", sandbox: "danger-full-access", reviewer: "user" });
+      expect(c.codexPermission("nonsense")).toEqual(c.codexPermission("ask"));
+      expect(c.claudePermissionMode(undefined)).toBe("bypassPermissions");
+      expect(c.claudePermissionMode("dontAsk")).toBe("default");
+      expect(c.dshPermissionMode(undefined)).toBe("danger-full-access");
+      expect(c.dshPermissionMode("ask")).toBe("workspace-write");
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
   });
 });
 

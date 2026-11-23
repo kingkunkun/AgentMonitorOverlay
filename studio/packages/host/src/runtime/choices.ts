@@ -27,11 +27,18 @@ const CODEX_PERMISSION_SETTINGS: Record<string, CodexPermission> = {
   "read-only": { approvalPolicy: "on-request", sandbox: "read-only", reviewer: "user" },
 };
 
-export const CODEX_DEFAULT_PERMISSION = "ask";
+/**
+ * User decision 2026-11-23: a new chat or task with no permission chosen runs with full access, in every runtime (Codex
+ * full-auto, Claude Code bypassPermissions, DSH full-access). Test runs keep the asking defaults the specs are written
+ * against: AMO_STUDIO_ASKING_DEFAULTS=1 (vitest.config.ts and e2e launchStudio set it).
+ */
+const askingDefaults = process.env.AMO_STUDIO_ASKING_DEFAULTS === "1";
 
-/** The Codex settings behind a permission id (unknown ids fall back to the default). */
+export const CODEX_DEFAULT_PERMISSION = askingDefaults ? "ask" : "full-auto";
+
+/** The Codex settings behind a permission id: none chosen gets the default, an unknown id asks every command. */
 export function codexPermission(id: string | undefined): CodexPermission {
-  return CODEX_PERMISSION_SETTINGS[id ?? CODEX_DEFAULT_PERMISSION] ?? CODEX_PERMISSION_SETTINGS[CODEX_DEFAULT_PERMISSION]!;
+  return (id ? CODEX_PERMISSION_SETTINGS[id] : CODEX_PERMISSION_SETTINGS[CODEX_DEFAULT_PERMISSION]) ?? CODEX_PERMISSION_SETTINGS.ask!;
 }
 
 /** `[windows] sandbox = "…"` in the person's Codex config (read only), or null. */
@@ -75,7 +82,7 @@ export function codexPermissions(windowsSandbox: string | null = process.platfor
 
 export type ClaudePermissionMode = "default" | "auto" | "acceptEdits" | "plan" | "bypassPermissions";
 
-export const CLAUDE_DEFAULT_PERMISSION: ClaudePermissionMode = "default";
+export const CLAUDE_DEFAULT_PERMISSION: ClaudePermissionMode = askingDefaults ? "default" : "bypassPermissions";
 
 /** Claude Code's permission modes (Shift+Tab in the CLI). */
 export const CLAUDE_PERMISSIONS: PermissionOption[] = [
@@ -88,7 +95,9 @@ export const CLAUDE_PERMISSIONS: PermissionOption[] = [
 ];
 
 export function claudePermissionMode(id: string | undefined): ClaudePermissionMode {
-  return CLAUDE_PERMISSIONS.some((p) => p.id === id) ? (id as ClaudePermissionMode) : CLAUDE_DEFAULT_PERMISSION;
+  if (!id) return CLAUDE_DEFAULT_PERMISSION;
+  // Modes Studio does not offer ask every time.
+  return CLAUDE_PERMISSIONS.some((p) => p.id === id) ? (id as ClaudePermissionMode) : "default";
 }
 
 /** Claude Code's effort levels (/effort). */
@@ -124,9 +133,10 @@ export const DSH_PERMISSIONS: PermissionOption[] = [
   { id: "full-access", label: "完全访问", description: "不进沙箱，也不再询问，命令直接执行（DSH：danger-full-access）" },
 ];
 
-/** User decision 2026-10-17: DSH sessions default to the workspace sandbox (the tasks each run in their own workspace). */
-export const DSH_DEFAULT_PERMISSION = "workspace-write";
+/** DSH sessions defaulted to the workspace sandbox (user decision 2026-10-17) until full access became every runtime's default (2026-11-23). */
+export const DSH_DEFAULT_PERMISSION = askingDefaults ? "workspace-write" : "full-access";
 
 export function dshPermissionMode(id: string | undefined): "read-only" | "workspace-write" | "danger-full-access" {
-  return id === "read-only" ? "read-only" : id === "full-access" ? "danger-full-access" : "workspace-write";
+  const p = id || DSH_DEFAULT_PERMISSION;
+  return p === "read-only" ? "read-only" : p === "full-access" ? "danger-full-access" : "workspace-write";
 }

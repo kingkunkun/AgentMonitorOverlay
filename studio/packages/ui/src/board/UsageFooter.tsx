@@ -1,19 +1,22 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import type { AccountUsage, ModelProfile, Session } from "@amo-studio/protocol";
+import type { AccountUsage, Session } from "@amo-studio/protocol";
 import { call, HostApiError, type HostLink } from "../host/client.js";
 import { IconClock } from "../chat/icons.js";
 import { useSettings } from "../settings/useSettings.js";
-import { balanceText, money, useBalance, useProfiles } from "../lib/balance.js";
+import { useProfiles } from "../lib/balance.js";
 import { quotaOf } from "../lib/quota.js";
 import { useDeviceTokens } from "../settings/useDeviceTokens.js";
 import { fmtTokens } from "../settings/statsData.js";
 import { OPEN_SETTINGS_EVENT } from "../mcp/shared.js";
 import { readStored, writeStored, readStoredJson, writeStoredJson } from "../lib/stored.js";
+import { useDeviceTokenVisible } from "../lib/deviceTokenVisible.js";
 
-// Bottom of the left column: whether the Host runs, how much of the GPT and Claude subscriptions is used, and the
-// balance of channels whose site tells it — the accounts 设置 → 额度 shows here. One line folded (the highest use of
-// each account, each balance); click for every window with what is left and when it resets.
+// Bottom of the left column: whether the Host runs and how much of the Claude subscription is used. One line folded
+// (the highest use of the account in use); click for every window with what is left and when it resets.
+
+// 只显示 Claude (2026-11-23, the user): GPT 订阅和渠道余额（DeepSeek 等）不再出现在左下角，额度页仍能看全部。
+// 本机总 Token 的数值默认是 ***，设置 → 界面 里打开后才显示。
 
 // Claude 多账号 (2026-11-03, the user): the Claude subscription shows one entry per account — the one in use as before,
 // the others folded together under it, each with 切换 (refused while a Claude session is at work).
@@ -69,9 +72,14 @@ export function UsageFooter({ link, live, sessions = [] }: { link: HostLink; liv
   const [loading, setLoading] = useState(false);
   const now = useNow(open);
   const device = useDeviceTokens(link);
+  const tokenOn = useDeviceTokenVisible();
   const settings = useSettings(link);
-  const balances = (useProfiles(link) ?? []).filter((p) => p.balance && quotaOf(settings, p.id).footer);
-  const shown = usage.filter((u) => quotaOf(settings, u.profileId).footer);
+  const profiles = useProfiles(link);
+  const isClaude = (id: string) => {
+    const p = profiles?.find((x) => x.id === id);
+    return p ? p.runtime === "claude" : id.startsWith("claude");
+  };
+  const shown = usage.filter((u) => isClaude(u.profileId) && quotaOf(settings, u.profileId).footer);
   // The accounts not in use, folded together under the one in use.
   const others = shown.filter((u) => u.account && !u.account.current);
   const [othersOpen, setOthersOpen] = useState(() => readStored(OTHERS_KEY) === "1");
@@ -133,14 +141,13 @@ export function UsageFooter({ link, live, sessions = [] }: { link: HostLink; liv
   return (
     <div className={open ? "nav-footer open" : "nav-footer"}>
       <button type="button" className="device-token-total" data-testid="device-token-total"
-        title={device.error ?? `本机可计量的累计 Token · 每 30 分钟更新${device.stats ? " · " + new Date(device.stats.generatedAt).toLocaleString() : ""}。点击查看来源。`}
+        title={!tokenOn ? "数值已隐藏，在 设置 → 界面 里打开。点击查看来源。" : device.error ?? `本机可计量的累计 Token · 每 30 分钟更新${device.stats ? " · " + new Date(device.stats.generatedAt).toLocaleString() : ""}。点击查看来源。`}
         onClick={() => window.dispatchEvent(new CustomEvent(OPEN_SETTINGS_EVENT, { detail: "stats" }))}>
-        <span>本机总 Token 用量</span><b>{device.stats ? fmtTokens(device.stats.total) : device.error ? "未能读取" : "读取中…"}</b><span aria-hidden="true">›</span>
+        <span>本机总 Token 用量</span><b data-testid="device-token-value">{!tokenOn ? "***" : device.stats ? fmtTokens(device.stats.total) : device.error ? "未能读取" : "读取中…"}</b><span aria-hidden="true">›</span>
       </button>
       {open && (
         <div className="usage-list" data-testid="usage-list">
-          <span className="usage-note">账号额度 · 可能包含其他设备用量，不计入本机 Token。</span>
-          {shown.length === 0 && balances.length === 0 && <span className="usage-note">没有要显示的额度。在 设置 → 额度 里选。</span>}
+          {shown.length === 0 && <span className="usage-note">没有要显示的 Claude 额度。在 设置 → 额度 里选。</span>}
           {shown
             .filter((u) => !u.account || u.account.current)
             .map((u) => (
@@ -181,15 +188,12 @@ export function UsageFooter({ link, live, sessions = [] }: { link: HostLink; liv
               )}
             </div>
           )}
-          {balances.map((p) => (
-            <BalanceAccount key={p.id} link={link} profile={p} />
-          ))}
           <button type="button" className="link-btn" onClick={() => load(true)} disabled={loading}>
             {loading ? "正在读取…" : "刷新"}
           </button>
         </div>
       )}
-      <button type="button" className="usage-toggle" aria-expanded={open} onClick={toggle} title={open ? "收起额度" : "展开额度：订阅用量和渠道余额"}>
+      <button type="button" className="usage-toggle" aria-expanded={open} onClick={toggle} title={open ? "收起 Claude 额度" : "展开 Claude 额度"}>
         <span className={live ? "dot live" : "dot"} aria-hidden="true" />
         <span data-testid="host-status">{live ? "Host 运行中" : "Host 重新连接中…"}</span>
         <span className="usage-peaks">
@@ -201,9 +205,6 @@ export function UsageFooter({ link, live, sessions = [] }: { link: HostLink; liv
               </span>
             );
           })}
-          {balances.map((p) => (
-            <BalancePeak key={p.id} link={link} profile={p} />
-          ))}
         </span>
       </button>
     </div>
@@ -252,31 +253,5 @@ export function UsageAccount({ usage: u, now, action }: { usage: AccountUsage; n
         {u.note && <span className="usage-note">{u.note}</span>}
       </div>
     </div>
-  );
-}
-
-/** A channel's balance in the open list. */
-function BalanceAccount({ link, profile }: { link: HostLink; profile: ModelProfile }) {
-  const { balance, loading, refresh } = useBalance(link, profile);
-  return (
-    <div className="usage-acct" data-testid="usage-balance">
-      <b className="usage-acct-name">{profile.label}</b>
-      <div className="usage-win-line">
-        <span className={balance && !balance.ok ? "usage-note" : undefined}>{loading && !balance ? "正在查询…" : balance ? balanceText(balance) : "—"}</span>
-        <button type="button" className="link-btn usage-query" onClick={refresh} disabled={loading}>
-          查询
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/** A channel's balance in the folded line: "DeepSeek ¥88.10". */
-function BalancePeak({ link, profile }: { link: HostLink; profile: ModelProfile }) {
-  const { balance } = useBalance(link, profile);
-  return (
-    <span title={balance ? balanceText(balance) : undefined}>
-      {profile.label} {balance?.ok ? money(balance.remaining ?? balance.used, balance.unit) : "—"}
-    </span>
   );
 }

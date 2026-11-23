@@ -15,7 +15,7 @@ const QUESTIONS_DISMISSED =
 const PLAN_DISMISSED = "The user closed the plan review in WorkStudio without approving the plan. Stay in plan mode: do not edit files or run commands; wait for the user's next message.";
 // 2026-11-09 (the user: a read-only review session another session opened 「先让我审了一遍计划，然后又在会话里重复了一遍」):
 // session_start's read-only is Claude's plan mode, whose prompt ends the work with ExitPlanMode. Nobody reviews a plan
-// there — the last reply goes back to the session that opened it — and approving would leave plan mode for 每次询问.
+// there — the last reply goes back to the session that opened it — and approving would leave plan mode for the default permission.
 export const PEER_PLAN_DECLINED =
   "No plan review here: another AMO session opened this session read-only (Claude's plan mode), and your last reply goes back to it. Do not call ExitPlanMode again and do not ask to leave plan mode. Stay read-only and write your result as your final reply now.";
 const planRevision = (feedback: string) =>

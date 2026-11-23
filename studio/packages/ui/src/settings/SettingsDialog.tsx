@@ -23,6 +23,7 @@ import { defaultFolder, setDefaultFolder } from "../lib/profiles.js";
 import { pickDirectory } from "../folders/FolderPicker.js";
 import { HashPresetSettings } from "../attach/HashPresets.js";
 import { useTopicsVisible, setTopicsVisible } from "../lib/topicsVisible.js";
+import { useDeviceTokenVisible, setDeviceTokenVisible } from "../lib/deviceTokenVisible.js";
 
 /** The pages of 设置, one per area, in the left column. */
 const PAGES = [
@@ -56,6 +57,7 @@ export function SettingsDialog({ link, state, settings, page: startPage, onClose
   const [page, setPage] = useState<SettingsPage>(startPage ?? lastPage);
   const [theme, setTheme] = useState<ThemePref>(themePref);
   const topicsOn = useTopicsVisible();
+  const deviceTokenOn = useDeviceTokenVisible();
   const view = useTranscriptView();
   const jumpOnSend = useScrollOnSend();
   const chat = useChatSettings(link);
@@ -157,6 +159,7 @@ export function SettingsDialog({ link, state, settings, page: startPage, onClose
                 </div>
                 <span className="settings-hint">只影响这台电脑上的 Studio；Focus 悬浮窗会一起切换。</span>
                 <div className="settings-row"><label><input type="checkbox" checked={topicsOn} onChange={(e) => setTopicsVisible(e.target.checked)} /> 显示专题与画布</label><span className="settings-hint">默认隐藏，已有专题和任务数据保留。</span></div>
+                <div className="settings-row"><label><input type="checkbox" checked={deviceTokenOn} onChange={(e) => setDeviceTokenVisible(e.target.checked)} data-testid="device-token-visible" /> 左下角显示本机总 Token 数值</label><span className="settings-hint">默认显示为 ***，打开后显示真实数值；设置 → 统计 里始终能看。</span></div>
                 <BreakReminderRow />
                 {window.amo?.uiScale && <UiScaleRow />}
                 <div className="settings-row">
