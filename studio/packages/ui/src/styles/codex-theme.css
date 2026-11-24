@@ -1,0 +1,14 @@
+/* Shared by the WorkStudio workbench and its Work中转 window. */
+:root[data-appearance="codex"] {
+  --font-ui: "Segoe UI", "Noto Sans SC Variable", "Microsoft YaHei UI", system-ui, sans-serif;
+  --font-display: var(--font-ui);
+  --bg: #faf9f7; --bg-header: #faf9f7; --bg-nav: #f3f1ef;
+  --panel: #fffefd; --panel-raised: #f5f3f1; --chip: #eeece9;
+  --selected: #eae6ec; --border: #e5e1dd; --border-strong: #b6afaa;
+  --text: #292725; --text-dim: #716c68; --text-faint: #8b8581;
+  --primary: #363230; --primary-hover: #171615; --on-primary: #fff;
+  --selection: #e1dce8; --tint: #f0ecf4; --tint-strong: #e8e2ed;
+  --menu-bg: #fffefd; --menu-hover: #f0edeb; --code-bg: #f4f2ef;
+  --divider: #e8e3df; --focus-border: #d7d1cc; --panel-float: #fffefd;
+  --r-s: 6px; --r-m: 8px; --r-l: 12px; --r-btn: 8px; --ls-label: 0;
+}

@@ -12,9 +12,10 @@ import { takeResume } from "./update.js";
 import "@fontsource-variable/noto-serif-sc";
 import "@fontsource-variable/jetbrains-mono";
 import "../../ui/src/styles/base.css";
+import "../../ui/src/styles/codex-theme.css";
 import "./styles.css";
 
-applyTheme(readTheme());
+if (!shell?.workstudioIntegrated) applyTheme(readTheme());
 applyFontSize(readFontSize());
 // What AMO Studio or a notification asks to open: heard from the start, also while signing in.
 startOpenRequests();

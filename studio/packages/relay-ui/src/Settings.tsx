@@ -94,12 +94,12 @@ function GeneralPart() {
         </div>
       </Part>
       <Part title="主题">
-        <Pick<Theme>
+        {shell?.workstudioIntegrated ? <span className="muted small">跟随 WorkStudio，在 WorkStudio 的「设置 → 界面」中调整。</span> : <Pick<Theme>
           label="主题"
           value={theme}
           onChange={(t) => (setTheme(t), setThemeState(t))}
           options={(["system", "light", "dark"] as const).map((t) => ({ value: t, label: THEME_LABEL[t] }))}
-        />
+        />}
       </Part>
     </>
   );

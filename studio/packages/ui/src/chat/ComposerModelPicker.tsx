@@ -25,7 +25,7 @@ export function ComposerModelPicker({ models, model, label, effort, fast, disabl
   const commit = (i: number) => { const value = levels[i]; if (value && value !== current) onEffort(value); };
   return <div className="composer-model-picker" ref={box}>
     {fast === true && model?.fast && <button type="button" className="composer-fast-active" aria-label="Fast 已开启" aria-pressed="true" data-testid="fast-active" disabled={disabled} title={`Fast 已开启：${model.fast.description ?? "可能更快消耗额度或额外计费"}。点击关闭`} onClick={() => onFast?.(false)}><BoltIcon /></button>}
-    <button type="button" className="composer-model-trigger" data-testid="switch-model" aria-label="模型与思考强度" aria-expanded={open} disabled={disabled} onClick={() => onOpen(!open)} onContextMenu={(e) => { e.preventDefault(); setPage("models"); onOpen(true); }} title="选择模型与思考强度 · Alt M">
+    <button type="button" className="composer-model-trigger" data-testid="switch-model" aria-label="模型与思考强度" aria-expanded={open} disabled={disabled} onClick={() => onOpen(!open)} onContextMenu={(e) => { e.preventDefault(); setPage("models"); onOpen(true); }} title={`${label} · 选择模型与思考强度（Alt+M）`}>
       <span className="composer-model-name">{label}</span>{levels.length > 0 && <span className="composer-effort-caption" data-testid="effort-label">{current ? effortLabel(current) : "默认"}</span>}<span aria-hidden="true">⌄</span>
     </button>
     {open && <div className={`composer-popover model-effort-popover${page === "models" ? " model-list-popover" : ""}`} role="dialog" aria-label={page === "models" ? "选择模型" : "模型与思考强度"} data-testid="model-effort-popover">

@@ -1,3 +1,4 @@
+/// <reference lib="dom" />
 // Sandboxed preload of the AMO 中转 window (CommonJS): `relayLoader` for the shell's loader page, `relayShell` for the
 // client content (its shape: @amo-studio/relay shell-api.ts).
 import electron = require("electron");
@@ -11,6 +12,27 @@ const on = (channel: string, listener: (value: never) => void) => {
   ipcRenderer.removeAllListeners(`relay:${channel}`);
   ipcRenderer.on(`relay:${channel}`, (_e, value) => listener(value as never));
 };
+
+if (workstudioIntegrated) {
+  const applyTheme = (theme: unknown) => {
+    const root = document.documentElement;
+    if (!root) return;
+    if (theme === "codex") root.dataset.appearance = "codex";
+    else delete root.dataset.appearance;
+    if (theme === "system") delete root.dataset.theme;
+    else if (theme === "codex" || theme === "light" || theme === "dark") root.dataset.theme = theme === "codex" ? "light" : theme;
+  };
+  // The HTML already carries the theme for first paint. Read it again in case it changed during navigation.
+  let received = false;
+  ipcRenderer.on("relay:studio-theme", (_event, theme: unknown) => {
+    received = true;
+    applyTheme(theme);
+  });
+  window.addEventListener("DOMContentLoaded", () => {
+    received = false;
+    void invoke("studio-theme").then((theme) => { if (!received) applyTheme(theme); }).catch(() => undefined);
+  }, { once: true });
+}
 
 electron.contextBridge.exposeInMainWorld("relayLoader", {
   enable: () => invoke("set-enabled", true),
@@ -44,8 +66,10 @@ electron.contextBridge.exposeInMainWorld("relayShell", {
   applyUpdate: () => invoke("apply-update"),
   onUpdateProgress: (listener: (p: unknown) => void) => on("update-progress", listener),
   inUse: () => invoke("in-use"),
-  updateShell: () => invoke("update-shell"),
-  onShellProgress: (listener: (p: unknown) => void) => on("shell-progress", listener),
+  ...(!workstudioIntegrated ? {
+    updateShell: () => invoke("update-shell"),
+    onShellProgress: (listener: (p: unknown) => void) => on("shell-progress", listener),
+  } : {}),
   windowControls: {
     minimize: () => send("window", "minimize"),
     toggleMaximize: () => send("window", "maximize"),

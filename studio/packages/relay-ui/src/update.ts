@@ -81,9 +81,12 @@ export function useUpdates(latest: string | null, canApply: (() => boolean | Pro
   const live = useRef({ canApply, beforeApply });
   live.current = { canApply, beforeApply };
 
-  useEffect(() => shell?.onUpdateProgress(setProgress), []);
+  useEffect(() => {
+    if (!shell?.workstudioIntegrated) shell?.onUpdateProgress(setProgress);
+  }, []);
 
   useEffect(() => {
+    if (shell?.workstudioIntegrated) return;
     let gone = false;
     void (async () => {
       if (shell) {

@@ -1,9 +1,21 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ProfileChoices, Session, Workspace } from "@amo-studio/protocol";
 import { launchStudio, screenshot } from "../support/studio.js";
 import { closeTaskMenu, openTaskMenu } from "../support/task-menu.js";
+
+async function expectModelNameReadable(model: Locator): Promise<void> {
+  const name = model.locator(".composer-model-name");
+  await expect(name).toBeVisible();
+  await expect.poll(() => name.evaluate((el) => {
+    const renderedText = document.createRange();
+    renderedText.selectNodeContents(el);
+    const text = renderedText.getBoundingClientRect();
+    const button = el.closest("button")!.getBoundingClientRect();
+    return text.width > 0 && text.left >= button.left && text.right <= button.right && text.bottom <= button.bottom;
+  })).toBe(true);
+}
 
 test("Codex composer keeps prompts/files, changes actual model/effort/permissions, and stops generation", async () => {
   const studio = await launchStudio();
@@ -98,7 +110,9 @@ test("Codex composer keeps prompts/files, changes actual model/effort/permission
 
     await page.getByTestId("nav-new-chat").click();
     await expect(page.getByRole("region", { name: "新聊天", exact: true })).toBeVisible();
+    await page.locator(".draft-composer").evaluate((el) => el.style.maxWidth = "340px");
     await expect(page.getByTestId("switch-model")).toBeVisible();
+    await expectModelNameReadable(page.getByTestId("switch-model"));
     await page.getByTestId("switch-model").click();
     await expect(page.getByRole("slider", { name: "思考强度" })).toBeVisible();
     await page.keyboard.press("Escape");
@@ -120,6 +134,7 @@ test("a running Claude keeps its model chooser visible below the send hint in a 
     await page.setViewportSize({ width: 960, height: 760 });
     await expect(page.getByTestId("topbar-relay")).toBeInViewport({ ratio: 1 });
     await expect(page.getByTestId("win-controls")).toBeInViewport({ ratio: 1 });
+    await page.locator(".composer-card").evaluate((el) => el.style.maxWidth = "340px");
     const composer = page.getByRole("textbox", { name: "输入消息" });
     await composer.fill("[[slow]]");
     await composer.press("Enter");
@@ -128,7 +143,7 @@ test("a running Claude keeps its model chooser visible below the send hint in a 
     await expect(hint).toHaveText("工具调用后或本轮结束后读到 · Ctrl+Enter 立即发送");
     await expect(page.locator(".chat-bar .composer-hint")).toHaveCount(0);
     const model = page.getByTestId("switch-model");
-    await expect(model.locator(".composer-model-name")).toBeVisible();
+    await expectModelNameReadable(model);
     await expect(model).toBeInViewport({ ratio: 1 });
     await model.click();
     await expect(page.getByTestId("model-effort-popover").getByRole("button", { name: "选择模型", exact: true })).toBeVisible();

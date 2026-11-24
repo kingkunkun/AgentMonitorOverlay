@@ -169,7 +169,6 @@ export function SessionOptionsBar({
         {!mine.length && session.runtime === "remote" && <p className="composer-popover-note">此会话暂无其他工具选项。</p>}
       </div>}
       {tray === "mcp" && <div className="tray" role="dialog" aria-label="MCP" data-testid="options-tray"><SessionMcpTray link={link} session={session} state={mcp.state} onState={mcp.setState} disabled={remote ? !remote.writable : disabled} {...(remote ? { remote: remote.name } : {})} /></div>}
-      <span className="composer-options-spacer" />
       <ComposerModelPicker groups={modelGroups} profileId={session.profileId} onProfileModel={(profileId, id, name) => void selectAcrossProfiles(profileId, id, name)} models={choices?.models ?? []} model={model} label={label.main} effort={session.options.effort} fast={session.options.fast} disabled={disabled || busy || !choices} fastUsage={<FastUsageHint link={link} profileId={session.profileId} />} open={tray === "model"} onOpen={(on) => setTray(on ? "model" : null)} onModel={setModel} onEffort={setEffort} onFast={setFast} footer={<p className="composer-popover-note">当前账号：{profile?.label ?? "默认"}。当前渠道内切换{when}；其他渠道在本轮结束后接续当前 WorkStudio 聊天文本，不自动传附件。</p>} />
       {note && <span className={note.error ? "form-error composer-options-note" : "applied composer-options-note"} role={note.error ? "alert" : "status"} data-testid="options-note">{note.error ? note.text : `✓ ${note.text}`}</span>}
     </div>

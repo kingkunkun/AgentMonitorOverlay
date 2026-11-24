@@ -69,7 +69,7 @@
     {
       "id": "tool.relayClient",
       "label": "Work中转客户端（界面和外壳）",
-      "aliases": ["中转客户端", "relay-ui", "relay-app", "热更新", "loader", "window.log", "second-instance", "单实例", "关不上又弹出来", "已接手", "复制给 AI", "查看器面板", "open-thread", "布局 A", "IM 三栏", "图标栏", "信息栏", "列表栏", "浮动弹窗", "子会话弹窗", "协作页"],
+      "aliases": ["中转客户端", "relay-ui", "relay-app", "热更新", "桌面程序可更新", "中转主题", "中转配色", "loader", "window.log", "second-instance", "单实例", "关不上又弹出来", "已接手", "复制给 AI", "查看器面板", "open-thread", "布局 A", "IM 三栏", "图标栏", "信息栏", "列表栏", "浮动弹窗", "子会话弹窗", "协作页"],
       "category": "tool",
       "purpose": "WorkStudio 顶栏「中转合作」直接打开 Work中转配套窗口，后台按服务器的未读消息更新提醒；集成包包含 relay-app 和本机编译的 relay-ui（--bundled-relay），由同一 exe 的 --amo-app=relay 启动。旧独立版仍可用服务器热更新界面。中转和远程开关独立，共用平台账号；和 Studio 保留按会话互相跳转。",
       "anchors": [

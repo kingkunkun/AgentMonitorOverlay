@@ -157,7 +157,7 @@ export function SettingsDialog({ link, state, settings, page: startPage, onClose
                     ))}
                   </div>
                 </div>
-                <span className="settings-hint">只影响这台电脑上的 Studio；Focus 悬浮窗会一起切换。</span>
+                <span className="settings-hint">这台电脑上的工作台、Focus 悬浮窗和 Work中转会一起切换。</span>
                 <div className="settings-row"><label><input type="checkbox" checked={topicsOn} onChange={(e) => setTopicsVisible(e.target.checked)} /> 显示专题与画布</label><span className="settings-hint">默认隐藏，已有专题和任务数据保留。</span></div>
                 <div className="settings-row"><label><input type="checkbox" checked={deviceTokenOn} onChange={(e) => setDeviceTokenVisible(e.target.checked)} data-testid="device-token-visible" /> 左下角显示本机总 Token 数值</label><span className="settings-hint">默认显示为 ***，打开后显示真实数值；设置 → 统计 里始终能看。</span></div>
                 <BreakReminderRow />

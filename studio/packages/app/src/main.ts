@@ -53,7 +53,7 @@ const dataDir = dataChoice.dataDir;
 const relayLaunch = () => ({
   localExe: relayReady() ? process.execPath : undefined,
   localArgs: app.isPackaged ? ["--amo-app=relay"] : [relayDir, "--workstudio-bundled-relay"],
-  localEnv: { AMO_STUDIO_DATA_DIR: dataDir, ...(testMode ? { AMO_RELAY_TEST: "1" } : {}) },
+  localEnv: { AMO_STUDIO_DATA_DIR: dataDir },
   localOnly: true,
 });
 

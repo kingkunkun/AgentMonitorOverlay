@@ -5,7 +5,7 @@ import { appendFileSync, copyFileSync, createWriteStream, existsSync, mkdirSync,
 import { promises as fsp } from "node:fs";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
-import { dirname, extname, join, normalize, sep } from "node:path";
+import { dirname, extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   normalizeServer,
@@ -26,7 +26,7 @@ import { Accounts } from "./accounts.js";
 import { Attention, writeAttention } from "./attention.js";
 import { newShellText, readBuildMode, stableExe } from "./build-mode.js";
 import { ContentStore, fetchManifest, type InstalledContent } from "./content.js";
-import { LOADER_HTML, type LoaderState } from "./loader.js";
+import { LOADER_HTML, SHELL_PALETTE, type LoaderState } from "./loader.js";
 import { openText, parseOpenArg, type OpenRef } from "./open-arg.js";
 import { argvText, KNOCK, knockAction, Knocks, secondStartPlan, WindowLog } from "./second-start.js";
 import { openInStudio, studioHas } from "./studio-link.js";
@@ -62,10 +62,32 @@ const bundledDir = join(here, "..", "client");
 // A normal Studio source build also prepares this directory; the standalone source shell still follows the server.
 const useBundled = app.isPackaged || process.argv.includes("--workstudio-bundled-relay");
 const bundledContent: InstalledContent | null = useBundled && existsSync(join(bundledDir, "index.html")) ? { version: "work-bundled", dir: bundledDir } : null;
+const studioPrefs = bundledContent ? join(process.env.AMO_STUDIO_DATA_DIR ?? resolve(here, "..", "..", "..", ".data"), "shell-prefs.json") : null;
+type StudioTheme = "codex" | "system" | "light" | "dark";
+let studioTheme: StudioTheme = "codex";
+function readStudioTheme(): StudioTheme {
+  if (studioPrefs) {
+    try {
+      const { relayTheme } = JSON.parse(readFileSync(studioPrefs, "utf8")) as { relayTheme?: unknown };
+      if (relayTheme === "codex" || relayTheme === "system" || relayTheme === "light" || relayTheme === "dark") return relayTheme;
+    } catch {
+      // Keep the current theme if the file does not exist yet or Studio is saving it.
+    }
+  }
+  return studioTheme;
+}
+function windowBackground(): string {
+  const theme = studioPrefs ? studioTheme : "system";
+  if (theme === "codex") return "#faf9f7";
+  return (theme === "dark" || (theme === "system" && nativeTheme.shouldUseDarkColors)) ? "#111316" : "#efede8";
+}
 const LOADER_URL = `${SCHEME}://shell/loader.html`;
 const DISABLED_URL = `${SCHEME}://shell/disabled.html`;
 let policyEnabled = readCooperation().relayEnabled;
-const DISABLED_HTML = `<!doctype html><meta charset="utf-8"><title>Work中转</title><body style="font:16px system-ui;padding:48px;background:#171b20;color:#eee"><h1>Work中转已关闭</h1><p>已停止此窗口的团队消息连接。关闭窗口与关闭中转功能是两回事。</p><button id="enable">开启中转</button><p id="error"></p><script>document.getElementById('enable').onclick=()=>window.relayLoader.enable().catch(e=>document.getElementById('error').textContent=e.message)</script>`;
+const DISABLED_HTML = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Work中转</title><style>${SHELL_PALETTE}
+body{font:16px system-ui;padding:48px;background:var(--bg);color:var(--ink)}
+button{font:inherit;padding:6px 14px;border:0;border-radius:6px;background:var(--accent);color:var(--accent-ink);cursor:pointer}
+#error{color:var(--error)}</style><body><h1>Work中转已关闭</h1><p>已停止此窗口的团队消息连接。关闭窗口与关闭中转功能是两回事。</p><button id="enable">开启中转</button><p id="error"></p><script>document.getElementById('enable').onclick=()=>window.relayLoader.enable().catch(e=>document.getElementById('error').textContent=e.message)</script></body></html>`;
 
 app.setPath("userData", join(home, "electron"));
 // 崩溃转储 (2026-11-10): Crashpad minidumps in electron\Crashpad, on the platform's test channel (@amo-studio/account).
@@ -141,13 +163,22 @@ function sendOpen(ref: OpenRef): void {
 
 const MIME: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".json": "application/json" };
 
+function themedHtml(html: string): string {
+  if (!bundledContent || studioTheme === "system") return html;
+  const attrs = studioTheme === "codex" ? 'data-appearance="codex" data-theme="light"' : `data-theme="${studioTheme}"`;
+  return html.replace("<html ", `<html ${attrs} `);
+}
+
 function serveScheme(): void {
   protocol.handle(SCHEME, (req) => {
     const url = new URL(req.url);
-    if (url.host === "shell") return new Response(url.pathname === "/disabled.html" ? DISABLED_HTML : LOADER_HTML, { headers: { "content-type": "text/html; charset=utf-8" } });
+    if (url.host === "shell") return new Response(themedHtml(url.pathname === "/disabled.html" ? DISABLED_HTML : LOADER_HTML), { headers: { "content-type": "text/html; charset=utf-8" } });
     if (url.host === "content" && content) {
       const file = normalize(join(content.dir, decodeURIComponent(url.pathname)));
-      if (file.startsWith(content.dir + sep) && existsSync(file)) return new Response(readFileSync(file), { headers: { "content-type": MIME[extname(file)] ?? "application/octet-stream", "cache-control": "no-store" } });
+      if (file.startsWith(content.dir + sep) && existsSync(file)) {
+        const body = bundledContent && url.pathname === "/index.html" ? themedHtml(readFileSync(file, "utf8")) : readFileSync(file);
+        return new Response(body, { headers: { "content-type": MIME[extname(file)] ?? "application/octet-stream", "cache-control": "no-store" } });
+      }
     }
     return new Response("not found", { status: 404 });
   });
@@ -161,8 +192,7 @@ function createWindow(): BrowserWindow {
     minHeight: 500,
     title: "Work中转",
     icon: ICON || undefined,
-    // Studio's ground, light or dark as the system is (the loader follows it too).
-    backgroundColor: nativeTheme.shouldUseDarkColors ? "#111316" : "#efede8",
+    backgroundColor: windowBackground(),
     show: false,
     autoHideMenuBar: true,
     // No system title bar (as WorkStudio): the page's top bar is the title bar and draws the window buttons; on a Mac
@@ -450,6 +480,7 @@ function wire(): void {
 
   ipcMain.handle("relay:update-shell", () => updateShell());
   ipcMain.handle("relay:info", (): ShellInfo => ({ shellVersion: SHELL_VERSION, shellBuild: BUILD, ...(byPlatform ? { updatedBy: "platform" as const } : {}), contentVersion: content?.version ?? "", server: server ?? "", update: updateInfo(), platform: process.platform }));
+  ipcMain.handle("relay:studio-theme", () => studioTheme);
   // The team login AMO 平台 keeps (%APPDATA%\AMO\account.json, the key DPAPI-encrypted; AGENTS.md rule 7, 2026-10-29):
   // the content signs in with it instead of a login of its own. Read each time asked, so a change in the platform shows.
   ipcMain.handle("relay:platform-account", async () => {
@@ -824,7 +855,17 @@ const knocks = new Knocks();
 let repeating = false;
 
 function start(): void {
-  const policyWatch = setInterval(() => { const next = readCooperation().relayEnabled; if (next !== policyEnabled) { policyEnabled = next; if (win) void boot(); } }, 500);
+  studioTheme = readStudioTheme();
+  const policyWatch = setInterval(() => {
+    const theme = readStudioTheme();
+    if (theme !== studioTheme) {
+      studioTheme = theme;
+      win?.setBackgroundColor(windowBackground());
+      win?.webContents.send("relay:studio-theme", theme);
+    }
+    const next = readCooperation().relayEnabled;
+    if (next !== policyEnabled) { policyEnabled = next; if (win) void boot(); }
+  }, 500);
   policyWatch.unref();
   app.on("will-quit", () => clearInterval(policyWatch));
   writeRunning();

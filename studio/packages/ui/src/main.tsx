@@ -53,6 +53,7 @@ import { Toaster } from "./lib/toast.js";
 import { PlanApp } from "./plan/PlanApp.js";
 import { RoundApp } from "./tracks/RoundApp.js";
 import { BookmarkNotePrompt } from "./marks/NotePrompt.js";
+import "./styles/codex-theme.css";
 import "./styles/codex.css";
 import { startResizeTrace, traceFocusInput } from "./lib/resizeTrace.js";
 

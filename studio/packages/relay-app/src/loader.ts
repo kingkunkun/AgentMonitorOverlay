@@ -20,11 +20,20 @@ export type LoaderState =
   | { step: "ask-server"; server: string; recent: string[]; error: string | null }
   | { step: "error"; text: string; server: string | null; download: string | null };
 
+const DARK_PALETTE = "color-scheme:dark;--bg:#111316;--panel:#181b1f;--ink:#e6e8eb;--muted:#7c8590;--line:#2b3036;--strong:#3a414a;--accent:#7fb2ff;--accent-ink:#0b1626;--error:#ff8a8a";
+
+export const SHELL_PALETTE = `
+:root{color-scheme:light;--bg:#efede8;--panel:#fbfaf7;--ink:#22201c;--muted:#8d877c;--line:#d9d3c7;--strong:#2a2723;--accent:#23436f;--accent-ink:#fbfaf7;--error:#a3302b}
+:root[data-theme="dark"]{${DARK_PALETTE}}
+@media (prefers-color-scheme:dark){:root:not([data-theme]){${DARK_PALETTE}}}
+:root[data-appearance="codex"]{--bg:#faf9f7;--panel:#fffefd;--ink:#292725;--muted:#8b8581;--line:#e5e1dd;--strong:#b6afaa;--accent:#363230;--accent-ink:#fff}
+:root[data-appearance="codex"] h1{font-family:inherit}
+`;
+
 export const LOADER_HTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Work中转</title>
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
 <style>
-:root{--bg:#efede8;--panel:#fbfaf7;--ink:#22201c;--muted:#8d877c;--line:#d9d3c7;--strong:#2a2723;--accent:#23436f;--accent-ink:#fbfaf7;--error:#a3302b}
-@media (prefers-color-scheme:dark){:root{--bg:#111316;--panel:#181b1f;--ink:#e6e8eb;--muted:#7c8590;--line:#2b3036;--strong:#3a414a;--accent:#7fb2ff;--accent-ink:#0b1626;--error:#ff8a8a}}
+${SHELL_PALETTE}
 *{box-sizing:border-box}html,body{height:100%;margin:0}
 body{background:var(--bg);color:var(--ink);font:14px/1.6 "Microsoft YaHei UI","PingFang SC",system-ui,sans-serif;display:flex;align-items:center;justify-content:center;padding:16px}
 .card{width:400px;max-width:100%;background:var(--panel);border:1px solid var(--strong);border-radius:8px;padding:28px;box-shadow:0 14px 36px rgb(0 0 0/16%)}

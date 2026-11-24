@@ -24,7 +24,7 @@ const EVERY = 30 * 60_000;
 export function useShellUpdate(health: () => Promise<Health>): ShellUpdate | null {
   const [state, setState] = useState<ShellUpdate | null>(null);
   useEffect(() => {
-    if (!shell) return;
+    if (!shell || shell.workstudioIntegrated) return;
     let gone = false;
     const check = async () => {
       try {
