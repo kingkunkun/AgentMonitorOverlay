@@ -49,7 +49,7 @@ export class Cooperation {
   state(): CooperationState {
     const a = this.host.teamLink.account;
     const p = readCooperation(this.env);
-    return { account: a ? { name: a.name, server: a.server } : null, recentServers: recentServers({ env: this.env }), relayEnabled: p.relayEnabled, remoteEnabled: this.host.remote.enabled(), syncOwnDevices: p.syncOwnDevices, server: { ...this.phone.state(), lan: p.serverLan }, transfers: [...this.pending.values()].map((p) => p.request) };
+    return { account: a ? { name: a.name, server: a.server } : null, recentServers: recentServers({ env: this.env }), relayEnabled: p.relayEnabled, relayAttention: this.host.teamRelay.attention(), remoteEnabled: this.host.remote.enabled(), syncOwnDevices: p.syncOwnDevices, server: { ...this.phone.state(), lan: p.serverLan }, transfers: [...this.pending.values()].map((p) => p.request) };
   }
   async account(input: { action: string; server: string; name: string; password: string; passphrase?: string }): Promise<CooperationState> {
     if (input.action !== "login" && input.action !== "register") throw new HostError("bad_request", "账号操作无效");
@@ -76,12 +76,25 @@ export class Cooperation {
       }
     }
   }
+  /** Reading status often must not fetch the contents of every unchanged thread again. */
+  inboxToMirror<T extends { id: string; lastSeq: number }>(threads: readonly T[]): T[] {
+    const a = this.host.teamLink.account;
+    if (!a) return [];
+    const mapping = this.inboxMapping();
+    return threads.filter((t) => {
+      const old = mapping[`${a.server}\n${a.name}\n${t.id}`];
+      return !old || old.seq !== t.lastSeq || !this.host.store.getTask(old.taskId);
+    });
+  }
+  private inboxMapping(): Record<string, { taskId: string; seq: number }> {
+    return JSON.parse(this.host.store.getKv("cooperation.inbox")?.value ?? "{}") as Record<string, { taskId: string; seq: number }>;
+  }
   async mirrorInbox(threadId: string, title: string, seq: number, text: string): Promise<void> {
     if (!readCooperation(this.env).relayEnabled) return;
     const a = this.host.teamLink.account;
     if (!a) return;
     const key = `${a.server}\n${a.name}\n${threadId}`;
-    const mapping = JSON.parse(this.host.store.getKv("cooperation.inbox")?.value ?? "{}") as Record<string, { taskId: string; seq: number }>;
+    const mapping = this.inboxMapping();
     const old = mapping[key];
     if (old?.seq === seq && this.host.store.getTask(old.taskId)) return;
     let taskId = old?.taskId;

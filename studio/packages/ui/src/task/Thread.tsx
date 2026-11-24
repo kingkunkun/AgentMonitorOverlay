@@ -909,36 +909,32 @@ ${d}` : back));
               />
               <SessionOptionsBar onFiles={() => setAddingFiles(true)} onSketch={() => setSketching(true)} onSkill={(name) => { setDraft((old) => `/${name} ${old.replace(/^\/[\w:.-]+\s*/, "")}`); requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(".chat-input textarea")?.focus()); }} profiles={profiles} onContinued={onContinued ? (next) => { flushDraft(); writeSessionDraft(next.id, draft); writeSessionDraft(session.id, ""); pendingDraft.current = null; onContinued(next); } : undefined} link={link} session={session} profile={profile} presets={presets} disabled={readOnly || isRemote} {...(isRemote && copyRemote ? { remote: { name: copyRemote.name, mcp: !!copyRemote.mcp, writable: !readOnly && !blocked && copyRemote.state === "active" } } : {})} />
 
-              <span
-                className="composer-hint"
-                {...(blocked ? { "data-testid": "remote-blocked" } : {})}
-                {...(sending && sending === session?.id && !blocked && !attachHold ? { title: `Host 还没回应这条消息；${SEND_GIVE_UP_MS / 1000} 秒内还没有，文字会放回输入框` } : halting && !blocked && !attachHold ? { title: "模型手上的命令或回复收住可能要几秒，这一轮结束前会一直显示" } : {})}
-              >{blocked || attachHold || (sending && sending === session?.id ? "正在发送…" : "") || (halting === "stop" ? "正在停止…" : halting === "now" ? "正在打断，停下后马上发出…" : "") || (generating && !readOnly && !planReview ? (session?.runtime === "dsh" ? "本轮结束后发出 · Ctrl+Enter 立即发送" : `${sendsNow ? "" : "生成中："}${queues ? "工具调用后或本轮结束后读到" : "发送会插入到当前回合"}${sendsNow ? " · Ctrl+Enter 立即发送" : ""}`) : "")}</span>
-              <span className="spacer" />
-              {generating && !readOnly && !blocked && (
+              <div className="composer-actions">
+                {generating && !readOnly && !blocked && (
+                  <button
+                    type="button"
+                    className={`round-btn stop${halting === "stop" ? " stopping" : ""}`}
+                    onClick={stop}
+                    disabled={halting === "stop"}
+                    aria-label={halting === "stop" ? "正在停止" : "打断"}
+                    title={halting === "stop" ? "正在停止：等模型收住手上的这一步" : unansweredPrompt(items) ? "停止生成：还没有回复，刚发的消息放回输入框" : "停止生成"}
+                  >
+                    <IconStop />
+                  </button>
+                )}
+                {(!generating || draft.trim() || !attach.empty) && (
                 <button
                   type="button"
-                  className={`round-btn stop${halting === "stop" ? " stopping" : ""}`}
-                  onClick={stop}
-                  disabled={halting === "stop"}
-                  aria-label={halting === "stop" ? "正在停止" : "打断"}
-                  title={halting === "stop" ? "正在停止：等模型收住手上的这一步" : unansweredPrompt(items) ? "停止生成：还没有回复，刚发的消息放回输入框" : "停止生成"}
+                  className="round-btn send"
+                  onClick={() => void send()}
+                  disabled={!canSend}
+                  aria-label={isRevising ? "发送修改意见" : sendLabel}
+                  title={isRevising ? "把修改意见发给 Claude" : generating ? `${queues ? "排队发送" : "插话发送"}${sendsNow ? "（Ctrl+Enter 立即发送：打断当前这一步）" : ""}` : "发送消息"}
                 >
-                  <IconStop />
+                  <IconArrowUp />
                 </button>
-              )}
-              {(!generating || draft.trim() || !attach.empty) && (
-              <button
-                type="button"
-                className="round-btn send"
-                onClick={() => void send()}
-                disabled={!canSend}
-                aria-label={isRevising ? "发送修改意见" : sendLabel}
-                title={isRevising ? "把修改意见发给 Claude" : generating ? `${queues ? "排队发送" : "插话发送"}${sendsNow ? "（Ctrl+Enter 立即发送：打断当前这一步）" : ""}` : "发送消息"}
-              >
-                <IconArrowUp />
-              </button>
-              )}
+                )}
+              </div>
             </div>
           </div>
           )}

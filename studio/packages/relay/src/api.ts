@@ -107,8 +107,8 @@ export class RelayClient {
   async members(): Promise<Member[]> {
     return (await this.call<{ members: Member[] }>("GET", "/api/members")).members;
   }
-  async threads(): Promise<ThreadView[]> {
-    return (await this.call<{ threads: ThreadView[] }>("GET", "/api/threads")).threads;
+  async threads(signal?: AbortSignal): Promise<ThreadView[]> {
+    return (await this.call<{ threads: ThreadView[] }>("GET", "/api/threads", undefined, signal)).threads;
   }
   async direct(other: string): Promise<Thread> {
     return (await this.call<{ thread: Thread }>("POST", "/api/threads/direct", { with: other })).thread;

@@ -1,8 +1,8 @@
 import { readFileSync, statSync } from "node:fs";
-import { readCooperation, privateClientPath } from "@amo-studio/account";
+import { readCooperation, privateClientPath, type Account } from "@amo-studio/account";
 import { basename, isAbsolute, join } from "node:path";
-import { RELAY_TEXT_MAX, TEAM_SEND_FILES_MAX, type Id, type MessageOrigin, type TeamSend, type TeamThread } from "@amo-studio/protocol";
-import { RelayClient, RelayClientError, downloadFile, listedOthers, dueForAi, filesAsText, newRepliesText, takeSession, threadAsText, type Downloaded, type RelayFile, type Thread, type Via } from "@amo-studio/relay/light";
+import { RELAY_TEXT_MAX, TEAM_SEND_FILES_MAX, type Id, type MessageOrigin, type TeamSend, type TeamThread, type RelayAttention } from "@amo-studio/protocol";
+import { RelayClient, RelayClientError, downloadFile, listedOthers, dueForAi, filesAsText, newRepliesText, takeSession, threadAsText, type Downloaded, type RelayFile, type Thread, type ThreadView, type Via } from "@amo-studio/relay/light";
 import { newId } from "../../store/store.js";
 import { HostError, isRemoteCopy } from "../../core/shared.js";
 import { Feature } from "../../core/feature.js";
@@ -28,17 +28,51 @@ const FILES_HOW = { download: "team_file_get（threadId, fileId）" };
 const FILE_ID = /^[\w-]{1,64}$/;
 
 type Questions = TeamSend["questions"];
+const emptyAttention: RelayAttention = { connection: "connecting", unread: 0, target: null };
+const sameAccount = (a: Account | null, b: Account | null): boolean => a === b || (!!a && !!b && a.server === b.server && a.name === b.name && a.key === b.key);
+
+/** The service already gives one read cursor per thread, including groups and cowork subthreads. */
+function unreadAttention(threads: readonly ThreadView[]): RelayAttention {
+  let unread = 0;
+  let latest: ThreadView | null = null;
+  for (const thread of threads) {
+    if (thread.archived || thread.unread <= 0) continue;
+    unread += thread.unread;
+    if (!latest || thread.lastSeq > latest.lastSeq) latest = thread;
+  }
+  return { connection: "online", unread, target: latest ? `${latest.kind === "cowork" ? "cowork" : "thread"}:${latest.id}` : null };
+}
 
 export class TeamRelayFeature extends Feature<"config" | "sessions" | "attachments" | "tasks"> {
   /** 协作 (2026-11-23, cowork.ts): this computer's sessions in coworks, their state, what comes for them, cowork_*. */
   readonly cowork: TeamCowork = new TeamCowork(this.host, this);
-  private running = false;
+  private receiver: AbortController | null = null;
+  private attentionSnapshot: { account: Account; data: RelayAttention } | null = null;
   private abort: AbortController | null = null;
   private scanning: Promise<void> | null = null;
   /** The newest 中转 message seen: the long wait wakes on anything after it. */
   private lastSeq = 0;
   /** Tests: shorter pauses. */
-  pauseMs = { signedOut: 10_000, failed: 30_000, wait: 25_000 };
+  pauseMs = { signedOut: 10_000, failed: 15_000, wait: 10_000 };
+
+  /** Exposes only the unread summary; switching off or changing accounts hides the old count immediately. */
+  attention(): RelayAttention | null {
+    const account = this.teamLink.account;
+    if (!this.isCurrent(account)) return null;
+    const snapshot = this.attentionSnapshot;
+    return snapshot && sameAccount(snapshot.account, account) ? snapshot.data : emptyAttention;
+  }
+
+  private isCurrent(account: Account | null): account is Account {
+    return !!account && sameAccount(account, this.teamLink.account) && readCooperation(this.teamLink.env).relayEnabled;
+  }
+
+  private onAccount = (account: Account | null, before: Account | null): void => {
+    if (sameAccount(account, before)) return;
+    this.lastSeq = 0;
+    this.attentionSnapshot = null;
+    this.abort?.abort();
+  };
 
   // ---- who and where
 
@@ -317,32 +351,43 @@ export class TeamRelayFeature extends Feature<"config" | "sessions" | "attachmen
 
   /** Starts watching 中转 for replies (host-process.ts); a no-op until the platform has a login. */
   start(): void {
-    if (this.running) return;
-    this.running = true;
-    void this.loop();
+    if (this.receiver) return;
+    this.receiver = new AbortController();
+    this.teamLink.on("account", this.onAccount);
+    void this.loop(this.receiver.signal);
     this.cowork.start();
   }
 
   stop(): void {
-    this.running = false;
+    this.receiver?.abort();
+    this.receiver = null;
+    this.teamLink.off("account", this.onAccount);
     this.abort?.abort();
+    this.attentionSnapshot = null;
+    this.lastSeq = 0;
     this.cowork.stop();
   }
 
-  private async loop(): Promise<void> {
-    while (this.running) {
+  private async loop(lifetime: AbortSignal): Promise<void> {
+    while (!lifetime.aborted) {
+      const account = this.teamLink.account;
+      if (!this.isCurrent(account) || !this.teamLink.login()) {
+        await this.pause(this.pauseMs.signedOut);
+        continue;
+      }
       try {
-        if (!this.teamLink.login() || !readCooperation(this.teamLink.env).relayEnabled) {
-          await this.pause(this.pauseMs.signedOut);
-          continue;
-        }
         await this.scan();
+        if (lifetime.aborted || !this.isCurrent(account)) continue;
         const { client } = this.relay();
-        this.abort = new AbortController();
-        const got = await client.wait({ after: this.lastSeq, timeoutMs: this.pauseMs.wait, signal: this.abort.signal });
-        for (const m of got) this.lastSeq = Math.max(this.lastSeq, m.seq);
+        const wait = (this.abort = new AbortController());
+        const got = await client.wait({ after: this.lastSeq, timeoutMs: this.pauseMs.wait, signal: AbortSignal.any([wait.signal, AbortSignal.timeout(this.pauseMs.wait + 10_000)]) });
+        if (!lifetime.aborted && !wait.signal.aborted && this.isCurrent(account)) {
+          for (const m of got) this.lastSeq = Math.max(this.lastSeq, m.seq);
+        }
       } catch {
-        if (this.running) await this.pause(this.pauseMs.failed);
+        if (lifetime.aborted || !this.isCurrent(account)) continue;
+        this.attentionSnapshot = { account, data: { ...(this.attention() ?? emptyAttention), connection: "offline" } };
+        await this.pause(this.pauseMs.failed);
       }
     }
   }
@@ -363,15 +408,26 @@ export class TeamRelayFeature extends Feature<"config" | "sessions" | "attachmen
   }
 
   private async scanOnce(): Promise<void> {
-    if (!this.teamLink.login() || !readCooperation(this.teamLink.env).relayEnabled) return;
+    const account = this.teamLink.account;
+    if (!this.teamLink.login() || !this.isCurrent(account)) return;
+    const lifetime = this.receiver?.signal;
+    const current = () => !lifetime?.aborted && this.isCurrent(account);
     const { client, me, prefix } = this.relay();
-    const all = await client.threads();
-    for (const t of all.filter((t) => !(t.request?.from === me && t.request.conv?.startsWith(prefix)))) {
-      if (!readCooperation(this.teamLink.env).relayEnabled) return;
+    const deadline = AbortSignal.timeout(10_000);
+    const all = await client.threads(lifetime ? AbortSignal.any([lifetime, deadline]) : deadline).catch((error: unknown) => {
+      if (lifetime?.aborted) return [];
+      throw error;
+    });
+    if (!current()) return;
+    this.attentionSnapshot = { account, data: unreadAttention(all) };
+    for (const t of all) this.lastSeq = Math.max(this.lastSeq, t.lastSeq);
+    for (const t of this.host.cooperation.inboxToMirror(all.filter((t) => !(t.request?.from === me && t.request.conv?.startsWith(prefix))))) {
+      if (!current()) return;
       const content = await client.messages(t.id);
+      if (!current()) return;
       await this.host.cooperation.mirrorInbox(t.id, t.title || t.members.filter((n) => n !== me).join("、"), t.lastSeq, threadAsText(content.thread, content.messages));
     }
-    for (const t of all) this.lastSeq = Math.max(this.lastSeq, t.lastSeq);
+    if (!current()) return;
     const before = this.threads();
     // A 协作's 子会话 (request.coworkId, 2026-11-23) is a request too, sent as the person with the agent's mark: what comes
     // back there reaches the agent only as the 协作's deliveries (cowork.ts), else it would go in twice.

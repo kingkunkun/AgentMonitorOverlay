@@ -109,6 +109,32 @@ test("Codex composer keeps prompts/files, changes actual model/effort/permission
   } finally { await studio.close(); }
 });
 
+test("a running Claude keeps its model chooser visible below the send hint in a narrow composer", async () => {
+  const studio = await launchStudio();
+  try {
+    const { page, app } = studio;
+    const ws = await studio.api<Workspace>("POST", "/api/workspaces", { path: studio.workspace("composer") });
+    await studio.api("POST", "/api/tasks", { title: "运行中的模型选择", workspaceId: ws.id, firstSession: { profileId: "claude-mock", text: "开始" } });
+    await page.getByTestId("task-card").filter({ hasText: "运行中的模型选择" }).click();
+    await expect(page.getByTestId("msg-agent").last()).toContainText("MOCK: 开始", { timeout: 30_000 });
+    await page.setViewportSize({ width: 940, height: 760 });
+    const composer = page.getByRole("textbox", { name: "输入消息" });
+    await composer.fill("[[slow]]");
+    await composer.press("Enter");
+    await expect(page.getByRole("button", { name: "打断", exact: true })).toBeVisible();
+    const hint = page.locator(".composer-hint");
+    await expect(hint).toHaveText("工具调用后或本轮结束后读到 · Ctrl+Enter 立即发送");
+    await expect(page.locator(".chat-bar .composer-hint")).toHaveCount(0);
+    const model = page.getByTestId("switch-model");
+    await expect(model.locator(".composer-model-name")).toBeVisible();
+    await expect(model).toBeInViewport({ ratio: 1 });
+    await model.click();
+    await expect(page.getByTestId("model-effort-popover").getByRole("button", { name: "选择模型", exact: true })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await screenshot(app, "studio", "running-model-picker", page);
+  } finally { await studio.close(); }
+});
+
 test("Claude can change model and permissions through the compact menus without changing account", async () => {
   const studio = await launchStudio();
   try {

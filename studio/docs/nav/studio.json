@@ -44,14 +44,15 @@
     {
       "id": "studio.cooperation",
       "label": "合作模式、隐私开关、局域网手机服务与固定 Jenkins 打包",
-      "aliases": ["合作模式","关闭远程","关闭中转","手机服务","原生历史","隐私","外发确认","Jenkins","打包","SurvivorTD_IOS_Auto","SurvivorTD_Android_Auto","# 提示词","预设","手机远程","手机账号","账号管理","团队远程","团队来信"],
+      "aliases": ["合作模式","关闭远程","关闭中转","手机服务","原生历史","隐私","外发确认","Jenkins","打包","SurvivorTD_IOS_Auto","SurvivorTD_Android_Auto","# 提示词","预设","手机远程","手机账号","账号管理","团队远程","团队来信","中转合作","未读消息"],
       "category": "host",
       "purpose": "kingkunkun fork：团队账号/远程与独立手机账号/服务分别管理，手机账号在电脑创建、改密、停用、删除并接管本机聊天，团队来信按勾选账号同步；文件外发需电脑确认，原生历史禁止导入。固定 Jenkins Job 和 # 提示词仍由本机执行。",
       "anchors": [
         { "label": "合作模式与隐私", "path": "studio/packages/host/src/core/cooperation.ts", "anchor": "export class Cooperation" },
         {"label":"独立手机账号和设备通道","path":"studio/packages/host/src/core/phone-remote.ts","anchor":"export class PhoneRemote"},
         {"label":"手机账号管理界面","path":"studio/packages/ui/src/shell/PhoneRemoteSettings.tsx","anchor":"export function PhoneRemoteSettings"},
-        { "label": "合作模式界面", "path": "studio/packages/ui/src/shell/CooperationMenu.tsx", "anchor": "export function CooperationMenu" },
+        { "label": "合作模式和中转快捷入口", "path": "studio/packages/ui/src/shell/CooperationMenu.tsx", "anchor": "export function CooperationMenu" },
+        { "label": "中转未读摘要", "path": "studio/packages/host/src/features/teamrelay/service.ts", "anchor": "attention(): RelayAttention" },
         { "label": "固定打包接口", "path": "studio/packages/host/src/core/build-job.ts", "anchor": "export class BuildJob" },
         { "label": "本地提示词设置", "path": "studio/packages/host/src/core/chat-presets.ts", "anchor": "export class ChatPresets" },
         { "label": "隐私与书签开关协议", "path": "studio/packages/protocol/src/cooperation.ts", "anchor": "BOOKMARKS_ENABLED" }
@@ -308,7 +309,7 @@
       "anchors": [
         { "label": "TeamCowork", "path": "studio/packages/host/src/features/teamrelay/cowork.ts", "anchor": "export class TeamCowork" },
         { "label": "agent 的状态", "path": "studio/packages/host/src/features/teamrelay/cowork.ts", "anchor": "stateOf(sessionId: Id, mark: string" },
-        { "label": "送进会话", "path": "studio/packages/host/src/features/teamrelay/cowork.ts", "anchor": "async take(box: CoworkInbox)" },
+        { "label": "送进会话", "path": "studio/packages/host/src/features/teamrelay/cowork.ts", "anchor": "async take(box: CoworkInbox," },
         { "label": "给 agent 的工具", "path": "studio/packages/host/src/features/teamrelay/cowork-mcp.ts", "anchor": "export function coworkTools" },
         { "label": "精简的数字", "path": "studio/packages/host/src/features/teamrelay/cowork-text.ts", "anchor": "export const COWORK_BRIEF" },
         { "label": "往前翻", "path": "studio/packages/host/src/features/teamrelay/cowork.ts", "anchor": "private async feedBefore(" },

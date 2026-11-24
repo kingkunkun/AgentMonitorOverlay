@@ -2,10 +2,17 @@
 export const BOOKMARKS_ENABLED: boolean = false;
 export interface TransferRequest { id: string; taskId: string; peer: string; path: string; createdAt: string }
 export interface PhoneAccount { name: string; enabled: boolean; forwardTeamInbox: boolean; devices: number }
+/** Local WorkStudio summary of the team's existing unread state. No message text or credentials. */
+export interface RelayAttention {
+  connection: "connecting" | "online" | "offline";
+  unread: number;
+  target: `cowork:${string}` | `thread:${string}` | null;
+}
 export interface CooperationState {
   account: { name: string; server: string } | null;
   recentServers: string[];
   relayEnabled: boolean;
+  relayAttention?: RelayAttention | null;
   remoteEnabled: boolean;
   syncOwnDevices: boolean;
   server: { running: boolean; lan: boolean; port: number | null; addresses: string[]; invite: string; error: string | null; accounts?: PhoneAccount[] };
