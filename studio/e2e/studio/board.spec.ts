@@ -9,6 +9,36 @@ test.afterEach(async () => {
   studio = undefined;
 });
 
+test("the tilde key opens the board without taking text input or switching under a dialog", async () => {
+  studio = await launchStudio({ mockModel: false, boardMode: "timeline" });
+  const { page } = studio;
+  const board = page.getByTestId("board-timeline");
+  const openDraft = () => page.getByTestId("nav-new-chat").click();
+
+  await openDraft();
+  const composer = page.getByRole("textbox", { name: "第一句话" });
+  await composer.press("Backquote");
+  await composer.press("Shift+Backquote");
+  await expect(composer).toHaveValue("`~");
+  await expect(board).toHaveCount(0);
+
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  const settings = page.getByRole("dialog", { name: "设置", exact: true });
+  await expect(settings).toBeVisible();
+  await page.keyboard.press("Backquote");
+  await expect(settings).toBeVisible();
+  await expect(board).toHaveCount(0);
+  await page.keyboard.press("Escape");
+
+  await composer.blur();
+  await page.keyboard.press("Shift+Backquote");
+  await expect(board).toBeVisible();
+  await openDraft();
+  await composer.blur();
+  await page.keyboard.press("Backquote");
+  await expect(board).toBeVisible();
+});
+
 test("registers a sandbox workspace and shows tasks on the board", async () => {
   studio = await launchStudio();
   const { page } = studio;

@@ -239,7 +239,7 @@ export function ViewBar({
           const from = view && "back" in view ? view.back : undefined;
           const current = !!view && (view.kind === def.kind || (from ? from.kind === def.kind : !!def.tab.alsoFor?.includes(view.kind)));
           return (
-            <button key={def.kind} type="button" className="view-tab" aria-current={current ? "page" : undefined} onClick={() => onView(target)} disabled={disabled}>
+            <button key={def.kind} type="button" className="view-tab" aria-current={current ? "page" : undefined} title={def.kind === "board" ? "打开看板（~）" : undefined} onClick={() => onView(target)} disabled={disabled}>
               {def.tab.label}
             </button>
           );

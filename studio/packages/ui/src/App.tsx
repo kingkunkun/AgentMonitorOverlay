@@ -123,6 +123,21 @@ export function App() {
   const [remoteOpen, setRemoteOpen] = useState(false);
   const [quickOpen, setQuickOpen] = useState(false);
 
+  // The tilde key opens the board outside editors and modal dialogs.
+  useEffect(() => {
+    if (host.kind !== "ready" || view.kind === "board") return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.key !== "~" && e.key !== "`") || e.ctrlKey || e.altKey || e.metaKey || e.isComposing || e.defaultPrevented || e.repeat) return;
+      const target = e.target;
+      if (target instanceof HTMLElement && (target.isContentEditable || target.closest("input, textarea, select, [role='textbox']"))) return;
+      if (document.querySelector("[aria-modal='true'], .modal-backdrop")) return;
+      e.preventDefault();
+      setShownView({ kind: "board" });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [host.kind, view.kind]);
+
   // Ctrl N: the quick bar from anywhere; Ctrl Shift N: the draft task page.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
