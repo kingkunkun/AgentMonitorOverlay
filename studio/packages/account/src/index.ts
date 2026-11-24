@@ -10,3 +10,5 @@ export * from "./account.js";
 export * from "./device.js";
 export * from "./cooperation.js";
 export * from "./privacy.js";
+// 崩溃转储 (2026-11-10): every program's Crashpad, by the platform's channel: startCrashDumps(), crashDumpsChoice()
+export * from "./crash-dumps.js";

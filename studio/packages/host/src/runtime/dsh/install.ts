@@ -3,7 +3,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { DSH_DESKTOP_ARGS, dshDesktopDir, locateDshDesktop, type DshDesktopFound } from "@amo-studio/locate";
-import type { DshCheck, DshStatus } from "@amo-studio/protocol";
+import { DSH_IMAGE_MODEL_NAMES, type DshCheck, type DshStatus } from "@amo-studio/protocol";
 
 // Everything Studio relies on in DeepSeek Harness (stage 17, plans/done/stage-17-dsh.md; spikes s17-00/01): the desktop app
 // (2026-10-26: the default when it is installed; it updates itself) or a source clone the person builds and pulls.
@@ -50,6 +50,17 @@ export const DSH_PERMISSION_ENV = "DSH_PERMISSION_MODE";
 export const DSH_KEY_ENV = "DEEPSEEK_API_KEY";
 /** The DeepSeek route's address (an Anthropic Messages endpoint); a third-party DeepSeek channel sets it (2026-10-19). */
 export const DSH_BASE_URL_ENV = "DEEPSEEK_BASE_URL";
+
+/**
+ * The model names DSH's own catalog says take images (llm-deepseek's DEFAULT_MODELS: `deepseek-flash`, shown as
+ * DeepSeek-V4.1-Flash; `deepseek-v4-flash` and `deepseek-v4-pro` are text only). A channel's model names replace that
+ * catalog, and there an entry without `inputModalities` is text only (2026-11-11: on the person's 「Dxx-DS」 channel
+ * DeepSeek-V4.1-Flash was refused every picture — Studio's patch had dropped what DSH knows of it). A channel says
+ * which of its names take images itself (`imageModels`); these are its default.
+ */
+export const DSH_IMAGE_MODELS: ReadonlySet<string> = new Set(DSH_IMAGE_MODEL_NAMES);
+/** Shown with `deepseek-flash` where only the site's name is listed (a channel's own model names). */
+export const DSH_IMAGE_MODEL_LABEL = "DeepSeek-V4.1-Flash";
 
 /** Session config options DSH offers over ACP (`session/set_config_option`). */
 export const DSH_MODEL_OPTION = "model";

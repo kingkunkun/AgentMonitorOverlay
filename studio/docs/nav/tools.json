@@ -4,9 +4,9 @@
     {
       "id": "tool.reviewer",
       "label": "AMO Reviewer（Git Review 和查看器）",
-      "aliases": ["Reviewer", "Git Review", "查看器", "viewer", "HTML 批注", "位置批注", "amo-review", "ReviewApp", "ViewerApp"],
+      "aliases": ["Reviewer", "Git Review", "查看器", "viewer", "HTML 批注", "位置批注", "amo-review", "ReviewApp", "ViewerApp", "图片", "看大图", "缩放", "另存为", "复制图片", "链接"],
       "category": "tool",
-      "purpose": "Git Review 和文件查看器（含 HTML 的位置批注），可以单独用，Studio 里也带着同一份（AGENTS.md 架构约束第 4 条：只有一份）。独立程序是 reviewer 包的 Electron 入口，界面在 ui 包，后台用 Host。",
+      "purpose": "Git Review 和文件查看器（含 HTML 的位置批注），可以单独用，Studio 里也带着同一份（AGENTS.md 架构约束第 4 条：只有一份）。独立程序是 reviewer 包的 Electron 入口，界面在 ui 包，后台用 Host。图片（本机的、远程任务取来的、查看包里的、网页和 Markdown 里点开的大图）都由 ImageView 显示：适应窗口、滚轮缩放、拖动、右键另存为（主进程的 amo:save-file 弹系统保存对话框，Studio 和独立 Reviewer 都装）、Ctrl+C 复制图片（amo:copy-image 写剪贴板，非 PNG/JPEG 先在页面里转成 PNG；有文字选区或焦点在输入框时让给文字，lib/saveFile.ts 的 textWantsCopy）。渲染的 HTML / Markdown 里的链接由 RenderedReview 的 follow 处理：网址用浏览器开，#标题页内跳，图片看大图，别的文件在查看器里开（远程任务的经 viewRemoteFile 从那台电脑取）。",
       "anchors": [
         { "label": "独立程序入口", "path": "studio/packages/reviewer/src/main.ts", "anchor": "parseArgs" },
         { "label": "Review 窗口", "path": "studio/packages/reviewer/src/review-window.ts", "anchor": "export function setupReviewWindows" },
@@ -14,6 +14,10 @@
         { "label": "Review 界面", "path": "studio/packages/ui/src/gitreview/ReviewApp.tsx", "anchor": "export function ReviewApp" },
         { "label": "查看器界面", "path": "studio/packages/ui/src/viewer/ViewerApp.tsx", "anchor": "export function ViewerApp" },
         { "label": "批注组件", "path": "studio/packages/ui/src/review/AnnotationPanel.tsx" },
+        { "label": "图片：缩放、拖拽、右键菜单", "path": "studio/packages/ui/src/viewer/ImageView.tsx", "anchor": "export function ImageView" },
+        { "label": "图片：适应窗口和长图的规则", "path": "studio/packages/ui/src/viewer/imageFit.ts", "anchor": "export const LONG_RATIO" },
+        { "label": "另存为（主进程）", "path": "studio/packages/reviewer/src/save-file.ts", "anchor": "export function installSaveFile" },
+        { "label": "渲染页面里的链接", "path": "studio/packages/ui/src/viewer/RenderedReview.tsx", "anchor": "const follow = (href: string)" },
         { "label": "命令行入口", "path": "studio/scripts/amo-review.mjs" },
         { "label": "改动说明", "path": "studio/packages/reviewer/CHANGELOG.md" }
       ],
@@ -42,9 +46,9 @@
     {
       "id": "tool.relayService",
       "label": "AMO 中转服务（团队服务器）",
-      "aliases": ["中转", "relay", "中转服务", "RelayServer", "团队服务器", "Mac mini", "relay-service", "relay inbox", "中转 MCP"],
+      "aliases": ["中转", "relay", "中转服务", "RelayServer", "团队服务器", "Mac mini", "relay-service", "relay inbox", "中转 MCP", "中转附件", "附件", "relay_file_download"],
       "category": "tool",
-      "purpose": "跑在 Mac mini 上的局域网服务：策划的 AI 把要确认的事发给程序、人和人聊天；同时是平台的发布点（清单、文件）、设备通道（远程会话、手机）、问题页、待办、Claude Code / Codex 镜像。服务器上只有一份，部署只走 `npm run release -- relay-service`（会重启几秒，先问用户）。",
+      "purpose": "跑在 Mac mini 上的局域网服务：策划的 AI 把要确认的事发给程序、人和人聊天；同时是平台的发布点（清单、文件）、设备通道（远程会话、手机）、问题页、待办、Claude Code / Codex 镜像。服务器上只有一份，部署只走 `npm run release -- relay-service`（会重启几秒，先问用户）。AI 用的 MCP 和命令行（`amo-relay.mjs`）也在服务下发的客户端内容里，随 `relay-service` 部署到人手上：读会话时列出会话里的文件，`relay_file_download` / `relay download` 把附件存到本机（默认 `%TEMP%\\amo-relay-files\\<fileId>\\`，2026-11-12）。",
       "anchors": [
         { "label": "HTTP 服务", "path": "studio/packages/relay/src/server.ts", "anchor": "export async function startRelayServer" },
         { "label": "存储", "path": "studio/packages/relay/src/store.ts", "anchor": "export class RelayStore" },
@@ -54,6 +58,7 @@
         { "label": "平台的清单和文件", "path": "studio/packages/relay/src/platform.ts", "anchor": "manifestServed" },
         { "label": "工具镜像", "path": "studio/packages/relay/src/mirror.ts" },
         { "label": "命令行", "path": "studio/packages/relay/src/bin.ts" },
+        { "label": "AI 取附件（存到本机）", "path": "studio/packages/relay/src/download.ts", "anchor": "export async function downloadFile" },
         { "label": "改动说明（中转服务）", "path": "studio/packages/relay/CHANGELOG.md" }
       ],
       "related": ["tool.relayClient", "tool.issues", "studio.teamRelay", "studio.remote", "infra.release"],
@@ -125,6 +130,25 @@
       ],
       "related": ["tool.platform", "studio.remote", "studio.teamRelay"],
       "next": ["studio/plans/amo-lan-platform.md"]
+    },
+    {
+      "id": "tool.crashDumps",
+      "label": "崩溃转储（Crashpad）",
+      "aliases": ["crashpad", "crashReporter", "崩溃", "崩溃转储", "dmp", "minidump", "startCrashDumps", "AMO_CRASH_DUMPS"],
+      "category": "tool",
+      "purpose": "Studio、平台、便签、中转、Reviewer 崩溃时在各自 userData\\Crashpad 留 minidump（不上传，留最近 5 个）。按平台 platform.json 的更新通道决定：测试通道开、正式通道和没装平台时关；Studio 的「设置 → 维护」可以自己开关（shell-prefs.json 的 crashDumps），其他程序暂时没有开关（2026-11-10 用户定）。",
+      "steps": [
+        "新程序接入：在 main 里 app.setPath(\"userData\") 之后马上调 startCrashDumps({ app, crashReporter }, 名字, crashDumpsChoice(设置或 null), testMode)。",
+        "不要调 app.setPath(\"crashDumps\")：Electron 44 在 Windows 上设了它 crashpad handler 就不启动（2026-11-10 试过）。",
+        "测试模式不真的启动 Crashpad，除非 AMO_CRASH_DUMPS=1；AMO_CRASH_DUMPS=1/0 也能临时盖过设置和通道。"
+      ],
+      "anchors": [
+        { "label": "共用模块", "path": "studio/packages/account/src/crash-dumps.ts", "anchor": "export function startCrashDumps" },
+        { "label": "Studio 接入和 IPC", "path": "studio/packages/app/src/main.ts", "anchor": "amo:crash-dumps-get" },
+        { "label": "设置 → 维护", "path": "studio/packages/ui/src/settings/CrashDumpsSection.tsx", "anchor": "export function CrashDumpsSection" }
+      ],
+      "related": ["tool.platform", "tool.account"],
+      "next": ["studio/packages/account/src/crash-dumps.ts"]
     },
     {
       "id": "tool.mobile",

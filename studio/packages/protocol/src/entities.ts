@@ -178,6 +178,11 @@ export interface Session {
    * that it was stopped, or its error. Absent: none.
    */
   reportTo?: Id;
+  /**
+   * 分支 (2026-11-10): the session and its turn (1-based, as the transcript numbers them) this one was forked from — a
+   * fork under it, or a peer beside it. Absent: not a fork, or one from before.
+   */
+  forkOf?: { sessionId: Id; turn: number };
   runtime: SessionRuntime;
   profileId: Id;
   /** A task session runs in its task's workspace; a topic session in any of the topic's projects or the common space. */
@@ -399,7 +404,11 @@ export type SessionItem =
   | (ItemBase & { type: "reasoning"; text: string; streaming: boolean; durationMs?: number })
   | (ItemBase & { type: "tool" } & ToolFields)
   /** Metadata of one turn (not shown as a row): when it ran, how it ended, what it used. */
-  | (ItemBase & { type: "turn"; turnId: string; state: TurnState; startedAt: Timestamp; endedAt?: Timestamp; usage?: TurnUsage; decode?: TurnDecode; error?: string; retry?: TurnRetry })
+  /**
+   * `forkPoint` (Claude, 2026-11-10): the uuid of the turn's last transcript message, to fork the session through this
+   * turn (forkSession's upToMessageId). Turns from before it have none: only the latest of them can be forked.
+   */
+  | (ItemBase & { type: "turn"; turnId: string; state: TurnState; startedAt: Timestamp; endedAt?: Timestamp; usage?: TurnUsage; decode?: TurnDecode; error?: string; retry?: TurnRetry; forkPoint?: string })
   | (ItemBase & { type: "approval"; approvalId: string; kind: ApprovalKind; summary: string; detail?: string; state: ApprovalState })
   /** A question to the person, a form, or a plan to review (stage 12; see questions.ts). */
   | (ItemBase & { type: "question" } & QuestionFields)
@@ -824,6 +833,8 @@ export interface UsageWindow {
   /** 0–100; null when the account did not say. */
   usedPercent: number | null;
   resetsAt: Timestamp | null;
+  /** A model's own weekly limit ("Opus", "Fable"…): shown only when 设置 → 额度 turns those on (2026-11-13). */
+  model?: string;
 }
 
 /** How much of a subscription is used: the person's own GPT (Codex login) or Claude (setup-token) account. */
@@ -840,5 +851,13 @@ export interface AccountUsage {
    * Claude 多账号 (2026-11-03): which of the Claude subscription's accounts this is; one entry per account, the current
    * one first. Absent for every other subscription (and for Claude with a single account).
    */
-  account?: { id: Id; label: string; current: boolean };
+  account?: {
+    id: Id;
+    label: string;
+    current: boolean;
+    /** 2026-11-12 (the user: 最好能看到账号的真正 Claude 名称): the name, email and plan its Claude login carries (`.claude.json`). */
+    name?: string | null;
+    email?: string | null;
+    plan?: string | null;
+  };
 }

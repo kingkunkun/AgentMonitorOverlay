@@ -1,4 +1,5 @@
-import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeTheme, shell } from "electron";
+import { crashDumpsChoice, startCrashDumps } from "@amo-studio/account";
+import { app, BrowserWindow, clipboard, crashReporter, ipcMain, Menu, nativeTheme, shell } from "electron";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +8,7 @@ import type { HostEvent } from "@amo-studio/protocol";
 import { setupReviewWindows } from "./review-window.js";
 import { setupViewerWindows } from "./viewer-window.js";
 import { installWindowControls } from "./window-controls.js";
+import { installCopyImage, installSaveFile } from "./save-file.js";
 
 // AMO Reviewer (2026-10-23): Git Review, the viewer and 查看包 as a program of their own, for any tool or model, not
 // only WorkStudio (plans/done/reviewer-standalone.md). It runs a Host of its own with no models — its own data dir, the same
@@ -28,6 +30,8 @@ const ICON = [join(here, "..", "assets", "icon.png"), join(here, "..", "..", "ap
 const preload = join(here, "preload.cjs");
 
 app.setPath("userData", join(home, "electron"));
+// 崩溃转储 (2026-11-10): Crashpad minidumps in electron\Crashpad, on the platform's test channel (@amo-studio/account).
+startCrashDumps({ app, crashReporter }, "AMO Reviewer", crashDumpsChoice(null), testMode);
 // Its own taskbar group, also when it runs from WorkStudio.exe.
 if (process.platform === "win32") app.setAppUserModelId("AMO.Reviewer");
 
@@ -123,6 +127,10 @@ async function start(): Promise<void> {
   ipcMain.handle("amo:open-external", (_event, url: string) => (/^https?:\/\//.test(String(url)) ? shell.openExternal(String(url)) : undefined));
   // The pages draw their own title bars and window buttons (2026-10-29).
   installWindowControls();
+  // 另存为 of a picture (2026-11-11): the system's save dialog.
+  installSaveFile();
+  // 复制图片 (2026-11-11): Ctrl+C on a picture puts the picture itself on the clipboard.
+  installCopyImage({ testMode });
   ipcMain.on("amo:min-width", (event, px: number) => {
     const w = BrowserWindow.fromWebContents(event.sender);
     if (w && !w.isDestroyed() && Number.isFinite(px) && px > 0) w.setMinimumSize(Math.min(Math.round(px), 1600), w.getMinimumSize()[1] ?? 0);

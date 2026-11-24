@@ -82,7 +82,8 @@ export interface Live {
   /** The model call streaming now: when its first output came and its output tokens so far (the turn's speed). */
   call?: { firstAt: number | null; tokens: number } | null;
   /** The turn in progress (from the first message of a run to its result). */
-  turn: { id: string; itemId: Id } | null;
+  /** `lastMessage`: the uuid of its latest transcript message so far (its turn item's forkPoint when it ends). */
+  turn: { id: string; itemId: Id; lastMessage?: string } | null;
   /** Agent items still streaming, oldest first. */
   streaming: Id[];
   /** Thinking items still streaming, oldest first, with when they started. */
@@ -144,6 +145,8 @@ export interface Live {
   stopLoopAtEnd: boolean;
   /** The next message is Studio's own (wake), not the person's. */
   sendingForStudio: boolean;
+  /** Claude 多账号: the account the process was started on (local login only; for host.log, 2026-11-12). */
+  account: string | null;
 }
 
 /** A process's state before its query is made (`q` is set right after). */
@@ -198,6 +201,7 @@ export function newLive(push: Live["push"], end: Live["end"]): Live {
     afterLimit: null,
     stopLoopAtEnd: false,
     sendingForStudio: false,
+    account: null,
   };
 }
 

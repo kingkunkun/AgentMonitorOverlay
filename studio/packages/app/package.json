@@ -1,13 +1,14 @@
 {
   "name": "@amo-studio/app",
   "private": true,
-  "version": "0.9.56",
+  "version": "0.9.68",
   "type": "module",
   "main": "dist/main.js",
   "scripts": {
     "start": "electron ."
   },
   "dependencies": {
+    "@amo-studio/account": "0.0.0",
     "@amo-studio/host": "0.0.0",
     "@amo-studio/protocol": "0.0.0",
     "@amo-studio/reviewer": "*",

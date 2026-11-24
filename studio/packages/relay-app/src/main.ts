@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, nativeTheme, Notification, protocol, safeStorage, shell, Tray } from "electron";
+import { app, BrowserWindow, clipboard, crashReporter, dialog, ipcMain, nativeImage, nativeTheme, Notification, protocol, safeStorage, shell, Tray } from "electron";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -20,7 +20,7 @@ import {
   type ShellInfo,
   type UpdateInfo,
 } from "@amo-studio/relay";
-import { readAccount, readCooperation, updateCooperation, privateClientPath } from "@amo-studio/account";
+import { crashDumpsChoice, readAccount, startCrashDumps, readCooperation, updateCooperation, privateClientPath } from "@amo-studio/account";
 import { badgedImage, overlayImage, TrayMenu } from "@amo-studio/traymenu";
 import { Accounts } from "./accounts.js";
 import { Attention, writeAttention } from "./attention.js";
@@ -61,6 +61,8 @@ let policyEnabled = readCooperation().relayEnabled;
 const DISABLED_HTML = `<!doctype html><meta charset="utf-8"><title>Work中转</title><body style="font:16px system-ui;padding:48px;background:#171b20;color:#eee"><h1>Work中转已关闭</h1><p>已停止此窗口的团队消息连接。关闭窗口与关闭中转功能是两回事。</p><button id="enable">开启中转</button><p id="error"></p><script>document.getElementById('enable').onclick=()=>window.relayLoader.enable().catch(e=>document.getElementById('error').textContent=e.message)</script>`;
 
 app.setPath("userData", join(home, "electron"));
+// 崩溃转储 (2026-11-10): Crashpad minidumps in electron\Crashpad, on the platform's test channel (@amo-studio/account).
+startCrashDumps({ app, crashReporter }, "AMO 中转", crashDumpsChoice(null), testMode);
 if (process.platform === "win32") app.setAppUserModelId("AMO.Relay");
 protocol.registerSchemesAsPrivileged([{ scheme: SCHEME, privileges: { standard: true, supportFetchAPI: true, corsEnabled: true } }]);
 

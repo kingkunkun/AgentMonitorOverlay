@@ -38,6 +38,7 @@
 | 本机工具下载 / Android 0.2.3 | 设置 → 工具下载，独立只读服务 `47951`；本机启用 LAN，下载页 `http://172.16.0.56:47951/`、APK `/files/phone-workstudio`。启动恢复开关和清单位于 `.data/tool-downloads/`；临时独立服务在旧 Host 上运行，安全重启脚本切交新版 Host 接管，结果见 `.data/restart-after-build.json`。安卓 0.2.3 / build 7 编译成功，MI 8（b81c6b0f）安装成功；共享代码测试 21 项通过、lint 0 errors / 13 warnings。手机完整下载 SHA-256 与电脑一致（f7091b76…70e31）。备份安装包 `D:\Codex\WorkStudio-builds\WorkStudio-Mobile-0.2.3-20261113-debug.apk`。公司管理页仍是桌面功能，IPA 未构建。见 `plans/done/tool-downloads.md`。 |
 | Host 结构 | `plans/host-structure.md`：8a–8c 已合进 master；剩一个 feature 环组 {collab、gitreview、projects、remote、review、sessions、tasks、viewpacks}，拆法写在方案里，没开工。项目梳理总表 `plans/done/cleanup-2026-11.md` |
 | 全景（userlayer） | 分支 `studio/panorama`（worktree `G:\PROJECT\AgentMonitorOverlay-panorama`）比 master 多 4 个提交：全景里抽屉打开会话（`plans/userlayer/framework.md` 第 1 步）、内存测量，没合 |
+| 脉络（tracks） | 11-09 开工，`plans/tracks.md`。第 0 步（测试功能「开发中」标签、「脉络」开关）合进 master，随 Studio 测试版发；之后在 worktree `G:\PROJECT\AgentMonitorOverlay-tracks`（分支 `studio/tracks`）用开发界面目录迭代。下一步：面板原型 |
 | 远程会话 | 功能都在 master、已发布（`plans/done/remote-session.md`、`plans/done/remote-page-and-new-task.md`；11-06 加了远程任务页的被控端额度）。等用户用两台真电脑验收；会话级授权、模型细到型号、远程权限上限等用户 10-29 定先不做 |
 | Android Studio | 工程在 `mobile/`（KMP：`shared` + `app`），调试 APK 在 `mobile/out/`。真实手机和 Tailscale 实网没测（`plans/done/android-studio.md`） |
 | iOS Studio | `plans/ios.md`：签名 11-03 通了（jenkins-build 钥匙串），**等 App Store Connect API Key**（打包机 `~/.amo-ios/config` 两个 ID 空着、没有 .p8），之后 validate、问过用户再第一次上传。打包机上 LaunchAgent `com.amo.ios-build` 的残留没卸（等用户点头删 Mac 上的文件） |

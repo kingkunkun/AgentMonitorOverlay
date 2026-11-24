@@ -44,11 +44,11 @@ describe("Store", () => {
   it("applies migrations once", () => {
     const path = tempDbPath();
     const first = makeStore(path);
-    expect(first.schemaVersion()).toBe(28);
+    expect(first.schemaVersion()).toBe(29);
     first.db.prepare("INSERT INTO studio_request_usage VALUES (?,?,?,?,?)").run("2026-01-01", "fixture", 3, 2, 1);
     open.pop()!.close();
     const reopened = makeStore(path);
-    expect(reopened.schemaVersion()).toBe(28);
+    expect(reopened.schemaVersion()).toBe(29);
     expect(reopened.db.prepare("SELECT input,cached,output FROM studio_request_usage").get()).toMatchObject({ input: 3, cached: 2, output: 1 });
   });
 

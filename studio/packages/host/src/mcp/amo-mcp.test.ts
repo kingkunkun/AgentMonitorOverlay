@@ -86,15 +86,15 @@ afterAll(async () => {
 });
 
 describe("AMO MCP", () => {
-  it("lists twenty read-only tools and thirty-seven that write for the caller", async () => {
+  it("lists twenty-one read-only tools and thirty-nine that write for the caller", async () => {
     const client = await connect();
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       "amo_guide", "amo_whoami", "board_list", "canvas_callout", "canvas_callout_close", "canvas_color", "canvas_depend", "canvas_group_create", "canvas_item_update", "canvas_items_post", "canvas_place", "canvas_read", "checklist_check", "company_group_read", "company_message_send", "company_self_improve", "company_work_read", "company_work_report", "decision_request", "duty_list", "duty_save", "duty_stop", "handoff_submit", "issue_get", "issue_list", "issue_released", "issue_reply", "issue_update",
-      "mailbox_read", "mailbox_send", "mcp_server_list", "mcp_server_save", "project_context", "prompt_template_delete", "prompt_template_list", "prompt_template_save", "review_open", "session_archive", "session_send", "session_start", "session_tree", "task_describe", "task_get", "task_message", "task_note_add", "task_plan_propose", "team_ask", "team_done", "team_followup", "team_members", "team_session", "team_sessions", "topic_doc_write", "topic_docs", "topic_get", "topic_list", "view_open",
+      "mailbox_read", "mailbox_send", "mcp_server_list", "mcp_server_save", "project_context", "prompt_template_delete", "prompt_template_list", "prompt_template_save", "review_open", "session_archive", "session_rename", "session_send", "session_start", "session_tree", "task_describe", "task_get", "task_message", "task_note_add", "task_plan_propose", "task_rename", "team_ask", "team_done", "team_file_get", "team_followup", "team_members", "team_session", "team_sessions", "topic_doc_write", "topic_docs", "topic_get", "topic_list", "view_open",
     ]);
     expect(tools.filter((t) => t.annotations?.readOnlyHint === true).map((t) => t.name).sort()).toEqual([
-      "amo_guide", "amo_whoami", "board_list", "canvas_read", "company_group_read", "company_work_read", "duty_list", "issue_get", "issue_list", "mcp_server_list", "project_context", "prompt_template_list", "session_tree", "task_get", "team_members", "team_session", "team_sessions", "topic_docs", "topic_get", "topic_list",
+      "amo_guide", "amo_whoami", "board_list", "canvas_read", "company_group_read", "company_work_read", "duty_list", "issue_get", "issue_list", "mcp_server_list", "project_context", "prompt_template_list", "session_tree", "task_get", "team_file_get", "team_members", "team_session", "team_sessions", "topic_docs", "topic_get", "topic_list",
     ]);
     await client.close();
   });
@@ -115,6 +115,9 @@ describe("AMO MCP", () => {
     expect(() => service.config.updateSettings({ experimentalFeatures: ["nope"] })).toThrow(/experimentalFeatures/);
     expect(() => service.config.updateSettings({ experimentalFeatures: "panorama" })).toThrow(/experimentalFeatures/);
     expect(service.config.updateSettings({ experimentalFeatures: ["panorama", "panorama"] }).experimentalFeatures).toEqual(["panorama"]);
+    // 脉络 (2026-11-09): kept in the list's order whatever order it was sent in.
+    expect(service.config.updateSettings({ experimentalFeatures: ["tracks", "panorama"] }).experimentalFeatures).toEqual(["panorama", "tracks"]);
+    expect(service.config.updateSettings({ experimentalFeatures: ["panorama"] }).experimentalFeatures).toEqual(["panorama"]);
     // One that was taken out again is ignored when read back.
     store.setKv("settings:experimental-features", JSON.stringify(["gone", "panorama"]));
     expect(service.config.experimentalFeatures()).toEqual(["panorama"]);
@@ -189,7 +192,7 @@ describe("AMO MCP", () => {
 
   it("opens /mcp, and only /mcp, with the MCP token", async () => {
     const client = await connect(MCP_TOKEN);
-    expect((await client.listTools()).tools).toHaveLength(57);
+    expect((await client.listTools()).tools).toHaveLength(60);
     await client.close();
     const res = await fetch(`${http.url}/api/state`, { headers: { authorization: `Bearer ${MCP_TOKEN}`, connection: "close" } });
     expect(res.status).toBe(401);
@@ -328,6 +331,16 @@ describe("AMO MCP", () => {
     expect((await call(client, "task_describe", { taskId: configTask.id, description: "对齐配置键" })).data).toMatchObject({ taskId: configTask.id });
     expect(service.store.getTask(configTask.id)?.description).toBe("对齐配置键");
     expect((await call(client, "task_describe", { taskId: "nope", description: "x" })).isError).toBe(true);
+    // task_rename (2026-11-11): the same tasks; an empty name is refused.
+    expect((await call(client, "task_rename", { title: "  AMO维护 · 第 12 轮  " })).data).toMatchObject({ taskId: importTask.id, title: "AMO维护 · 第 12 轮" });
+    expect((await call(client, "task_rename", { taskId: configTask.id, title: "对齐配置" })).data).toMatchObject({ taskId: configTask.id, title: "对齐配置" });
+    expect((await call(client, "task_rename", { taskId: "nope", title: "x" })).isError).toBe(true);
+    expect((await call(client, "task_rename", { title: " " })).isError).toBe(true);
+    // session_rename: not a session this one started (its own name is tested in peer.test.ts — the fake thread here is not loaded).
+    expect((await call(client, "session_rename", { sessionId: configSessionId, title: "x" })).isError).toBe(true);
+    // The names back: the tests below read them.
+    service.tasks.updateTask(importTask.id, { title: "导入重试" });
+    service.tasks.updateTask(configTask.id, { title: "统一配置键" });
     // Colours: a task card, then off again; an unknown target is refused.
     service.canvases.canvasPlaceTask(importTask.id, null);
     expect((await call(client, "canvas_color", { target: importTask.id, color: "red" })).data).toMatchObject({ color: "red" });

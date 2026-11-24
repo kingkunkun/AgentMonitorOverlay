@@ -8,6 +8,8 @@ import { startHost, type RunningHost } from "../../host-process.js";
 import { FakeServers } from "../codex/fake-servers.test-support.js";
 import { StaticCredentialReader } from "../credentials.js";
 import type { FolderAccess } from "./folder-access.js";
+import { AcpError } from "./acp.js";
+import { failingMcpOf } from "./dsh-runtime.js";
 
 // DSH sessions (stage 17) through a whole Host, with the scripted ACP agent standing in for `dsh --profile acp`.
 
@@ -281,6 +283,30 @@ describe("DSH runtime", () => {
     expect((await items(host, s.id)).filter((i) => i.type === "notice" && i.message.includes("没带上 MCP"))).toHaveLength(1);
   });
 
+  it("leaves out a server DSH cannot connect to, instead of having no session (2026-11-09, ybf: Figma's MCP →「Internal error」)", async () => {
+    const host = await boot();
+    await call(host, "POST", "/api/mcp/servers", { name: "img", spec: { command: "npx", args: ["img-mcp"] } });
+    await call(host, "POST", "/api/mcp/servers", { name: "figma", spec: { type: "http", url: "https://unreachable.example/mcp" } });
+    const s = await start(host, "[[mcp-list]]");
+    await idle(host, s.id);
+    expect(replies(await items(host, s.id))[0]).toBe("MCP-LIST amo:http,img:stdio");
+    const told = (await items(host, s.id)).filter((i) => i.type === "notice" && i.message.includes("没带上 MCP"));
+    expect(told.map((i) => (i.type === "notice" ? i.message : ""))).toEqual([expect.stringContaining("figma（initial connection or tool synchronization failed）。DeepSeek 连不上它")]);
+    // Another MCP choice starts its process again (session/resume): still without figma, and not said again.
+    await call(host, "PUT", `/api/sessions/${s.id}/mcp`, { choices: { img: false } });
+    await call(host, "POST", `/api/sessions/${s.id}/messages`, { text: "[[mcp-list]]" });
+    await until(() => items(host, s.id), (l) => replies(l).length === 2);
+    expect(replies(await items(host, s.id))[1]).toBe("MCP-LIST amo:http");
+    expect((await items(host, s.id)).filter((i) => i.type === "notice" && i.message.includes("没带上 MCP"))).toHaveLength(1);
+  });
+
+  it("says what DSH said failed, not only「Internal error」", () => {
+    const err = new AcpError("Internal error", -32603, { details: "mcp-client(figma): initial connection or tool synchronization failed" });
+    expect(failingMcpOf(err, ["figma"])).toEqual({ name: "figma", why: "initial connection or tool synchronization failed" });
+    expect(failingMcpOf(err, ["img"])).toBeNull();
+    expect(failingMcpOf(new Error("x"), ["figma"])).toBeNull();
+  });
+
   it("resumes the DSH session after a Host restart; model, effort and permission go to DSH", async () => {
     let host = await boot();
     const s = await start(host, "第一句");
@@ -321,7 +347,7 @@ describe("DSH runtime", () => {
     const s = await start(host, "hi");
     await idle(host, s.id);
     const before = (await items(host, s.id)).length;
-    await expect(call(host, "POST", `/api/sessions/${s.id}/messages`, { text: "看图", attachments: [await upload()] })).rejects.toThrow(/deepseek-v4-flash 不收图片.*DeepSeek-V4.1-Flash/);
+    await expect(call(host, "POST", `/api/sessions/${s.id}/messages`, { text: "看图", attachments: [await upload()] })).rejects.toThrow(/「deepseek-v4-flash」不收图片；点输入框下面的型号（Alt M）换成「DeepSeek-V4.1-Flash」再发/);
     expect((await items(host, s.id)).length).toBe(before);
 
     // Switched to V4.1-Flash: the process starts again on it, DSH offers images, the picture goes with the text.
@@ -338,6 +364,42 @@ describe("DSH runtime", () => {
       firstSession: { profileId: "dsh-deepseek", text: "第一句带图", options: { model: "deepseek-official/deepseek-flash" }, attachments: [await upload()] },
     });
     await until(() => items(host, f.id), (l) => replies(l).some((r) => r.includes("第一句带图 [1 张图 image/png]")));
+  });
+
+  it("a channel's own model names keep DSH's word that deepseek-flash takes images, and the process starts on the session's model (2026-11-11)", async () => {
+    // The person's 「Dxx-DS」: DeepSeek-V4.1-Flash was refused every picture — the catalog patch listed `deepseek-flash`
+    // without `inputModalities` (text only in DSH), and the agent always started on the channel's first model.
+    const host = await boot();
+    const upload = async () => {
+      const res = await fetch(`${host.info.url}/api/attachments?name=shot.png&type=image/png`, { method: "POST", headers: { authorization: `Bearer ${host.token}`, "content-type": "image/png" }, body: Buffer.from(TINY_PNG_BASE64, "base64") });
+      return ((await res.json()) as { id: string }).id;
+    };
+    const channel = await call<{ id: string }>(host, "POST", "/api/channels", { kind: "dsh", label: "Dxx-DS", baseUrl: "https://relay.example", key: "sk-relay", models: ["deepseek-v4-flash", "deepseek-flash"] });
+    const ws = await call<Workspace>(host, "POST", "/api/workspaces", { path: join(root, "ws") });
+    const { session } = await call<{ task: Task; session: Session }>(host, "POST", "/api/tasks", { title: "中转看图", workspaceId: ws.id, firstSession: { profileId: channel.id, text: "hi" } });
+    await idle(host, session.id);
+    // On the channel's first model (text only): refused, pointing at the one of its names that takes images.
+    await expect(call(host, "POST", `/api/sessions/${session.id}/messages`, { text: "看图", attachments: [await upload()] })).rejects.toThrow(/「deepseek-v4-flash」不收图片；点输入框下面的型号（Alt M）换成「deepseek-flash（DeepSeek-V4.1-Flash）」再发/);
+    await call(host, "PATCH", `/api/sessions/${session.id}/options`, { model: "deepseek-official/deepseek-flash" });
+    await call(host, "POST", `/api/sessions/${session.id}/messages`, { text: "看图", attachments: [await upload()] });
+    await until(() => items(host, session.id), (l) => replies(l).some((r) => r.includes("看图 [1 张图 image/png]")));
+
+    // A relay's own name for V4.1-Flash is text only to DSH until the channel says it takes images (its 能看图).
+    const relay = await call<{ id: string; imageModels?: string[] }>(host, "POST", "/api/channels", { kind: "dsh", label: "中转 V4.1", baseUrl: "https://relay.example", key: "sk-relay", models: ["deepseek/v4.1-flash"] });
+    expect(relay.imageModels).toEqual([]);
+    const { session: t } = await call<{ task: Task; session: Session }>(host, "POST", "/api/tasks", { title: "中转 V4.1", workspaceId: ws.id, firstSession: { profileId: relay.id, text: "hi" } });
+    await idle(host, t.id);
+    await expect(call(host, "POST", `/api/sessions/${t.id}/messages`, { text: "看图", attachments: [await upload()] })).rejects.toThrow(/「中转 V4.1」的型号都没标「能看图」.*设置 → 模型 →「中转 V4.1」→ 编辑，在「能看图」那一行点亮/);
+    // Marked while the session's process is still up: the next picture starts it again on the new catalog.
+    const marked = await call<{ imageModels?: string[] }>(host, "PATCH", `/api/channels/${relay.id}`, { imageModels: ["deepseek/v4.1-flash", "not-listed"] });
+    expect(marked.imageModels).toEqual(["deepseek/v4.1-flash"]);
+    await call(host, "POST", `/api/sessions/${t.id}/messages`, { text: "看图二", attachments: [await upload()] });
+    await until(() => items(host, t.id), (l) => replies(l).some((r) => r.includes("看图二 [1 张图 image/png]")));
+    // deepseek-flash can be put out too: what the person says counts.
+    const out = await call<{ imageModels?: string[] }>(host, "PATCH", `/api/channels/${channel.id}`, { imageModels: [] });
+    expect(out.imageModels).toEqual([]);
+    await idle(host, session.id);
+    await expect(call(host, "POST", `/api/sessions/${session.id}/messages`, { text: "看图", attachments: [await upload()] })).rejects.toThrow(/「Dxx-DS」的型号都没标「能看图」/);
   });
 
   it("runs a third-party DeepSeek channel: its address, its own key and its model (2026-10-19)", async () => {

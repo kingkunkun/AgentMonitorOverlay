@@ -50,6 +50,8 @@ export async function launchStudio(
      * 分列 unless a spec checks the timeline.
      */
     boardMode?: "timeline" | "columns";
+    /** Focus starts folded to its tile, as for people (2026-11-10); the specs that work in its panel start it open. */
+    focusCollapsed?: boolean;
   } = {},
 ): Promise<Studio> {
   const root = options.root ?? mkdtempSync(join(tmpdir(), "amo-studio-e2e-"));
@@ -97,15 +99,16 @@ export async function launchStudio(
   const page = await app.firstWindow();
   await page.waitForLoadState("domcontentloaded");
   await page.evaluate(
-    ({ view, sidebar, board }) => {
+    ({ view, sidebar, board, focusCollapsed }) => {
       localStorage.setItem("amo.transcriptView", view);
       window.dispatchEvent(new CustomEvent("amo:transcript-view", { detail: view }));
       // The task page's right column is off for people by default; most specs work in it, so it starts on here.
       localStorage.setItem("amo.taskSidebar", sidebar ? "1" : "0");
       localStorage.setItem("amo.boardMode", board);
       window.dispatchEvent(new Event("amo:pref:amo.boardMode"));
+      localStorage.setItem("amo.focusCollapsed", focusCollapsed ? "1" : "0");
     },
-    { view: options.transcriptView ?? "verbose", sidebar: options.taskSidebar ?? true, board: options.boardMode ?? "columns" },
+    { view: options.transcriptView ?? "verbose", sidebar: options.taskSidebar ?? true, board: options.boardMode ?? "columns", focusCollapsed: options.focusCollapsed ?? false },
   );
 
   async function api<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
@@ -163,6 +166,15 @@ export async function launchFirstRun(portableDir: string): Promise<{ app: Electr
 export type WindowKind = "main" | "focus" | "scratchpad" | "review" | "marks" | "viewer" | "canvas-mini" | "plan";
 
 /** Saves a PNG of the (hidden) main window, or another window, to studio/screenshots/<stage>/<name>.png. */
+/** 分支 (2026-11-10): from ⋯ at the latest turn, with the dialog as it opens (a fork under the session). */
+export async function forkLatest(page: Page): Promise<void> {
+  await page.getByTestId("session-more").click();
+  await page.getByTestId("session-fork").click();
+  await expect(page.getByTestId("fork-submit")).toBeEnabled();
+  await page.getByTestId("fork-submit").click();
+  await expect(page.getByTestId("fork-dialog")).toHaveCount(0);
+}
+
 export async function screenshot(app: ElectronApplication, stage: string, name: string, page?: Page, which: WindowKind = "main"): Promise<string> {
   if (page) await settlePaint(page);
   // Entrance animations (popups, notices) finish first; endless ones (spinners) are left alone. At most 2 s: one in a

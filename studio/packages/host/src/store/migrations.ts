@@ -391,4 +391,8 @@ export const MIGRATIONS: readonly Migration[] = [
     PRIMARY KEY(day, model)
   ) WITHOUT ROWID;
   `,
+  // 29: 分支 (2026-11-10): the session and turn a fork or a peer fork came from (JSON {sessionId, turn}); NULL otherwise.
+  `
+  ALTER TABLE sessions ADD COLUMN fork_of TEXT;
+  `,
 ];

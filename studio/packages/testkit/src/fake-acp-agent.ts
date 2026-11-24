@@ -23,8 +23,9 @@
 //                            runs until session/cancel
 // `--patch FILE` (a DSH channel's catalog, 2026-10-19): the models it lists replace the built-in ones, its `acp` model
 // is the default; as in DSH, a model that is not offered cannot be picked. Images (2026-10-26): as DSH does, initialize
-// offers them only when the agent's default model takes them (deepseek-flash here); a prompt's images are counted in
-// the reply, and a prompt with images is refused when they were not offered.
+// offers them only when the agent's default model takes them (deepseek-flash here; in a `--patch` catalog only an entry
+// whose `inputModalities` has "image", as in DSH); a prompt's images are counted in the reply, and a prompt with images
+// is refused when they were not offered.
 // Sessions are kept in $DSH_HOME/fake-sessions.json, so another process can resume them.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -67,6 +68,19 @@ function patchedDefault(): string | null {
   const def = /^\s*model: (".*")\s*$/m.exec(readFileSync(path, "utf8"));
   return def ? (JSON.parse(def[1]!) as string) : null;
 }
+/**
+ * The models a `--patch` catalog says take images. As in DSH (llm-deepseek, 2026-11-11), a catalog replaces the
+ * built-in one and an entry takes images only when its `inputModalities` says so: a listed `deepseek-flash` without it
+ * is text only. null: no catalog, the built-in one's IMAGE_MODELS.
+ */
+function patchedImageModels(): Set<string> | null {
+  const at = process.argv.indexOf("--patch");
+  const path = at >= 0 ? process.argv[at + 1] : undefined;
+  if (!path || !existsSync(path)) return null;
+  const text = readFileSync(path, "utf8");
+  if (!/^\s*- id: (".*")\s*$/m.test(text)) return null;
+  return new Set([...text.matchAll(/^\s*- id: (".*")\s*\r?\n\s+inputModalities: \[([^\]]*)\]/gm)].filter((m) => m[2]!.includes('"image"')).map((m) => JSON.parse(m[1]!) as string));
+}
 /** The models a `--patch` file lists (`- id: "<name>"` under llm-deepseek), its `acp` default first. */
 function patchedModels(): Array<{ value: string; name: string; description?: string }> | null {
   const at = process.argv.indexOf("--patch");
@@ -101,7 +115,7 @@ const ACCOUNT_MODELS = SIGNED_IN
 const MODELS = patchedModels() ?? [...BUILTIN_MODELS, ...ACCOUNT_MODELS];
 const DEFAULT_NAME = patchedDefault();
 const DEFAULT_MODEL = MODELS.find((m) => JSON.stringify([PROVIDER, DEFAULT_NAME]) === m.value) ?? MODELS[0]!;
-const TAKES_IMAGES = IMAGE_MODELS.has((JSON.parse(DEFAULT_MODEL.value) as string[])[1]!);
+const TAKES_IMAGES = (patchedImageModels() ?? IMAGE_MODELS).has((JSON.parse(DEFAULT_MODEL.value) as string[])[1]!);
 const EFFORTS = ["off", "low", "high", "max"];
 
 function load(): Record<string, Stored> {
@@ -141,6 +155,7 @@ class RpcError extends Error {
   constructor(
     readonly code: number,
     message: string,
+    readonly data?: unknown,
   ) {
     super(message);
   }
@@ -325,10 +340,14 @@ async function goalRounds(a: Active, n: number, slow: boolean): Promise<void> {
 
 /** As DSH does (2026-11): a server in a transport it did not offer (mcpCapabilities: http only) refuses the whole request. */
 function checkMcp(params: Record<string, unknown>): void {
-  const list = (params.mcpServers as Array<{ type?: string }> | undefined) ?? [];
+  const list = (params.mcpServers as Array<{ type?: string; name?: string; url?: string }> | undefined) ?? [];
   list.forEach((s, i) => {
     if (s.type && s.type !== "http" && s.type !== "stdio") throw new RpcError(-32602, `Invalid params: mcpServers[${i}] transport ${s.type} is not supported`);
   });
+  // A server DSH cannot connect to fails the whole session/new (DSH 0.2.1-rc.5 with Figma's MCP, which wants OAuth;
+  // 2026-11-09): a url with "unreachable" in it stands for one.
+  const bad = list.find((s) => s.url?.includes("unreachable"));
+  if (bad) throw new RpcError(-32603, "Internal error", { details: `mcp-client(${bad.name}): initial connection or tool synchronization failed` });
 }
 
 async function handle(method: string, params: Record<string, unknown>): Promise<unknown> {
@@ -396,7 +415,7 @@ process.stdin.on("data", (chunk: string) => {
       const id = msg.id;
       handle(msg.method, msg.params ?? {}).then(
         (result) => send({ jsonrpc: "2.0", id, result }),
-        (err: unknown) => send({ jsonrpc: "2.0", id, error: { code: err instanceof RpcError ? err.code : -32603, message: String((err as Error).message ?? err) } }),
+        (err: unknown) => send({ jsonrpc: "2.0", id, error: { code: err instanceof RpcError ? err.code : -32603, message: String((err as Error).message ?? err), ...(err instanceof RpcError && err.data !== undefined ? { data: err.data } : {}) } }),
       );
     }
   }

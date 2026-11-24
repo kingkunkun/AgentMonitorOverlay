@@ -1,5 +1,5 @@
 // Host API: REST requests/responses and the WS event stream. Host listens on 127.0.0.1 only.
-import type { AccountUsage, Annotation, FolderAccessStatus, CanvasDoc, ChecklistItem, ScheduleProposal, DecisionRequest, Id, MailMessage, MailRecipient, ModelProfile, TaskNote, TodoItem, Session, SessionItem, SessionOptions, Task, TaskColumn, TaskPlan, PlannedTask, Relay, Timestamp, Topic, TopicDoc, Workspace } from "./entities.js";
+import type { AccountUsage, Annotation, FolderAccessStatus, CanvasDoc, ChecklistItem, ScheduleProposal, DecisionRequest, Id, MailMessage, MailRecipient, ModelProfile, TaskNote, TodoItem, Session, SessionItem, SessionOptions, Task, TaskColumn, TaskPlan, PlannedTask, Relay, Timestamp, Topic, TurnState, TopicDoc, Workspace } from "./entities.js";
 import type { CanvasRoutes } from "./canvas.js";
 import type { ChannelRoutes } from "./channels.js";
 import type { ChatFileRoutes } from "./chatfiles.js";
@@ -29,6 +29,32 @@ export const HOST_DEFAULT_PORT = 47900;
  * person, shown as it is (e.g. the data was migrated by a newer Studio).
  */
 export const HOST_START_FAILED = "amo:host-start-failed";
+
+/** One turn in the 分支 dialog's list. */
+export interface ForkTurn {
+  turnId: string;
+  /** 1-based, oldest first. */
+  n: number;
+  state: TurnState;
+  endedAt?: Timestamp;
+  /** The person's message that opened it and its last reply, cut short. */
+  prompt: string;
+  reply: string;
+  forkable: boolean;
+  /** Why it cannot be forked through (still running, from before Claude recorded fork points, DSH). */
+  why?: string;
+}
+
+/** POST /api/sessions/:id/fork (分支弹窗, 2026-11-10). */
+export interface ForkRequest {
+  /** Another profile of the same runtime (Claude: only the subscription when the session uses the local login). */
+  profileId?: Id;
+  turnId?: string;
+  as?: "sub" | "peer";
+  title?: string;
+  options?: { model?: string | null; effort?: string | null; permission?: string | null; fast?: boolean | null; mcp?: Record<string, boolean> };
+}
+
 export interface HostStartFailedMessage {
   type: typeof HOST_START_FAILED;
   message: string;
@@ -227,13 +253,26 @@ export const OPTIONAL_FEATURES: readonly { id: OptionalFeature; label: string; h
  * 设置 → 测试功能 (2026-11-01, the user: 设置里加个测试功能页，这个功能加个开关): features still being tried out. The
  * opposite of OPTIONAL_FEATURES: off until the person turns one on, and the settings list the ones turned on.
  */
-export type ExperimentalFeature = "panorama";
+export type ExperimentalFeature = "panorama" | "tracks";
 
-export const EXPERIMENTAL_FEATURES: readonly { id: ExperimentalFeature; label: string; hint: string }[] = [
+/**
+ * `dev` (2026-11-09, the user: 给测试功能全景加一个开发中的标记): still being built, shown as 「开发中」 beside its name —
+ * what it does now is a first piece, or nothing yet.
+ */
+export const EXPERIMENTAL_FEATURES: readonly { id: ExperimentalFeature; label: string; hint: string; stage?: "dev" }[] = [
   {
     id: "panorama",
     label: "全景",
     hint: "左边栏「全部任务」下面多一个「全景」：把所有专题画成一张地图，每个专题一块区域，每个任务一条路，会话是路上的节点，等你处理的会话立着牌子，点「N 件等你」依次飞过去。还在测试，只读不改数据，样子和内容以后会变。",
+    stage: "dev",
+  },
+  // 脉络 (2026-11-09, plans/tracks.md): one session carrying several things at once keeps where each line stands outside
+  // its context, so a compaction does not lose the quiet ones. Only the switch so far.
+  {
+    id: "tracks",
+    label: "脉络",
+    hint: "一个会话里同时推进几件事时，把每条线做到哪、还欠什么、在等谁记在会话外面，上下文压缩了也不丢；会话顶上会多一个「对话 / 脉络」切换。现在打开还没有入口。",
+    stage: "dev",
   },
 ];
 
@@ -398,6 +437,8 @@ export const SUBSESSION_EXTRA_MAX = 4000;
 export interface QuotaDisplay {
   footer: boolean;
   focus: boolean;
+  /** Also each model's own weekly limit (Fable 每周…); off unless turned on (the user, 2026-11-13: 做成设置选项，打开才会显示). */
+  modelWeekly?: boolean;
 }
 
 export const DEFAULT_QUOTA_DISPLAY: QuotaDisplay = { footer: true, focus: false };
@@ -429,6 +470,9 @@ export interface ClaudeAccount {
   email: string | null;
   /** "max", "pro", … */
   plan: string | null;
+  /** The account's own name at Claude and its plan as Claude names it ("Max", "Ultra"…), from the dir's `.claude.json` (2026-11-12). */
+  claudeName?: string | null;
+  claudePlan?: string | null;
   /** A sign-in under way in Studio (设置 → 模型 → 添加账号 / 重新登录). */
   login: ClaudeAccountLogin | null;
 }
@@ -556,6 +600,17 @@ export interface TokenStats {
   /** Turns with usage that were counted. */
   turns: number;
   days: TokenStatsDay[];
+  models: TokenStatsModel[];
+}
+
+/** 统计 → 按时间段查 (2026-11-10): the turns that started in [from, to), per model. */
+export interface TokenStatsRange {
+  from: Timestamp;
+  to: Timestamp;
+  generatedAt: Timestamp;
+  ms: number;
+  turns: number;
+  rows: Array<Omit<TokenStatsDay, "date">>;
   models: TokenStatsModel[];
 }
 
@@ -689,6 +744,8 @@ export interface HostRoutes
   "GET /api/profiles/:id/choices": { req: void; res: ProfileChoices };
   "GET /api/credentials": { req: void; res: CredentialStatus[] };
   "GET /api/stats/tokens": { req: void; res: TokenStats };
+  /** Query `from`, `to`: ISO times; the turns that started at or after `from` and before `to`. */
+  "GET /api/stats/tokens/range": { req: void; res: TokenStatsRange };
   /** Saves a writable credential (the Claude subscription token) in the Windows Credential Manager. */
   "PUT /api/credentials/:id": { req: { secret: string }; res: CredentialStatus[] };
   "DELETE /api/credentials/:id": { req: void; res: CredentialStatus[] };
@@ -756,7 +813,14 @@ export interface HostRoutes
   "POST /api/sessions/:id/items/:itemId/resend": { req: void; res: { mode: "start" | "steer" | "queue" } };
   /** Claude (stage 15): stop the session's loop, or switch going on by itself after a usage limit (Session.wake). */
   "POST /api/sessions/:id/wake": { req: { stopLoop: true } | { autoContinue: boolean }; res: Session };
-  "POST /api/sessions/:id/fork": { req: { profileId?: Id }; res: Session };
+  /**
+   * 分支 (2026-11-10: 精确到每轮, the dialog): `turnId` the turn to fork through (its turn item's turnId; absent: the
+   * latest finished one); `as` sub (under this session, archived with it; the default) or peer (a main session beside
+   * it); `options` changes to the copied model, effort, Fast, permissions and (Claude) MCP. The runtime stays the same.
+   */
+  "POST /api/sessions/:id/fork": { req: ForkRequest; res: Session };
+  /** 分支弹窗: the session's turns, oldest first, and which can be forked through. */
+  "GET /api/sessions/:id/fork-turns": { req: void; res: ForkTurn[] };
   /** Renames the session in its runtime too (Codex thread name, Claude session title). */
   "PATCH /api/sessions/:id": { req: { title: string }; res: Session };
   /** Switches the session's model, effort or permissions (null clears back to the default). Codex: from the next turn. */

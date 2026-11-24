@@ -27,6 +27,8 @@ import {
   DSH_ACCOUNT_OPTIONS_KEY,
   DSH_ACCOUNT_PROVIDER,
   DSH_KEY_PLUGIN,
+  DSH_IMAGE_MODELS,
+  DSH_IMAGE_MODEL_LABEL,
   accountPatchYaml,
   retryPatchYaml,
   retryPolicyYaml,
@@ -44,7 +46,7 @@ import { blockText, DshTranscript, toolOutput, type AcpUpdate } from "./transcri
 import { DshSubagents } from "./subagents.js";
 import { grantFailurePath, windowsFolderAccess, type FolderAccess, type FolderAccessState } from "./folder-access.js";
 import { shellHelpEnv, withoutHostEnv } from "../agent-env.js";
-import { acpServer, mcpFits, mcpSkippedNotice, type McpSource, type McpTransports } from "../mcp-launch.js";
+import { acpServer, mcpFits, mcpSkippedNotice, type McpSkipped, type McpSource, type McpTransports } from "../mcp-launch.js";
 
 // DeepSeek sessions on a DeepSeek Harness source clone (stage 17, plans/done/stage-17-dsh.md). Each session runs its own
 // `node <clone>/apps/cli/lib/bin.js --profile acp` in its workspace: DSH's sandbox follows the process's working
@@ -62,6 +64,8 @@ export interface DshProviderDef {
    * model's catalog id as is and a relay may know DeepSeek's models by other names (`deepseek/deepseek-v4-pro`).
    */
   models?: string[];
+  /** Which of `models` take pictures (2026-11-11, the channel's 能看图); absent: DSH_IMAGE_MODELS among them. */
+  imageModels?: string[];
 }
 
 export interface DshRuntimeOptions {
@@ -158,6 +162,8 @@ interface Live {
   killedOnStop?: boolean;
   /** DSH said at initialize that this process takes images (for `model`, its ACP agent's default). */
   images: boolean;
+  /** What the channel said takes pictures when the process started (imageKey). */
+  imageKey: string;
   /** The session's model when the process started (its ACP agent's default); undefined = DSH's own default. */
   model: string | undefined;
   transcript: DshTranscript;
@@ -279,13 +285,13 @@ export class DshRuntime extends RuntimeBase implements SessionRuntimeApi {
     const extra = this.extraMcp({ workspaceId: input.workspace.id, ...(options.mcp ? { mcp: options.mcp } : {}) });
     let session: Session;
     let image = false;
-    let skipped: ReturnType<typeof fitMcp>["skipped"] = [];
+    let skipped: McpSkipped[] = [];
     try {
       const init = await this.initialize(conn);
       image = init.image;
       const fit = fitMcp(extra.specs, init.mcp);
       skipped = fit.skipped;
-      const created = await conn.request<{ sessionId: string; configOptions?: ConfigOption[] }>("session/new", { cwd: input.workspace.path, mcpServers: [...this.mcpServers(token), ...fit.list] });
+      const created = await withoutFailingMcp(fit, skipped, (list) => conn.request<{ sessionId: string; configOptions?: ConfigOption[] }>("session/new", { cwd: input.workspace.path, mcpServers: [...this.mcpServers(token), ...list] }));
       this.remember(created.configOptions, profile);
       session = this.createSession({
         taskId: input.taskId,
@@ -377,17 +383,30 @@ export class DshRuntime extends RuntimeBase implements SessionRuntimeApi {
    */
   private async takesImages(session: Session, live: Live): Promise<Live> {
     const model = session.options.model;
-    if ((model ?? "") !== (live.model ?? "") && !live.inflight && !live.auto) {
+    const profile = this.profile(session.profileId);
+    // The channel's 能看图 changed since the process started (2026-11-11): its catalog says so only from the next start.
+    const stale = (model ?? "") !== (live.model ?? "") || this.imageKey(profile) !== live.imageKey;
+    if (stale && !live.inflight && !live.auto) {
       await this.release(session.id);
       live = await this.ensureLive(this.requireSession(session.id));
     }
     if (live.images) return live;
-    const profile = this.profile(session.profileId);
+    const own = this.ownModels(profile);
+    const images = this.ownImages(profile);
+    const takes = (id: string) => (own ? images.has(id.slice(id.indexOf("/") + 1)) : DSH_IMAGE_MODELS.has(id.slice(id.indexOf("/") + 1)));
+    throw Object.assign(new Error(noImagesMessage(profile, this.pickable(profile), model, (model ?? "") !== (live.model ?? ""), takes)), { code: "bad_request" });
+  }
+
+  /** What the channel says takes pictures, to tell when a process started before it changed. */
+  private imageKey(profile: ModelProfile | null): string {
+    return profile && this.ownModels(profile) ? [...this.ownImages(profile)].join("\n") : "";
+  }
+
+  /** The models the session's picker offers on `profile` (as `choices` lists them), from what is known now. */
+  private pickable(profile: ModelProfile): ModelOption[] {
     const config = this.cachedOptions(profile);
-    const models = config ? this.modelsOf(profile, config) : [];
-    const name = (model ? models.find((m) => m.id === model) : models.find((m) => m.isDefault))?.label ?? model ?? "这个型号";
-    const switched = (model ?? "") !== (live.model ?? "") ? "（刚换了型号的话，等这一轮做完再发）" : "";
-    throw Object.assign(new Error(`${name} 不收图片（DSH 说这个型号不支持图片输入）${switched}；换成能看图的型号，例如 DeepSeek-V4.1-Flash，再发`), { code: "bad_request" });
+    const own = this.ownModels(profile);
+    return own ? channelModels(own, profile.model, config) : config ? this.modelsOf(profile, config) : [];
   }
 
   async choices(profileId: Id): Promise<ProfileChoices> {
@@ -581,7 +600,7 @@ export class DshRuntime extends RuntimeBase implements SessionRuntimeApi {
       // A third-party channel: its address. (DSH reads it from the launch environment, which outranks a project's .env.)
       const baseUrl = profile?.provider ? this.options.providers?.[profile.provider]?.baseUrl : undefined;
       if (baseUrl) env[DSH_BASE_URL_ENV] = baseUrl;
-      patch = (profile ? (this.catalogPatch(profile) ?? (usable ? this.modelPatch(usable) : null)) : null) ?? this.retryPatch();
+      patch = (profile ? (this.catalogPatch(profile, usable) ?? (usable ? this.modelPatch(usable) : null)) : null) ?? this.retryPatch();
     }
     let command: string;
     let args: string[];
@@ -626,14 +645,14 @@ export class DshRuntime extends RuntimeBase implements SessionRuntimeApi {
       const conn = this.spawn(workspace.path, this.profile(session.profileId), permission, session.id, session.options.model);
       let image = false;
       const extra = this.extraMcp(session.id);
-      let skipped: ReturnType<typeof fitMcp>["skipped"] = [];
+      let skipped: McpSkipped[] = [];
       try {
         const init = await this.initialize(conn);
         image = init.image;
         const fit = fitMcp(extra.specs, init.mcp);
         skipped = fit.skipped;
         const token = this.options.identities?.tokenFor(session.id);
-        const resumed = await conn.request<{ configOptions?: ConfigOption[] }>("session/resume", { sessionId: session.runtimeRef, cwd: workspace.path, mcpServers: [...this.mcpServers(token), ...fit.list] });
+        const resumed = await withoutFailingMcp(fit, skipped, (list) => conn.request<{ configOptions?: ConfigOption[] }>("session/resume", { sessionId: session.runtimeRef, cwd: workspace.path, mcpServers: [...this.mcpServers(token), ...list] }));
         this.remember(resumed.configOptions, this.profile(session.profileId));
       } catch (err) {
         conn.kill();
@@ -650,7 +669,7 @@ export class DshRuntime extends RuntimeBase implements SessionRuntimeApi {
   }
 
   private adopt(session: Session, conn: AcpConnection, applied: Live["applied"], permission: DshPermissionMode, images: boolean, model: string | undefined): Live {
-    const live: Live = { conn, acpId: session.runtimeRef!, permission, applied, inflight: false, queue: [], images, model, transcript: new DshTranscript(this.makeCore(), session.id, this.store.getWorkspace(session.workspaceId)?.path, this.subagents), waiting: new Map(), idleTimer: null, measuredAt: 0, auto: null, mcpKey: "" };
+    const live: Live = { conn, acpId: session.runtimeRef!, permission, applied, inflight: false, queue: [], images, imageKey: this.imageKey(this.options.profiles.find((p) => p.id === session.profileId) ?? null), model, transcript: new DshTranscript(this.makeCore(), session.id, this.store.getWorkspace(session.workspaceId)?.path, this.subagents), waiting: new Map(), idleTimer: null, measuredAt: 0, auto: null, mcpKey: "" };
     this.live.set(session.id, live);
     conn.on("notification", (method, params) => {
       if (method !== "session/update") return;
@@ -1125,7 +1144,7 @@ export class DshRuntime extends RuntimeBase implements SessionRuntimeApi {
   }
 
   /** Which servers that are on could not go with the session: said when its process starts, not again while it is the same. */
-  private tellSkippedMcp(sessionId: Id, skipped: ReadonlyArray<{ name: string; type: string }>): void {
+  private tellSkippedMcp(sessionId: Id, skipped: ReadonlyArray<McpSkipped>): void {
     const message = skipped.length ? mcpSkippedNotice(skipped, "DeepSeek") : "";
     if (this.mcpTold.get(sessionId) === message) return;
     this.mcpTold.set(sessionId, message);
@@ -1173,16 +1192,29 @@ export class DshRuntime extends RuntimeBase implements SessionRuntimeApi {
     return models?.length ? models : null;
   }
 
-  /** A channel's catalog as a DSH patch file (written fresh for each process), or null when it has none. */
-  private catalogPatch(profile: ModelProfile): string | null {
+  /** Which of a channel's own names take pictures: its 能看图 (2026-11-11), else DSH_IMAGE_MODELS among them. */
+  private ownImages(profile: ModelProfile): ReadonlySet<string> {
+    const def = profile.provider ? this.options.providers?.[profile.provider] : undefined;
+    const models = def?.models ?? [];
+    return new Set(def?.imageModels ? def.imageModels.filter((m) => models.includes(m)) : models.filter((m) => DSH_IMAGE_MODELS.has(m)));
+  }
+
+  /**
+   * A channel's catalog as a DSH patch file (written fresh for each process), or null when it has none. The ACP agent
+   * starts on the session's `model` when the channel lists it, else on the channel's default: DSH tells at initialize
+   * whether that one takes images (2026-11-11: it always started on the default, so a session switched to a model that
+   * takes images was still refused them). One file per starting model: two sessions may start at once.
+   */
+  private catalogPatch(profile: ModelProfile, model?: string): string | null {
     const models = this.ownModels(profile);
     if (!models) return null;
+    const asked = model?.replace(/^deepseek-official\//, "");
     const own = profile.model?.replace(/^deepseek-official\//, "");
-    const first = own && models.includes(own) ? own : models[0]!;
+    const first = asked && models.includes(asked) ? asked : own && models.includes(own) ? own : models[0]!;
     const dir = join(this.options.dir, "patches");
     mkdirSync(dir, { recursive: true });
-    const file = join(dir, `${profile.provider}.yml`);
-    writeFileSync(file, catalogPatchYaml(profile.label, models, first));
+    const file = join(dir, `${profile.provider}-${first.replace(/[^A-Za-z0-9._-]+/g, "_")}.yml`);
+    writeFileSync(file, catalogPatchYaml(profile.label, models, first, this.ownImages(profile)));
     return file;
   }
 
@@ -1254,7 +1286,10 @@ export class DshRuntime extends RuntimeBase implements SessionRuntimeApi {
   /** A readable error: DSH's own message, or what went wrong talking to it. */
   private explain(err: unknown): Error {
     if (err instanceof Error && (err as { code?: unknown }).code === "bad_request") return err;
-    const message = err instanceof Error ? err.message : String(err);
+    // DSH's details go with its message (2026-11-09, ybf's report: only「Internal error」showed, and what failed —
+    // `mcp-client(figma): …` in data.details — was nowhere, not in the logs either).
+    const details = err instanceof AcpError ? acpDetails(err).slice(0, 300) : "";
+    const message = (err instanceof Error ? err.message : String(err)) + (details && !(err as Error).message?.includes(details) ? `（${details}）` : "");
     return Object.assign(new Error(message.startsWith("DSH") ? message : `DSH：${message}`), { code: "runtime_error" });
   }
 
@@ -1318,15 +1353,17 @@ export function modelPatchYaml(provider: string, model: string): string {
 
 /**
  * The DSH patch that makes a channel's model names DSH's catalog on its DeepSeek route (`llm-deepseek` has no config
- * of its own to lose) and `first` the ACP agent's default. Names are JSON-quoted, which YAML reads as strings.
+ * of its own to lose) and `first` the ACP agent's default. Names are JSON-quoted, which YAML reads as strings. The
+ * names in `images` (the channel's 能看图; by default the ones DSH's own catalog says take them) say so: in DSH an entry
+ * without `inputModalities` is text only.
  */
-export function catalogPatchYaml(label: string, models: readonly string[], first: string): string {
+export function catalogPatchYaml(label: string, models: readonly string[], first: string, images: ReadonlySet<string> = DSH_IMAGE_MODELS): string {
   return [
     `# Written by WorkStudio for the channel ${JSON.stringify(label)}: the site's own model names. Rewritten on every start.`,
     `- id: ${DSH_KEY_PLUGIN}`,
     "  config:",
     "    models:",
-    ...models.map((m) => `      - id: ${JSON.stringify(m)}`),
+    ...models.flatMap((m) => [`      - id: ${JSON.stringify(m)}`, ...(images.has(m) ? ['        inputModalities: ["text", "image"]'] : [])]),
     ...retryPolicyYaml(),
     "- id: acp",
     "  config:",
@@ -1334,6 +1371,28 @@ export function catalogPatchYaml(label: string, models: readonly string[], first
     `    model: ${JSON.stringify(first)}`,
     "",
   ].join("\n");
+}
+
+/**
+ * Why a picture was refused and what the person can do about it, where they do it. `models`: what the session's
+ * picker offers; `switched`: the session changed models during the turn going on (its process starts again after it).
+ * `takes`: whether a model id takes pictures (a channel's 能看图, else DSH's own catalog).
+ * 2026-11-11: the old「换成能看图的型号，例如 DeepSeek-V4.1-Flash」named a model the person's channel did not list, and
+ * not where to change it.
+ */
+export function noImagesMessage(profile: ModelProfile, models: readonly ModelOption[], model: string | undefined, switched: boolean, takes: (id: string) => boolean = (id) => DSH_IMAGE_MODELS.has(id.slice(id.indexOf("/") + 1))): string {
+  const shown = (m: ModelOption) => (m.label === "deepseek-flash" ? `deepseek-flash（${DSH_IMAGE_MODEL_LABEL}）` : m.label);
+  const current = model ? models.find((m) => m.id === model) : models.find((m) => m.isDefault);
+  const name = current ? shown(current) : (model?.slice(model.indexOf("/") + 1) ?? "这个型号");
+  const picker = "点输入框下面的型号（Alt M）";
+  if (switched) return `型号刚换过：这一轮做完才用上「${name}」，现在这个不收图片；等这一轮做完再发图片`;
+  // One DSH's catalog says it takes images, yet this DSH said no: nothing to pick, the DSH itself is the place to look.
+  if (current && takes(current.id)) return `DSH 说「${name}」不收图片，图片没有发出去；到 设置 → 模型 → DeepSeek 点「检查」，看 DSH 是不是要更新`;
+  const other = models.find((m) => takes(m.id));
+  if (other) return `「${name}」不收图片；${picker}换成「${shown(other)}」再发（上下文不变）`;
+  if (profile.custom)
+    return `「${profile.label}」的型号都没标「能看图」：到 设置 → 模型 →「${profile.label}」→ 编辑，在「能看图」那一行点亮能看图的型号（DeepSeek 能看图的是 ${DSH_IMAGE_MODEL_LABEL}，官方叫 deepseek-flash；列表里没有就加一行，可以点「从网址读取」看这个网址叫它什么），保存后${picker}换过去再发`;
+  return `「${name}」不收图片（DSH 说这个型号不支持图片输入）；${picker}换成 ${DSH_IMAGE_MODEL_LABEL} 再发`;
 }
 
 /** A channel's own model names as Studio's models (`deepseek-official/<name>`), with the efforts DSH offers. */
@@ -1362,12 +1421,51 @@ export function dshModels(config: readonly ConfigOption[]): ModelOption[] {
 }
 
 /** The servers DSH can take in ACP's shape, and the ones it cannot (it refuses the whole session for one, 2026-11-09). */
-export function fitMcp(specs: ReadonlyArray<[string, McpServerSpec]>, transports: McpTransports): { list: unknown[]; skipped: Array<{ name: string; type: string }> } {
-  const list: unknown[] = [];
-  const skipped: Array<{ name: string; type: string }> = [];
+export function fitMcp(specs: ReadonlyArray<[string, McpServerSpec]>, transports: McpTransports): { list: Array<Record<string, unknown>>; skipped: McpSkipped[] } {
+  const list: Array<Record<string, unknown>> = [];
+  const skipped: McpSkipped[] = [];
   for (const [name, spec] of specs) {
     if (mcpFits(spec, transports)) list.push(acpServer(name, spec));
     else skipped.push({ name, type: spec.type });
   }
   return { list, skipped };
+}
+
+/**
+ * The MCP server DSH names when it could not connect to one: it fails the whole session/new (or resume) with
+ * `{code: -32603, message: "Internal error", data: {details: "mcp-client(figma): initial connection or tool synchronization
+ * failed"}}` (DSH 0.2.1-rc.5, 2026-11-09, ybf's report). Only a name the session was given counts.
+ */
+export function failingMcpOf(err: unknown, names: readonly string[]): { name: string; why: string } | null {
+  if (!(err instanceof AcpError)) return null;
+  const details = acpDetails(err);
+  const hit = /mcp-client\(([^)]+)\):?\s*(.*)/.exec(details);
+  if (!hit || !names.includes(hit[1]!)) return null;
+  return { name: hit[1]!, why: hit[2]!.trim().slice(0, 200) };
+}
+
+/** `data.details` of a DSH error, the part that says what failed ("" when there is none). */
+function acpDetails(err: AcpError): string {
+  const data = err.data as { details?: unknown } | undefined;
+  return data && typeof data.details === "string" ? data.details : "";
+}
+
+/**
+ * Opens a DSH session with the servers that fit, leaving out each one DSH says it could not connect to and trying again
+ * (2026-11-09, the user: 不应当要人去关掉 project 里指定的 MCP，应该在会话里处理 — one server it cannot reach is no
+ * reason to have no session). What was left out goes into `skipped`, for the session to say.
+ */
+export async function withoutFailingMcp<T>(fit: { list: ReadonlyArray<Record<string, unknown>> }, skipped: McpSkipped[], open: (list: ReadonlyArray<Record<string, unknown>>) => Promise<T>): Promise<T> {
+  let list = [...fit.list];
+  for (;;) {
+    try {
+      return await open(list);
+    } catch (err) {
+      const bad = failingMcpOf(err, list.map((s) => String(s.name)));
+      if (!bad) throw err;
+      const server = list.find((s) => s.name === bad.name)!;
+      list = list.filter((s) => s !== server);
+      skipped.push({ name: bad.name, type: typeof server.type === "string" ? server.type : "stdio", failed: bad.why });
+    }
+  }
 }
