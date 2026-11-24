@@ -279,7 +279,7 @@ export class CompanyFeature extends Feature<"sessions" | "tasks"> {
         `工作规范版本：${a.instructionsVersion ?? 0}；允许自我改进：${a.allowEvolution !== false ? "是" : "否"}。`,
         "历史归档仅供本机人查看，未自动送入上下文；不得自行向其他会话或设备复制归档内容。", "", m.text,
       ].filter(Boolean).join("\n");
-      await this.f.sessions.inbox.put(s.id, instruction, { separateTurn: true, onQueued: (inboxItemId) => this.updateDelivery(messageId, agentId, { status: "queued", inboxItemId }) });
+      await this.f.sessions.inbox.put(s.id, instruction, undefined, { separateTurn: true, onQueued: (inboxItemId) => this.updateDelivery(messageId, agentId, { status: "queued", inboxItemId }) });
     } catch (err) {
       const previous = this.repo.message(messageId)?.deliveries.find((d) => d.agentId === agentId);
       this.updateDelivery(messageId, agentId, { status: previous?.status === "sending" ? "unknown" : "failed", error: err instanceof Error ? err.message : String(err) });

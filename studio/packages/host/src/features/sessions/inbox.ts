@@ -1,4 +1,4 @@
-import { inTurn, type Id, type Session, type SessionItem } from "@amo-studio/protocol";
+import { inTurn, type Id, type MessageOrigin, type Session, type SessionItem } from "@amo-studio/protocol";
 import { newId, type SessionItemInput } from "../../store/store.js";
 import { Feature, type FeatureHost } from "../../core/feature.js";
 import type { SessionsFeature } from "./service.js";
@@ -23,6 +23,13 @@ const TURN_SEEN_MS = 3000;
 const COMPANY_ACTIVE_KEY = "sessions.company-active";
 type CompanyActive = { itemId: Id; seq: number; observed: boolean };
 type InboxDelivery = { itemId: Id; state: "sending" | "delivered" | "failed" | "unknown"; error?: string };
+/**
+ * 打字时不插队 (2026-11-15, plans/collab-framework.md): how long after the person last touched a session's composer what
+ * comes for it is still held. Long enough to write a careful answer, short enough that a box left with half a line
+ * does not keep a reply out for the afternoon. Behind 设置 → 测试功能 → 打字时不插队 (off by default; the user,
+ * 2026-11-15, the day it shipped: 「这个可以先去掉，等我体验一段时间」).
+ */
+export const TYPING_HOLD_MS = 5 * 60_000;
 
 export class SessionInbox extends Feature {
   /** Resolve an Agent's selected model only when its held company job is about to enter a new turn. */
@@ -73,6 +80,14 @@ export class SessionInbox extends Feature {
   private readonly paused = new Set<Id>();
   /** Paused sessions already told so in a notice. */
   private readonly told = new Set<Id>();
+  /**
+   * Sessions whose composer the person is writing in (see TYPING_HOLD_MS): what is held waits for the message they are
+   * writing and goes in behind it — a reply arriving does not start a turn under their hands. The timer lets it in
+   * once the box has been still that long. In memory only: after a Host restart nobody is typing yet.
+   */
+  private readonly typing = new Map<Id, ReturnType<typeof setTimeout>>();
+  /** How long a touched composer holds the inbox; a test shortens it. */
+  typingHoldMs = TYPING_HOLD_MS;
 
   /** 停止 by the person: hold what comes until they write again. */
   pause(sessionId: Id): void {
@@ -83,9 +98,37 @@ export class SessionInbox extends Feature {
 
   /** The person wrote again: what is held goes in now, with their message (queued or steered as theirs would be). */
   resume(sessionId: Id): void {
-    if (!this.paused.delete(sessionId)) return;
+    const typed = this.stopTyping(sessionId);
+    if (!this.paused.delete(sessionId) && !typed) return;
     this.told.delete(sessionId);
     void this.flush(sessionId, true).catch(() => undefined);
+  }
+
+  /**
+   * The composer of `sessionId` was touched (`active`), or emptied by hand (not `active`: nothing is being written any
+   * more, what is held goes in as usual). The UI says so at most once a minute while the person types.
+   */
+  typed(sessionId: Id, active: boolean): void {
+    const s = this.store.getSession(sessionId);
+    if (!s || isRemoteCopy(s)) return;
+    const was = this.stopTyping(sessionId);
+    // Off unless the person turned it on (设置 → 测试功能 → 打字时不插队; the user, 2026-11-15: 这个可以先去掉).
+    if (active && this.sessions.typingHoldOn()) {
+      const timer = setTimeout(() => {
+        this.typing.delete(sessionId);
+        void this.flush(sessionId).catch(() => undefined);
+      }, this.typingHoldMs);
+      timer.unref?.();
+      this.typing.set(sessionId, timer);
+    } else if (was) void this.flush(sessionId).catch(() => undefined);
+  }
+
+  private stopTyping(sessionId: Id): boolean {
+    const timer = this.typing.get(sessionId);
+    if (!timer) return false;
+    clearTimeout(timer);
+    this.typing.delete(sessionId);
+    return true;
   }
 
   private tellPaused(sessionId: Id): void {
@@ -98,9 +141,10 @@ export class SessionInbox extends Feature {
 
   /**
    * A message from an agent or from Studio into `sessionId`: shown at once, sent now when the session is free, else
-   * when it is. `delivered`: it went in now; `waiting`: how many of the session's are still held.
+   * when it is. `delivered`: it went in now; `waiting`: how many of the session's are still held. `origin` (2026-11-15,
+   * plans/collab-framework.md): who it is from, kept on the row — the conversation shows it as theirs, not the person's.
    */
-  async put(sessionId: Id, text: string, options: { onQueued?: (itemId: Id) => void; separateTurn?: boolean } = {}): Promise<{ delivered: boolean; waiting: number; itemId?: Id }> {
+  async put(sessionId: Id, text: string, origin?: MessageOrigin, options: { onQueued?: (itemId: Id) => void; separateTurn?: boolean } = {}): Promise<{ delivered: boolean; waiting: number; itemId?: Id }> {
     const s = this.requireSession(sessionId);
     if (s.archivedAt || s.writer === "archived") throw new HostError("read_only", "这个会话已归档，不能再往里发消息");
     if (s.kind === "sub") throw new HostError("read_only", "子 agent 不能单独接收消息");
@@ -112,7 +156,7 @@ export class SessionInbox extends Feature {
     const role = this.sessions.roleUpdate(sessionId);
     // Company delivery records share this transaction, so a crash cannot lose the association and resend the work.
     const item = this.store.transaction(() => {
-      const row = this.append(s, this.sessions.withRole(text, role.lines), options.separateTurn ? "user/company-inbox" : "user/inbox");
+      const row = this.append(s, this.sessions.withRole(text, role.lines), options.separateTurn ? "user/company-inbox" : "user/inbox", origin);
       options.onQueued?.(row.id);
       role.told();
       this.remember(sessionId);
@@ -144,6 +188,11 @@ export class SessionInbox extends Feature {
     });
     for (const id of Object.keys(this.companyActive())) { const s = this.store.getSession(id); if (s) this.settleCompany(s); }
     for (const id of this.ids()) void this.flush(id).catch(() => undefined);
+  }
+
+  /** The person stopped it and has not written since (协作 counts its agent 等主人 then, 2026-11-23). */
+  isPaused(sessionId: Id): boolean {
+    return this.paused.has(sessionId);
   }
 
   /** The session's held rows, oldest first. */
@@ -178,6 +227,8 @@ export class SessionInbox extends Feature {
     }
     if (this.paused.has(sessionId)) return;
     if (this.companyActive()[sessionId]) return;
+    // The person is writing here: with their message (resume), or once the box has been still (typed's timer).
+    if (this.typing.has(sessionId) && !withTurn) return;
     if (!free(s) && !(withTurn && s.status === "running" && writable(s))) return;
     // Behind the person's message (2026-11-08): marked so the row says it goes in by itself (see `withPerson`). Not by
     // status: a Codex session shows `running` only once turn/started comes back, after the person's send has returned.
@@ -241,8 +292,8 @@ export class SessionInbox extends Feature {
     }
   }
 
-  private append(s: Session, text: string, method = "user/inbox"): SessionItem {
-    const item = this.store.appendItem(this.row(s, { type: "user", text, delivery: "held" }, method));
+  private append(s: Session, text: string, method = "user/inbox", origin?: MessageOrigin): SessionItem {
+    const item = this.store.appendItem(this.row(s, { type: "user", text, delivery: "held", ...(origin ? { origin } : {}) }, method));
     this.publish({ type: "item.appended", item });
     return item;
   }

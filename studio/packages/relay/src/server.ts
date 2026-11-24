@@ -15,11 +15,15 @@ import { adminPage } from "./admin-page.js";
 import { ServerMonitor } from "./monitor.js";
 import { issuesPage } from "./issues-page.js";
 import { IssueStore } from "./issues.js";
-import { MAX_FILE_BYTES, RELAY_APP, RELAY_VERSION, TICK_MS, type RelayFile, type Health, type Member, type Message, type RelayEvent, type SessionAction, type Thread } from "./protocol.js";
+import { ACCOUNT_KINDS, MAX_FILE_BYTES, RELAY_APP, RELAY_VERSION, TICK_MS, type AccountKind, type RelayFile, type Health, type Member, type Message, type RelayEvent, type SessionAction, type Thread } from "./protocol.js";
 import { RelayError, type RelayStore } from "./store.js";
 import { checkDeviceId, checkDeviceName, DeviceHub } from "./devices.js";
 import { checkTodoDevice, TodoStore } from "./todo.js";
 import { DEVICE_CHANNEL_VERSION, MAX_DEVICE_FRAME } from "./devices-protocol.js";
+import { checkTransferDevice, cleanDeviceName, TransferStore } from "./transfers.js";
+import { TRANSFER_CHUNK, type Transfer } from "./transfer-protocol.js";
+import { CoworkStore } from "./cowork.js";
+import { COWORK_INBOX_MAX_WAIT, COWORK_VERSION, type BoardOpRecord, type CoworkAgent, type CoworkClientFrame, type CoworkDelivery, type CoworkEvent } from "./cowork-protocol.js";
 
 // The relay service (plans/done/relay.md): HTTP for everything, /ws to push new messages and who is online. People register
 // with a name and password (plus the invite passphrase, when the service has one); a login hands the device a key that
@@ -33,7 +37,6 @@ import { DEVICE_CHANNEL_VERSION, MAX_DEVICE_FRAME } from "./devices-protocol.js"
 export interface RelayServerOptions {
   /** Embedded phone service: accounts are managed only through the local WorkStudio Host. */
   localPhoneOnly?: boolean;
-  minPasswordLength?: number;
   store: RelayStore;
   /** The invite passphrase registering takes; none = anyone who reaches the service may register. */
   passphrase?: string;
@@ -63,6 +66,17 @@ export interface RelayServerOptions {
   /** 工具镜像 (mirror.ts, 2026-11-03: Claude Code, Codex): their admin calls and, for people signed in, their files;
    *  none = 404. Started and closed by whoever made them (bin.ts). */
   mirrors?: Partial<Record<MirrorTool, ToolMirror>>;
+  /** 传文件 (transfers.ts, 2026-11-23): where a send's content is kept; none = sends are refused. */
+  transfersDir?: string;
+  /** How often expired sends are cleared (default 10 min); the clock, free disk space and what to keep free (tests). */
+  transferSweepMs?: number;
+  transferNow?: () => number;
+  transferFreeBytes?: (dir: string) => Promise<number>;
+  transferReserveBytes?: number;
+  /** 协作 (cowork.ts, 2026-11-23): how often run-out text locks, presence and agents gone 不在线 are looked for (default
+   *  5 s), and the clock (tests). */
+  coworkSweepMs?: number;
+  coworkNow?: () => number;
 }
 
 export interface RelayServer {
@@ -136,7 +150,25 @@ function keyOf(req: IncomingMessage, url: URL): string | null {
   return url.searchParams.get("key");
 }
 
+/**
+ * The admin page's order (2026-11-23, the user: 服务器的账号管理也要根据状态来排序账号): in use first, then 测试 accounts
+ * (ACCOUNT_KINDS' order after 正式), turned off last; within each, who is online, then the latest seen or spoken (seen
+ * is kept only while the service runs, the last message for good), then as registered.
+ */
+export function adminOrder<T extends { kind: AccountKind; disabled: boolean; online: boolean; lastSeen: number; lastMessageAt: number | null }>(list: T[]): T[] {
+  const kinds = Object.keys(ACCOUNT_KINDS);
+  const group = (m: T) => (m.disabled ? kinds.length : kinds.indexOf(m.kind));
+  const recent = (m: T) => Math.max(m.lastSeen, m.lastMessageAt ?? 0);
+  return list
+    .map((m, i) => ({ m, i }))
+    .sort((a, b) => group(a.m) - group(b.m) || Number(b.m.online) - Number(a.m.online) || recent(b.m) - recent(a.m) || a.i - b.i)
+    .map((x) => x.m);
+}
+
 /** Whether an Accept-Encoding takes gzip: `gzip` (or `x-gzip`, or `*` when gzip is not named) with a q above 0. */
+/** The ports above 1023 that fetch (and browsers, by the Fetch standard's 「bad port」 list) will not connect to. */
+export const FETCH_BAD_PORTS: ReadonlySet<number> = new Set([1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080]);
+
 export function acceptsGzip(header: string | undefined): boolean {
   if (!header) return false;
   let star = false;
@@ -188,7 +220,45 @@ export async function startRelayServer(opts: RelayServerOptions): Promise<RelayS
   pruneTimer.unref?.();
   // 待办 (2026-11-01, plans/done/todo.md): every account's todo lists, in the same database.
   const todo = new TodoStore(store.db);
+  // 传文件 (2026-11-23, transfers.ts): sends between devices, in the same database; their content in transfersDir.
+  const transfers = new TransferStore({ db: store.db, dir: opts.transfersDir, ...(opts.transferNow ? { now: opts.transferNow } : {}), ...(opts.transferFreeBytes ? { freeBytes: opts.transferFreeBytes } : {}), ...(opts.transferReserveBytes !== undefined ? { reserveBytes: opts.transferReserveBytes } : {}) });
+  // 协作 (2026-11-23, cowork-protocol.ts): coworks, their agents, deliveries, drafts, events and board, in the same database.
+  const cowork = new CoworkStore(store, opts.coworkNow ?? Date.now);
+  const isMember = (n: string) => store.members().some((m) => m.name === n);
+  const deviceOnline = (account: string, device: string) => [...(sockets.get(account) ?? [])].some((ws) => socketDevice.get(ws) === device);
+  /** A send changed: to its people. Pieces come several a second: at most one push a second for those (`soon`). */
+  const transferTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const transferPushedAt = new Map<string, number>();
+  const transferChanged = (t: Transfer, soon = false) => {
+    if (closing) return;
+    const flush = () => {
+      transferTimers.delete(t.id);
+      transferPushedAt.set(t.id, Date.now());
+      const now = transfers.peek(t.id);
+      if (now) push(transfers.people(now), { type: "transfer", transfer: now });
+    };
+    if (!soon) {
+      clearTimeout(transferTimers.get(t.id));
+      return flush();
+    }
+    if (transferTimers.has(t.id)) return;
+    const wait = 1000 - (Date.now() - (transferPushedAt.get(t.id) ?? 0));
+    if (wait <= 0) return flush();
+    transferTimers.set(t.id, setTimeout(flush, wait));
+  };
+  const sweepTransfers = () => {
+    try {
+      for (const t of transfers.sweep()) transferChanged(t);
+    } catch {
+      // the next sweep tries again
+    }
+  };
+  sweepTransfers();
+  const transferSweep = setInterval(sweepTransfers, opts.transferSweepMs ?? 10 * 60_000);
+  transferSweep.unref?.();
   const sockets = new Map<string, Set<WebSocket>>();
+  /** The device a /ws connection said it is (desktop clients with 传文件, 2026-11-23). */
+  const socketDevice = new Map<WebSocket, string>();
   const lastSeen = new Map<string, number>();
   const waiters = new Set<Waiter>();
   let closing = false;
@@ -272,6 +342,58 @@ export async function startRelayServer(opts: RelayServerOptions): Promise<RelayS
     taskChanged(thread.request?.taskId);
   };
 
+  // ---- 协作's pushes (cowork-protocol.ts CoworkRelayEvent): to the cowork's people; drafts to their owner only.
+  const coworkChanged = (id: string) => {
+    if (!closing) push(cowork.people(id), { type: "cowork", cowork: cowork.view(id) });
+  };
+  const coworkEvents = (id: string, events: CoworkEvent[]) => {
+    for (const event of events) push(cowork.people(id), { type: "cowork-event", coworkId: id, event });
+  };
+  /** What each agent was last pushed as (state, queue, name): a report that changes nothing is not pushed again. */
+  const agentShown = new Map<string, string>();
+  const pushAgent = (coworkId: string, agent: CoworkAgent | null) => {
+    if (!agent) return;
+    const key = `${coworkId} ${agent.mark}`;
+    const now = `${agent.state}:${agent.queued}:${agent.name}`;
+    if (agentShown.get(key) === now) return;
+    agentShown.set(key, now);
+    push(cowork.people(coworkId), { type: "cowork-agent", coworkId, agent });
+  };
+  /** The owner's Studio waiting on /api/cowork-inbox for its agents (marks starting with prefix). */
+  const inboxWaiters = new Set<{ owner: string; prefix: string; done(): void }>();
+  const deliveriesChanged = (list: CoworkDelivery[]) => {
+    for (const d of list) {
+      push(cowork.people(d.coworkId), { type: "cowork-delivery", coworkId: d.coworkId, delivery: d });
+      pushAgent(d.coworkId, cowork.agent(d.coworkId, d.agent));
+      if (d.state === "queued") for (const w of [...inboxWaiters]) if (w.owner === d.owner && d.agent.startsWith(w.prefix)) w.done();
+    }
+  };
+  const boardPushed = (id: string, ops: BoardOpRecord[]) => {
+    if (ops.length) push(cowork.people(id), { type: "board", coworkId: id, ops });
+  };
+  const lockPushed = (id: string, card: string) => push(cowork.people(id), { type: "board-lock", coworkId: id, card, lock: cowork.board.lockOf(id, card) });
+  const presencePushed = (id: string) => push(cowork.people(id), { type: "board-presence", coworkId: id, presence: cowork.board.presenceOf(id) });
+  /** A message in a cowork's thread went out: to its people, then the agents it woke; a 子会话 moved the cowork's list. */
+  const coworkPosted = (out: { thread: Thread; message: Message; deliveries: CoworkDelivery[]; events: CoworkEvent[] }) => {
+    announce(out.thread, out.message);
+    deliveriesChanged(out.deliveries);
+    const coworkId = cowork.coworkOf(out.thread);
+    if (coworkId) coworkEvents(coworkId, out.events);
+    if (out.thread.kind === "request" && out.thread.request?.coworkId) coworkChanged(out.thread.request.coworkId);
+  };
+  // Text locks and presence that ran out, agents whose Studio stopped reporting (不在线).
+  const coworkSweep = setInterval(() => {
+    if (closing) return;
+    try {
+      for (const l of cowork.board.sweepLocks()) lockPushed(l.coworkId, l.card);
+      for (const id of cowork.board.sweepPresence()) presencePushed(id);
+      for (const a of cowork.activeAgents()) pushAgent(a.coworkId, a.agent);
+    } catch {
+      // the next sweep tries again
+    }
+  }, opts.coworkSweepMs ?? 5000);
+  coworkSweep.unref?.();
+
   const auth = (req: IncomingMessage, url: URL): string => {
     const key = keyOf(req, url);
     const name = key ? store.memberByKey(key) : null;
@@ -305,14 +427,12 @@ export async function startRelayServer(opts: RelayServerOptions): Promise<RelayS
       }
     }
     if (method === "GET" && path === "/api/health") {
-      const health: Health = { app: RELAY_APP, version: RELAY_VERSION, name: serviceName, invite: inviteNeeded(), client: files.manifest()?.version ?? null, shell: files.shell(), devices: DEVICE_CHANNEL_VERSION };
+      const health: Health = { app: RELAY_APP, version: RELAY_VERSION, name: serviceName, invite: inviteNeeded(), client: files.manifest()?.version ?? null, shell: files.shell(), devices: DEVICE_CHANNEL_VERSION, cowork: COWORK_VERSION };
       return send(res, 200, health);
     }
     if (method === "POST" && path === "/api/register") {
-      // Local phone servers require a longer password; keep the shared team's existing contract unchanged.
       const body = await readJson(req);
       if (!passphraseOk(body.passphrase)) throw new RelayError("unauthorized", "邀请口令不对");
-      if (typeof body.password !== "string" || body.password.length < (opts.minPasswordLength ?? 4)) throw new RelayError("bad_request", `密码至少 ${opts.minPasswordLength ?? 4} 位`);
       const joined = store.register(body.name, body.password, body.role);
       pushMembers();
       return send(res, 200, joined);
@@ -339,7 +459,8 @@ export async function startRelayServer(opts: RelayServerOptions): Promise<RelayS
       };
       if (method === "GET" && path === "/api/admin/members") {
         const online = new Map(members().map((m) => [m.name, m]));
-        return send(res, 200, { service: serviceName, invite: inviteNeeded(), members: store.adminMembers().map((m) => ({ ...m, online: !!online.get(m.name)?.online, lastSeen: online.get(m.name)?.lastSeen ?? 0 })) });
+        const list = store.adminMembers().map((m) => ({ ...m, online: !!online.get(m.name)?.online, lastSeen: online.get(m.name)?.lastSeen ?? 0 }));
+        return send(res, 200, { service: serviceName, invite: inviteNeeded(), kinds: ACCOUNT_KINDS, members: adminOrder(list) });
       }
       if (method === "GET" && path === "/api/admin/mirror") {
         if (!mirrorList().length) throw new RelayError("not_found", "这个服务没有开工具镜像");
@@ -364,6 +485,12 @@ export async function startRelayServer(opts: RelayServerOptions): Promise<RelayS
       // 维护者 (2026-11-03, the user): sees every issue on 问题页 and reviews the others' reports.
       if (method === "POST" && path === "/api/admin/maintainer") {
         store.setMaintainer(body.name, body.maintainer !== false);
+        return send(res, 200, { ok: true });
+      }
+      // 账号类型 (2026-11-23): 测试 accounts leave the lists and pickers of the others' clients at once.
+      if (method === "POST" && path === "/api/admin/kind") {
+        store.setKind(body.name, body.kind);
+        pushMembers();
         return send(res, 200, { ok: true });
       }
       if (method === "POST" && path === "/api/admin/disable") {
@@ -624,6 +751,209 @@ export async function startRelayServer(opts: RelayServerOptions): Promise<RelayS
       const body = await readJson(req);
       return send(res, 200, todo.apply(me, checkTodoDevice(body.device, body.deviceName), body.ops));
     }
+    // 传文件 (transfer-protocol.ts, 2026-11-23): sends to chosen devices of chosen people, through the service.
+    if (path === "/api/transfers" || path.startsWith("/api/transfers/") || path === "/api/transfer-devices") {
+      if (method === "GET" && path === "/api/transfer-devices") return send(res, 200, { devices: transfers.devices(isMember, deviceOnline) });
+      if (method === "GET" && path === "/api/transfers") return send(res, 200, { transfers: transfers.list(me) });
+      if (method === "POST" && path === "/api/transfers") {
+        const t = await transfers.create(me, await readJson(req), isMember);
+        transferChanged(t);
+        return send(res, 200, { transfer: t });
+      }
+      const xm = /^\/api\/transfers\/(x_[0-9a-f]{16})(?:\/(answer|progress|cancel)|\/files\/(\d+))?$/.exec(path);
+      if (!xm) throw new RelayError("not_found", `没有这个接口：${method} ${path}`);
+      const id = xm[1]!;
+      if (method === "GET" && !xm[2] && !xm[3]) return send(res, 200, { transfer: transfers.get(id, me) });
+      if (method === "POST" && xm[2]) {
+        const body = await readJson(req);
+        const t =
+          xm[2] === "answer" ? transfers.answer(me, id, body.device, body.accept !== false) : xm[2] === "progress" ? transfers.progress(me, id, body.device, body.got, body.done === true) : transfers.cancel(me, id);
+        transferChanged(t, xm[2] === "progress" && t.state === "open" && body.done !== true);
+        return send(res, 200, { transfer: t });
+      }
+      // A piece of a file: the raw bytes, where it goes in the query (offset, the whole file's sha256, the device).
+      if (method === "PUT" && xm[3]) {
+        if (Number(req.headers["content-length"] ?? 0) > TRANSFER_CHUNK) throw new RelayError("bad_request", `一块最多 ${TRANSFER_CHUNK / 1024 / 1024} MB`);
+        const data = await readRaw(req, TRANSFER_CHUNK);
+        const out = await transfers.writePiece(me, id, xm[3], { device: url.searchParams.get("device"), offset: url.searchParams.get("offset"), sha256: url.searchParams.get("sha256") }, data);
+        // Spaced out (a push carries the whole send) until the last file is complete.
+        transferChanged({ id } as Transfer, !out.allDone);
+        return send(res, 200, { file: out.file });
+      }
+      if (method === "GET" && xm[3]) {
+        const got = transfers.download(me, id, xm[3], url.searchParams.get("device"));
+        return sendRanged(req, res, got.path, got.size);
+      }
+      throw new RelayError("not_found", `没有这个接口：${method} ${path}`);
+    }
+    // 协作 (cowork-protocol.ts, 2026-11-23).
+    if (path === "/api/cowork" || path.startsWith("/api/cowork/") || path === "/api/cowork-inbox" || path === "/api/cowork-inbox/ack") {
+      if (method === "GET" && path === "/api/cowork") return send(res, 200, { coworks: cowork.list(me) });
+      if (method === "POST" && path === "/api/cowork") {
+        const out = cowork.create(me, (await readJson(req)) as never);
+        announce(store.threadById(out.cowork.id), out.message);
+        coworkChanged(out.cowork.id);
+        coworkEvents(out.cowork.id, out.events);
+        return send(res, 200, { cowork: out.cowork });
+      }
+      if (method === "POST" && path === "/api/cowork/agents/status") {
+        const touched = cowork.reportStatus(me, await readJson(req));
+        for (const a of touched) pushAgent(a.coworkId, a.agent);
+        return send(res, 200, { agents: touched });
+      }
+      // The owner's Studio: what its agents have waiting. `wait` (ms): when nothing is, answer once something is queued.
+      if (method === "GET" && path === "/api/cowork-inbox") {
+        const prefix = url.searchParams.get("prefix") ?? "";
+        const wait = Math.max(0, Math.min(Number(url.searchParams.get("wait") ?? 0) || 0, COWORK_INBOX_MAX_WAIT));
+        if (wait > 0 && !cowork.hasQueued(me, prefix)) {
+          await new Promise<void>((resolve) => {
+            const w = {
+              owner: me,
+              prefix,
+              done: () => {
+                clearTimeout(timer);
+                inboxWaiters.delete(w);
+                resolve();
+              },
+            };
+            const timer = setTimeout(w.done, wait);
+            inboxWaiters.add(w);
+            req.on("close", w.done);
+          });
+          if (res.writableEnded || closing) return;
+        }
+        return send(res, 200, cowork.inbox(me, prefix));
+      }
+      if (method === "POST" && path === "/api/cowork-inbox/ack") {
+        const moved = cowork.ack(me, (await readJson(req)).ids);
+        deliveriesChanged(moved);
+        return send(res, 200, { deliveries: moved });
+      }
+      const cm = /^\/api\/cowork\/(t_[0-9a-f]{16})((?:\/[a-z]+)*?)(?:\/(t_[0-9a-f]{16}|dr_[0-9a-f]{16})(\/conclude)?)?$/.exec(path);
+      if (!cm) throw new RelayError("not_found", `没有这个接口：${method} ${path}`);
+      const id = cm[1]!;
+      const sub = cm[2] ?? "";
+      const target = cm[3];
+      if (!target) {
+        if (method === "GET" && sub === "") return send(res, 200, cowork.detail(id, me));
+        if (method === "PATCH" && sub === "") {
+          const out = cowork.update(id, me, (await readJson(req)) as never);
+          if (out.events.length) {
+            coworkChanged(id);
+            coworkEvents(id, out.events);
+          }
+          deliveriesChanged(out.dropped);
+          return send(res, 200, { cowork: out.cowork });
+        }
+        if (method === "GET" && sub === "/goals") return send(res, 200, { goals: cowork.goals(id, me) });
+        if (method === "GET" && sub === "/events") return send(res, 200, { events: cowork.events(id, me, Number(url.searchParams.get("after") ?? 0) || 0) });
+        if (method === "GET" && sub === "/feed") return send(res, 200, cowork.feed(id, me, Number(url.searchParams.get("after") ?? 0) || 0, url.searchParams.get("agent")));
+        if (method === "GET" && sub === "/drafts") return send(res, 200, { drafts: cowork.drafts(id, me) });
+        if (method === "GET" && sub === "/board") return send(res, 200, cowork.boardSnapshot(id, me, Number(url.searchParams.get("after") ?? 0) || 0));
+        if (method === "GET" && sub === "/board/history") return send(res, 200, { ops: cowork.boardHistory(id, me, url.searchParams.get("card") ?? "") });
+        const body = method === "POST" ? await readJson(req) : null;
+        if (body && sub === "/events") {
+          const out = cowork.addEvent(id, me, body as never);
+          coworkEvents(id, [out.event, ...(out.board?.events ?? [])]);
+          if (out.board) {
+            boardPushed(id, out.board.result.applied);
+            coworkChanged(id);
+          }
+          return send(res, 200, { event: out.event, board: out.board?.result ?? null });
+        }
+        if (body && sub === "/members") {
+          const out = cowork.addMembers(id, me, body.add);
+          for (const n of out.added) push([n], { type: "thread", thread: store.threadById(id) });
+          announce(store.threadById(id), out.message);
+          coworkChanged(id);
+          coworkEvents(id, out.events);
+          return send(res, 200, { cowork: out.cowork });
+        }
+        if (body && sub === "/leave") {
+          const out = cowork.leave(id, me);
+          push([me], { type: "cowork-left", coworkId: id });
+          push([me], { type: "left", threadId: id });
+          for (const l of cowork.board.releaseAll(me, id)) lockPushed(l.coworkId, l.card);
+          cowork.board.setPresence(id, me, null);
+          presencePushed(id);
+          announce(store.threadById(id), out.message);
+          coworkChanged(id);
+          coworkEvents(id, out.events);
+          deliveriesChanged(out.dropped);
+          return send(res, 200, { ok: true });
+        }
+        if (body && sub === "/agents") {
+          const out = cowork.joinAgent(id, me, body.mark, body.label);
+          if (out.message) announce(store.threadById(id), out.message);
+          coworkChanged(id);
+          coworkEvents(id, out.events);
+          return send(res, 200, { cowork: out.cowork, agent: out.agent });
+        }
+        if (body && sub === "/agents/leave") {
+          const out = cowork.leaveAgent(id, me, body.mark);
+          announce(store.threadById(id), out.message);
+          coworkChanged(id);
+          coworkEvents(id, out.events);
+          deliveriesChanged(out.dropped);
+          return send(res, 200, { cowork: out.cowork });
+        }
+        if (body && sub === "/messages") {
+          const threadId = typeof body.threadId === "string" && body.threadId ? body.threadId : id;
+          if (threadId !== id && store.thread(threadId, me).request?.coworkId !== id) throw new RelayError("bad_request", "threadId 要是这个协作的群聊或它的子会话");
+          const out = cowork.post(threadId, me, body as never);
+          if (out.draft) push([me], { type: "cowork-draft", coworkId: id, draft: out.draft });
+          else coworkPosted(out);
+          return send(res, 200, out);
+        }
+        if (body && sub === "/sessions") {
+          const out = cowork.ask(id, me, body as never);
+          if (out.draft) push([me], { type: "cowork-draft", coworkId: id, draft: out.draft });
+          else {
+            announce(out.thread, out.message);
+            if (out.card) announce(out.card.thread, out.card.message);
+            coworkChanged(id);
+          }
+          return send(res, 200, out.draft ? { draft: out.draft } : { thread: out.thread, message: out.message });
+        }
+        if (body && sub === "/board/ops") {
+          const before = cowork.board.seq(id);
+          const out = cowork.boardApply(id, me, body);
+          // A repeated operation (its opId seen before) is answered again, not pushed again.
+          const fresh = out.result.applied.filter((r) => r.seq > before);
+          boardPushed(id, fresh);
+          coworkEvents(id, out.events);
+          return send(res, 200, out.result);
+        }
+        if (body && sub === "/board/lock") {
+          const lock = cowork.boardLock(id, me, body);
+          lockPushed(id, String(body.card));
+          return send(res, 200, { lock });
+        }
+        if (body && sub === "/board/presence") {
+          const presence = cowork.boardPresence(id, me, body);
+          presencePushed(id);
+          return send(res, 200, { presence });
+        }
+      } else if (method === "POST" && sub === "/sessions" && cm[4] === "/conclude") {
+        const out = cowork.conclude(id, target, me, await readJson(req));
+        announce(out.thread, out.message);
+        coworkChanged(id);
+        coworkEvents(id, [out.event]);
+        deliveriesChanged(out.deliveries);
+        return send(res, 200, { thread: out.thread, event: out.event });
+      } else if (method === "POST" && sub === "/drafts" && !cm[4]) {
+        const out = cowork.decideDraft(id, target, me, (await readJson(req)) as never);
+        push([me], { type: "cowork-draft", coworkId: id, draft: out.draft });
+        if (out.post?.thread) coworkPosted(out.post as { thread: Thread; message: Message; deliveries: CoworkDelivery[]; events: CoworkEvent[] });
+        if (out.ask?.thread) {
+          announce(out.ask.thread, out.ask.message!);
+          if (out.ask.card) announce(out.ask.card.thread, out.ask.card.message);
+          coworkChanged(id);
+        }
+        return send(res, 200, { draft: out.draft });
+      }
+      throw new RelayError("not_found", `没有这个接口：${method} ${path}`);
+    }
     if (method === "GET" && path === "/api/threads") return send(res, 200, { threads: store.threadsFor(me) });
     if (method === "POST" && path === "/api/threads/direct") {
       const body = await readJson(req);
@@ -637,6 +967,18 @@ export async function startRelayServer(opts: RelayServerOptions): Promise<RelayS
     }
     if (method === "POST" && path === "/api/requests") {
       const body = await readJson(req);
+      // A 子会话 (协作): the cowork's way, so an agent's waits as a draft when it should.
+      if (typeof body.coworkId === "string" && body.coworkId) {
+        const out = cowork.ask(body.coworkId, me, body as never);
+        if (out.draft) {
+          push([me], { type: "cowork-draft", coworkId: body.coworkId, draft: out.draft });
+          return send(res, 200, { draft: out.draft });
+        }
+        announce(out.thread, out.message);
+        if (out.card) announce(out.card.thread, out.card.message);
+        coworkChanged(body.coworkId);
+        return send(res, 200, { thread: out.thread, message: out.message });
+      }
       const out = store.createRequest(me, body as never);
       announce(out.thread, out.message);
       return send(res, 200, out);
@@ -786,6 +1128,22 @@ export async function startRelayServer(opts: RelayServerOptions): Promise<RelayS
     const m = /^\/api\/threads\/([^/]+)(\/messages|\/read|\/archive|\/session|\/members|\/leave)?$/.exec(path);
     if (m) {
       const id = decodeURIComponent(m[1]!);
+      // A cowork's 群聊 and 子会话 go the cowork's way (its members, agents, deliveries, drafts).
+      const known = store.thread(id, me);
+      const cw = known.kind === "cowork" ? id : (known.request?.coworkId ?? null);
+      if (cw && method === "POST" && m[2] === "/messages") {
+        const out = cowork.post(id, me, (await readJson(req)) as never);
+        if (out.draft) push([me], { type: "cowork-draft", coworkId: cw, draft: out.draft });
+        else coworkPosted(out);
+        return send(res, 200, out);
+      }
+      if (cw === id && method === "POST" && (m[2] === "/members" || m[2] === "/leave")) throw new RelayError("bad_request", "协作拉人、退出走 /api/cowork/:id/members、/api/cowork/:id/leave");
+      if (cw === id && method === "PATCH" && !m[2]) {
+        const out = cowork.update(id, me, { title: (await readJson(req)).title as string });
+        coworkChanged(id);
+        coworkEvents(id, out.events);
+        return send(res, 200, { thread: store.thread(id, me) });
+      }
       if (method === "POST" && m[2] === "/members") {
         const out = store.addMembers(id, me, (await readJson(req)).add);
         // The new people get the thread (with its history) first, then everyone the event.
@@ -815,6 +1173,12 @@ export async function startRelayServer(opts: RelayServerOptions): Promise<RelayS
         const body = await readJson(req);
         const out = store.sessionAction(id, me, body.action as SessionAction, { via: body.via as never, note: body.note, tellAi: body.tellAi === true });
         announce(out.thread, out.message);
+        if (out.thread.request?.coworkId) {
+          const after = cowork.afterSessionAction(out.thread, out.message, me, String(body.action), body.note, body.via);
+          if (after.event) coworkEvents(out.thread.request.coworkId, [after.event]);
+          coworkChanged(out.thread.request.coworkId);
+          deliveriesChanged(after.deliveries);
+        }
         return send(res, 200, out);
       }
       if (method === "GET" && m[2] === "/messages") {
@@ -886,29 +1250,77 @@ export async function startRelayServer(opts: RelayServerOptions): Promise<RelayS
       socket.destroy();
       return;
     }
+    // A desktop client with 传文件 says which device it is: kept, so it is offered to send to, and online while connected.
+    let device: string | null = null;
+    try {
+      if (url.searchParams.get("device")) device = checkTransferDevice(url.searchParams.get("device"));
+    } catch {
+      device = null;
+    }
     wss.handleUpgrade(req, socket, head, (ws) => {
+      if (device) {
+        socketDevice.set(ws, device);
+        transfers.seenDevice(name, device, cleanDeviceName(url.searchParams.get("deviceName")));
+      }
       const set = sockets.get(name) ?? new Set();
       const wasOnline = set.size > 0;
       set.add(ws);
       sockets.set(name, set);
       ws.send(JSON.stringify({ type: "hello", me: name, client: clientVersion } satisfies RelayEvent));
       if (!wasOnline) pushMembers();
+      // 协作's board presence (cowork-protocol.ts CoworkClientFrame): the only thing a client sends here. Bad frames are
+      // ignored; ten a second per connection at most.
+      let framesAt = 0;
+      let frames = 0;
+      ws.on("message", (data) => {
+        const at = Date.now();
+        if (at - framesAt > 1000) [framesAt, frames] = [at, 0];
+        if (++frames > 10 || closing) return;
+        try {
+          const f = JSON.parse(String(data)) as CoworkClientFrame;
+          if (f?.type !== "board-presence" || typeof f.coworkId !== "string") return;
+          cowork.boardPresence(f.coworkId, name, f);
+          presencePushed(f.coworkId);
+        } catch {
+          // not one of ours, or not in that cowork
+        }
+      });
       ws.on("close", () => {
         set.delete(ws);
         lastSeen.set(name, Date.now());
+        if (device && !closing) {
+          socketDevice.delete(ws);
+          transfers.seenDevice(name, device, cleanDeviceName(url.searchParams.get("deviceName")));
+        }
         if (!set.size) {
           sockets.delete(name);
           pushMembers();
+          // Gone: their text locks and board presence go too (plans/cowork.md: 断线也放开).
+          if (!closing) {
+            for (const l of cowork.board.releaseAll(name)) lockPushed(l.coworkId, l.card);
+            for (const id of cowork.board.dropPresence(name)) presencePushed(id);
+          }
         }
       });
     });
   });
 
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(opts.port ?? 0, opts.host ?? "0.0.0.0", () => resolve());
-  });
-  const port = (server.address() as AddressInfo).port;
+  const listen = (): Promise<number> =>
+    new Promise<number>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(opts.port ?? 0, opts.host ?? "0.0.0.0", () => {
+        server.off("error", reject);
+        resolve((server.address() as AddressInfo).port);
+      });
+    });
+  let port = await listen();
+  // A port the system picks (port 0, as every test does) can be one fetch refuses outright — 「fetch failed」, cause
+  // 「bad port」 — and this machine hands out 1024–15000, where 5060 and the like are: 自动打包 (Studio 0.9.73, 2026-11-16)
+  // stopped on todo.test.ts's relay at 127.0.0.1:5060. Take another one then; a port asked for by number stays as it is.
+  for (let tries = 0; !opts.port && FETCH_BAD_PORTS.has(port) && tries < 10; tries++) {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    port = await listen();
+  }
   const shownHost = !opts.host || opts.host === "0.0.0.0" ? "127.0.0.1" : opts.host;
   return {
     url: `http://${shownHost}:${port}`,
@@ -919,6 +1331,10 @@ export async function startRelayServer(opts: RelayServerOptions): Promise<RelayS
       clearInterval(watchClient);
       clearInterval(tick);
       clearInterval(pruneTimer);
+      clearInterval(transferSweep);
+      clearInterval(coworkSweep);
+      for (const w of [...inboxWaiters]) w.done();
+      for (const t of transferTimers.values()) clearTimeout(t);
       for (const w of [...waiters]) w.done([]);
       for (const set of sockets.values()) for (const ws of set) ws.terminate();
       devices.close();

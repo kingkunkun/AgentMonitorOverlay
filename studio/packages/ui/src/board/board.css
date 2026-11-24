@@ -55,7 +55,7 @@
 .board-chip svg { flex: none; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linejoin: round; }
 .board-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .board-chip-count { flex: none; color: var(--text-faint); font-family: var(--font-code); font-size: 11px; }
-.board-mode { display: inline-flex; flex: none; border: 1px solid var(--border); border-radius: var(--r-btn); overflow: hidden; }
+.board-mode { display: inline-flex; align-self: flex-start; border: 1px solid var(--border); border-radius: var(--r-btn); overflow: hidden; }
 .board-mode button { height: var(--ctl-s); padding: 0 10px; border: none; background: transparent; color: var(--text-dim); font: inherit; font-size: var(--fs-cap); cursor: pointer; }
 .board-mode button + button { border-left: 1px solid var(--border); }
 .board-mode button:hover { color: var(--text); }

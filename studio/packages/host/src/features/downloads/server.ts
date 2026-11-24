@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { join, dirname } from "node:path";
 import { networkInterfaces } from "node:os";
 import type { ToolDownload } from "@amo-studio/protocol";
+import { listenInStudioRange } from "../../net.js";
 
 const escape = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
@@ -87,7 +88,9 @@ export class ToolDownloadServer {
         stream.pipe(res);
       } catch { if (!res.headersSent) res.writeHead(503).end("安装包暂不可用"); else res.destroy(); }
     });
-    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(port, lan ? "0.0.0.0" : "127.0.0.1", () => { server.removeListener("error", reject); resolve(); }); });
+    const bind = lan ? "0.0.0.0" : "127.0.0.1";
+    if (port === 0) await listenInStudioRange(server, bind);
+    else await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(port, bind, () => { server.removeListener("error", reject); resolve(); }); });
     this.server = server; this.lan = lan;
     this.port = (server.address() as { port: number }).port;
   }

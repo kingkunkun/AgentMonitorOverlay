@@ -14,3 +14,8 @@ export * from "./issues-protocol.js";
 export { IssueStore } from "./issues.js";
 export * from "./todo-protocol.js";
 export { TodoStore } from "./todo.js";
+export * from "./transfer-protocol.js";
+export { TransferStore } from "./transfers.js";
+export * from "./cowork-protocol.js";
+export { CoworkStore } from "./cowork.js";
+export { CoworkBoard } from "./cowork-board.js";

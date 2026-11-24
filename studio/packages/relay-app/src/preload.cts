@@ -3,7 +3,9 @@
 import electron = require("electron");
 
 const { ipcRenderer } = electron;
+const workstudioIntegrated = process.argv.includes("--workstudio-bundled-relay");
 const invoke = (channel: string, ...args: unknown[]) => ipcRenderer.invoke(`relay:${channel}`, ...args);
+const tx = (method: string, ...args: unknown[]) => ipcRenderer.invoke("relay:transfer", method, ...args);
 const send = (channel: string, ...args: unknown[]) => ipcRenderer.send(`relay:${channel}`, ...args);
 const on = (channel: string, listener: (value: never) => void) => {
   ipcRenderer.removeAllListeners(`relay:${channel}`);
@@ -23,6 +25,7 @@ electron.contextBridge.exposeInMainWorld("relayLoader", {
 });
 
 electron.contextBridge.exposeInMainWorld("relayShell", {
+  workstudioIntegrated,
   confirmUpload: (files: File[], destination: string) => invoke("confirm-upload", files.map((file) => ({ name: file.name, size: file.size, path: electron.webUtils.getPathForFile(file) })), destination),
   setRelayEnabled: (enabled: boolean) => invoke("set-enabled", enabled),
   info: () => invoke("info"),
@@ -35,6 +38,7 @@ electron.contextBridge.exposeInMainWorld("relayShell", {
   copy: (text: string) => invoke("copy", text),
   notify: (n: unknown) => send("notify", n),
   onOpenThread: (listener: (id: string) => void) => on("open-thread", listener),
+  onOpen: (listener: (ref: string) => void) => on("open", listener),
   setUnread: (count: number) => send("unread", count),
   checkUpdate: () => invoke("check-update"),
   applyUpdate: () => invoke("apply-update"),
@@ -53,6 +57,30 @@ electron.contextBridge.exposeInMainWorld("relayShell", {
   changeServer: () => send("change-server"),
   openExternal: (url: string) => send("open-external", url),
   takeOpenThread: () => invoke("take-open-thread"),
+  takeOpen: () => invoke("take-open"),
   studioHas: (conv: string) => invoke("studio-has", conv),
   openInStudio: (conv: string) => invoke("open-in-studio", conv),
+  // 传文件 (2026-11-23, transfer-ipc.ts): one channel, method + arguments. Dropped files become paths here (webUtils),
+  // the only place that can tell them.
+  ...(!workstudioIntegrated ? { transfer: {
+    device: () => tx("device"),
+    pickFiles: (addTo?: string | null) => tx("pickFiles", addTo ?? null),
+    pickFolder: (addTo?: string | null) => tx("pickFolder", addTo ?? null),
+    dropped: (files: File[], addTo?: string | null) => tx("dropped", [...files].map((f) => electron.webUtils.getPathForFile(f)).filter(Boolean), addTo ?? null),
+    bind: (pick: string, id: string, keep?: string[]) => tx("bind", pick, id, keep),
+    read: (id: string, path: string, offset: number, length: number) => tx("read", id, path, offset, length),
+    hash: (id: string, path: string) => tx("hash", id, path),
+    forgetSend: (id: string) => tx("forgetSend", id),
+    receiveDir: () => tx("receiveDir"),
+    setReceiveDir: (dir: string) => tx("setReceiveDir", dir),
+    chooseDir: (current?: string) => tx("chooseDir", current),
+    prepare: (id: string, dir: string, plan: unknown) => tx("prepare", id, dir, plan),
+    received: (id: string) => tx("received", id),
+    partSize: (id: string, path: string) => tx("partSize", id, path),
+    write: (id: string, path: string, offset: number, data: Uint8Array) => tx("write", id, path, offset, data),
+    finish: (id: string, path: string, sha256: string) => tx("finish", id, path, sha256),
+    discard: (id: string) => tx("discard", id),
+    openFolder: (id: string) => tx("openFolder", id),
+    prune: (keep: string[]) => tx("prune", keep),
+  } } : {}),
 });

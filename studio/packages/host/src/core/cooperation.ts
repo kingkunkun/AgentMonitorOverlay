@@ -24,11 +24,19 @@ export class Cooperation {
   ownDevice(account: string): boolean { return !!this.host.teamLink.account && this.host.teamLink.account.name === account && readCooperation(this.env).syncOwnDevices; }
   taskAllowed(taskId: string): boolean {
     const imported = new Set((this.host.store.db.prepare("SELECT value FROM kv WHERE key LIKE 'claude-adopted:%'").all() as Array<{ value: string }>).map((r) => r.value));
-    return !this.host.store.listSessions({ taskId }).some((session) => {
-      const seen = new Set<string>(); let current = session;
-      while (!seen.has(current.id)) { if (imported.has(current.id)) return true; seen.add(current.id); const parent = current.parentId ? this.host.store.getSession(current.parentId) : undefined; if (!parent) break; current = parent; }
-      return false;
-    });
+    if (!imported.size) return true;
+    const stack = this.host.store.listSessions({ taskId }).map((s) => s.id);
+    const seen = new Set<string>();
+    while (stack.length) {
+      const id = stack.pop()!;
+      if (seen.has(id)) continue;
+      if (imported.has(id)) return false;
+      seen.add(id);
+      const session = this.host.store.getSession(id);
+      if (session?.parentId) stack.push(session.parentId);
+      if (session?.forkOf) stack.push(session.forkOf.sessionId);
+    }
+    return true;
   }
   get env() { return this.host.teamLink.env; }
   initializePrivacy(): void {

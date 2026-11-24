@@ -2,8 +2,11 @@
 // later the UI share. A small team on one LAN; people talk to each other directly, and an AI session can send a
 // person a 「请求」 (body + questions) that they answer one by one. Everything is kept on the service.
 
+import type { CoworkRelayEvent } from "./cowork-protocol.js";
+import type { Transfer } from "./transfer-protocol.js";
+
 export const RELAY_APP = "amo-relay";
-export const RELAY_VERSION = "0.7.13";
+export const RELAY_VERSION = "0.7.18";
 export const RELAY_DEFAULT_PORT = 47120;
 
 export interface Member {
@@ -18,11 +21,68 @@ export interface Member {
   online: boolean;
   /** ms since epoch; 0 = never seen since the service started. */
   lastSeen: number;
+  /** 账号类型, set on the admin page (2026-11-23). Missing from a service before it: 正式. */
+  kind?: AccountKind;
+  /** Turned off on the admin page: cannot log in; their messages stay. Missing from a service before 2026-11-23. */
+  disabled?: boolean;
+}
+
+/**
+ * 账号类型 (2026-11-23, the user: 服务器后台可以设置账号类型，比如测试账号。然后停用和测试账号不在聊天列表里显示): what the
+ * admin page offers, in its order. `listed`: shown where people are listed and picked (聊天列表, 选人, @, 协作拉人); a kind
+ * that is not is still seen by accounts of the same kind (test accounts pick each other to test with). Add a kind here.
+ */
+export const ACCOUNT_KINDS = {
+  normal: { label: "正式", listed: true },
+  test: { label: "测试", listed: false },
+} as const;
+export type AccountKind = keyof typeof ACCOUNT_KINDS;
+export const DEFAULT_ACCOUNT_KIND: AccountKind = "normal";
+export const isAccountKind = (v: unknown): v is AccountKind => typeof v === "string" && Object.prototype.hasOwnProperty.call(ACCOUNT_KINDS, v);
+
+/**
+ * Whether `m` is shown to `viewer` where people are listed and picked: not when turned off, nor of a kind that is not
+ * listed (unless the viewer is of that kind too). A kind this build does not know (a newer service) is shown. Their
+ * messages in chats and coworks they were in are shown all the same; 成员 keeps them in a folded part at its foot.
+ */
+export function isListed(m: Pick<Member, "kind" | "disabled">, viewer?: Pick<Member, "kind"> | null): boolean {
+  if (m.disabled) return false;
+  const kind = m.kind ?? DEFAULT_ACCOUNT_KIND;
+  return !isAccountKind(kind) || ACCOUNT_KINDS[kind].listed || (viewer?.kind ?? DEFAULT_ACCOUNT_KIND) === kind;
+}
+
+/** The others `me` is shown where people are listed and picked (isListed): `members` is everyone, me among them. */
+export function listedOthers<T extends Pick<Member, "name" | "kind" | "disabled">>(members: T[], me: string): T[] {
+  const viewer = members.find((m) => m.name === me);
+  return members.filter((m) => m.name !== me && isListed(m, viewer));
+}
+
+/** The names `me` is not shown (isListed): left out of who is in a chat, as listed; their messages stay. */
+export function unlistedNames(members: Array<Pick<Member, "name" | "kind" | "disabled">>, me: string): Set<string> {
+  const viewer = members.find((m) => m.name === me);
+  return new Set(members.filter((m) => m.name !== me && !isListed(m, viewer)).map((m) => m.name));
+}
+
+/**
+ * A chat's title as `me` sees it (2026-11-23, the user agreed): a group never renamed has the names of its people when it
+ * became one (RelayStore.addMembers: 「策划小王、程序老李、测试小赵」); those `me` is not shown (unlistedNames) are left
+ * out. A title is taken for such a one when it is two or more account names joined by 「、」 (the service keeps no mark of
+ * a rename); when every name would go, it stays as it is. Any other title, and other kinds of chat, as they are.
+ */
+export function chatTitleFor(thread: Pick<Thread, "kind" | "title">, members: Array<Pick<Member, "name" | "kind" | "disabled">>, me: string): string {
+  if (thread.kind !== "group") return thread.title;
+  const parts = thread.title.split("、");
+  const known = new Set(members.map((m) => m.name));
+  if (parts.length < 2 || !parts.every((p) => known.has(p))) return thread.title;
+  const hidden = unlistedNames(members, me);
+  const kept = parts.filter((p) => !hidden.has(p));
+  return kept.length ? kept.join("、") : thread.title;
 }
 
 /** direct: the one plain chat per pair; topic: more chats between the same two, each about one thing; group: three or
- * more (a direct chat or topic becomes one when someone is @-ed into it, its history with it). */
-export type ThreadKind = "direct" | "topic" | "group" | "request";
+ * more (a direct chat or topic becomes one when someone is @-ed into it, its history with it); cowork: a 协作's 群聊
+ * (2026-11-23, cowork-protocol.ts). */
+export type ThreadKind = "direct" | "topic" | "group" | "request" | "cowork";
 export type Verdict = "agree" | "change" | "question";
 export const VERDICT_LABEL: Record<Verdict, string> = { agree: "同意", change: "需要改", question: "有疑问" };
 
@@ -67,6 +127,15 @@ export interface Message {
   mentions?: string[];
   /** Notes on files that came with a reply (copied in when it was sent). */
   notes?: ReplyNote[];
+  /** 协作 (cowork-protocol.ts): the agents @-ed (their marks). */
+  agentMentions?: string[];
+  /** 协作: the seq of the message this one answers (an agent's reply quotes it). */
+  replyTo?: number;
+  /** 协作: an event in the 群聊 that stands for this 子会话 (thread id): the client shows the 子会话's card in its place. */
+  session?: string;
+  /** 协作: an agent's draft its owner sent (`edited`: after changing it). */
+  approvedBy?: string;
+  edited?: boolean;
   createdAt: number;
 }
 
@@ -113,6 +182,11 @@ export interface RequestState {
   /** With takenAt: their note goes to the asking AI (it runs once more). Off unless ticked — most sessions an AI sent
    * after finishing a round (a review asked for) need nothing more said back (the user, 2026-11-05). */
   tellAi: boolean;
+  /** 协作的子会话 (2026-11-23, cowork-protocol.ts): the cowork it is in — every member of it is in this thread too. Missing
+   * or null for a session of its own. Studio's teamrelay leaves these to the cowork's deliveries. */
+  coworkId?: string | null;
+  /** 协作的子会话: what was settled (结论). */
+  conclusion?: string | null;
 }
 
 /**
@@ -342,7 +416,12 @@ export type RelayEvent =
   /** A new client build was published: clients update themselves. */
   | { type: "client"; version: string | null }
   /** Every TICK_MS, so a client notices a service that went away without closing (a sleeping machine, the network). */
-  | { type: "tick" };
+  | { type: "tick" }
+  /** 传文件 (2026-11-23): a send changed (made, answered, a piece uploaded, saved, cancelled, expired): to its sender and
+   * every target account. */
+  | { type: "transfer"; transfer: Transfer }
+  /** 协作 (2026-11-23): see cowork-protocol.ts. */
+  | CoworkRelayEvent;
 
 export interface Health {
   app: typeof RELAY_APP;
@@ -357,6 +436,8 @@ export interface Health {
   shell?: ShellBuild | null;
   /** The devices channel (devices-protocol.ts, remote sessions): its version; missing on a service from before it. */
   devices?: number;
+  /** 协作's calls (cowork-protocol.ts COWORK_VERSION); missing on a service from before them. */
+  cowork?: number;
 }
 
 export interface ShellBuild {

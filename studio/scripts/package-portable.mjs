@@ -272,9 +272,9 @@ function build(id) {
     if (byPath && byName) forwardPackage(name, from, app);
   }
 
-  if (bundledRelay && spec.packages.includes("relay-app")) {
-    const client = join(studio, "release", "relay-local", "client");
-    if (!existsSync(join(client, "manifest.json"))) throw new Error("先执行 node scripts/relay-release.mjs --out release/relay-local，编译 Work中转界面");
+  if (spec.programs.includes("studio") || (bundledRelay && spec.packages.includes("relay-app"))) {
+    const client = bundledRelay ? join(studio, "release", "relay-local", "client") : join(studio, "packages", "relay-app", "client");
+    if (!existsSync(join(client, "index.html"))) throw new Error(bundledRelay ? "先执行 node scripts/relay-release.mjs --out release/relay-local，编译 Work中转界面" : "先执行 npm run build，编译 Work中转界面");
     cpSync(client, join(app, "packages", "relay-app", "client"), { recursive: true });
   }
   // 3. The launcher: this exe's own program, or the one --amo-app= names (only programs that are in this download).

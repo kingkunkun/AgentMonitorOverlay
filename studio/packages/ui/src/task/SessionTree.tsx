@@ -1,12 +1,8 @@
-import { useEffect, useState, type JSX } from "react";
-import { buildSessionTree, type ModelProfile, type Session, type SessionNode, type SessionOptions, type Task, type Workspace } from "@amo-studio/protocol";
-import { defaultProfile, rememberProfile, repick, shortModel } from "../lib/profiles.js";
+import { useEffect, useRef, useState, type JSX } from "react";
+import { buildSessionTree, type ModelProfile, type Session, type SessionNode, type Task, type Workspace } from "@amo-studio/protocol";
+import { shortModel } from "../lib/profiles.js";
 import { sessionModelName, storedChoices } from "../lib/choices.js";
 import type { HostLink } from "../host/client.js";
-import { activeModel, useProfileChoices } from "../lib/choices.js";
-import { rememberPick, type ModelPick } from "../lib/recents.js";
-import { EffortBars, FastToggle } from "../chat/pickers.js";
-import { ModelRow } from "../newtask/ModelRow.js";
 import { useDragWidth } from "../lib/dragWidth.js";
 import { needsPerson, relativeTime, SESSION_LOOK } from "../lib/status.js";
 import { wakeLabel } from "../chat/WakeBar.js";
@@ -38,74 +34,55 @@ interface SessionTreeProps {
   selected: string | null;
   busy: boolean;
   onSelect(id: string): void;
-  onNewSession(input: { profileId: string; options?: SessionOptions }): void;
   link: HostLink;
   onRestore(id: string): void;
   /** Unread mail per session id. */
   unread?: ReadonlyMap<string, number>;
-  /** The new-session form, opened from 新会话 in the task head (2026-10-14). */
-  creating: boolean;
-  onCreating(open: boolean): void;
   /**
-   * 远程 (step 2): a copy of another computer's task — new sessions start there, on the models it allows (this
-   * computer's ids of them), and not while `blocked` says why.
+   * Opens the 新会话 dialog (2026-11-17: a dialog, no longer a form in this list) — from the list of a task with no live
+   * session; the task head's 新会话 opens it too.
    */
-  remote?: { name: string; allowed: readonly string[]; blocked: string | null };
+  onNewSession(): void;
+  /**
+   * 拖拽排序 (2026-11-17): saves the order of one level of the list (the main sessions, or those under one session).
+   * Absent: the list is not reordered here (an archived task).
+   */
+  onReorder?(order: string[]): Promise<unknown>;
+  /** Why the order cannot be changed here (a remote task whose computer has an older Studio); said when the person tries. */
+  reorderBlocked?: string | null;
 }
 
-/** 新会话 in a copy of a remote task: one of the models its own computer allows, nothing else to choose here. */
-function RemoteNewSession({ name, allowed, blocked, profiles, busy, onStart }: { name: string; allowed: readonly string[]; blocked: string | null; profiles: readonly ModelProfile[]; busy: boolean; onStart(profileId: string): void }) {
-  const [pick, setPick] = useState(allowed[0] ?? "");
-  useEffect(() => {
-    if (!allowed.includes(pick)) setPick(allowed[0] ?? "");
-  }, [allowed.join("\n")]); // eslint-disable-line react-hooks/exhaustive-deps
-  const label = (id: string) => profiles.find((p) => p.id === id)?.label ?? id;
-  return (
-    <div className="new-session" aria-label="新会话" data-testid="remote-new-session">
-      {allowed.length === 0 ? (
-        <span className="settings-hint">{name} 没有允许远程新开会话的模型：在那台电脑顶栏的「远程」→「远程设置」里勾选。</span>
-      ) : (
-        <>
-          <label className="stack-field">
-            模型（{name} 允许的）
-            <select value={pick} onChange={(e) => setPick(e.target.value)} disabled={busy || !!blocked} aria-label="远程会话的模型" data-testid="remote-model">
-              {allowed.map((id) => (
-                <option key={id} value={id}>
-                  {label(id)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button type="button" className="btn-primary small" disabled={busy || !pick || !!blocked} onClick={() => onStart(pick)} data-testid="remote-start">
-            在 {name} 上开始新会话
-          </button>
-        </>
-      )}
-      {blocked && <span className="settings-hint">{blocked}</span>}
-    </div>
-  );
+/** 拖拽排序: the drag in progress and where it would land, shared by every level of the list. */
+interface OrderCtl {
+  dragging: string | null;
+  over: { id: string; after: boolean } | null;
+  start(id: string): boolean;
+  overAt(id: string, after: boolean | null): void;
+  end(): void;
+  /** Puts `id` at `to` among the rest of `level` (its index once `id` is taken out). */
+  move(level: readonly string[], id: string, to: number): void;
 }
 
 /** Left column of the task page: session tree (forks and subagents indented), new session, archived area. Shown or hidden as a whole by 会话 in the task head (2026-10-15). */
-export function SessionTree({ link, task, sessions, workspaces, profiles, selected, busy, onSelect, onNewSession, onRestore, unread, creating, onCreating, remote }: SessionTreeProps) {
-  const live = sessions.filter((s) => !s.archivedAt);
+export function SessionTree({ link: _link, task, sessions, workspaces, profiles, selected, busy, onSelect, onNewSession, onRestore, unread, onReorder, reorderBlocked }: SessionTreeProps) {
+  // 拖拽排序 (2026-11-17): a new order shows at once; it stays until the sessions come back with it (or after a while).
+  const [moved, setMoved] = useState<Record<string, number> | null>(null);
+  const [orderNote, setOrderNote] = useState<string | null>(null);
+  const [dragging, setDragging] = useState<string | null>(null);
+  const [over, setOver] = useState<{ id: string; after: boolean } | null>(null);
+  const noteTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const say = (text: string) => {
+    setOrderNote(text);
+    clearTimeout(noteTimer.current);
+    noteTimer.current = setTimeout(() => setOrderNote(null), 8000);
+  };
+  useEffect(() => () => clearTimeout(noteTimer.current), []);
+  const live = sessions.filter((s) => !s.archivedAt).map((s) => (moved?.[s.id] !== undefined ? { ...s, rank: moved[s.id] } : s));
+  useEffect(() => {
+    if (moved && sessions.every((s) => moved[s.id] === undefined || s.rank === moved[s.id])) setMoved(null);
+  }, [sessions]); // eslint-disable-line react-hooks/exhaustive-deps
   // An archived subtree shows once, by its top-most archived session.
   const archivedRoots = sessions.filter((s) => s.archivedAt && !sessions.some((p) => p.id === s.parentId && p.archivedAt));
-  const [pick, setPick] = useState<ModelPick>({ profileId: defaultProfile(profiles)?.id ?? "", model: null });
-  const [effort, setEffort] = useState<string | null>(null);
-  const [fast, setFast] = useState<boolean | undefined>(undefined);
-  // A model hidden in 设置 → 模型 meanwhile gives way to the default (问题 #14).
-  useEffect(() => {
-    const next = repick(profiles, pick.profileId);
-    if (next !== null) {
-      setPick({ profileId: next, model: null });
-      setEffort(null);
-      setFast(undefined);
-    }
-  }, [profiles, pick.profileId]);
-  const [drawer, setDrawer] = useState(false);
-  const { choices } = useProfileChoices(link, pick.profileId);
-  const model = choices ? activeModel(choices, pick.model ? { model: pick.model } : {}) : undefined;
   const [showArchived, setShowArchived] = useState(false);
   // The list's width, dragged at its right edge (2026-10-15).
   const listW = useDragWidth("amo.sessionListWidth", 236, 180, 480);
@@ -115,11 +92,8 @@ export function SessionTree({ link, task, sessions, workspaces, profiles, select
   useEffect(() => {
     if (selectedArchived) setShowArchived(true);
   }, [selected]); // eslint-disable-line react-hooks/exhaustive-deps
-  // The new-session form opens on demand (and when the task has no live session yet).
-  const setCreating = (v: boolean) => onCreating(v);
   // An archived task takes no new sessions (stage 14): its banner restores it first.
   const closed = !!task.archivedAt;
-  const formOpen = !closed && (creating || live.length === 0);
   const profile = (id: string) => profiles.find((p) => p.id === id);
 
   // Folded sessions (10-22): their subagents, forks and 委派 sessions hide under「▸ N」, remembered per machine. A
@@ -135,6 +109,41 @@ export function SessionTree({ link, task, sessions, workspaces, profiles, select
   }, [selected]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const tree = buildSessionTree(live, { delegated: true });
+  const order: OrderCtl | null =
+    closed || !onReorder
+      ? null
+      : {
+          dragging,
+          over,
+          start: (id) => {
+            if (reorderBlocked) {
+              say(reorderBlocked);
+              return false;
+            }
+            setDragging(id);
+            return true;
+          },
+          overAt: (id, after) => setOver(after === null ? (cur) => (cur?.id === id ? null : cur) : { id, after }),
+          end: () => {
+            setDragging(null);
+            setOver(null);
+          },
+          move: (level, id, to) => {
+            if (reorderBlocked) return say(reorderBlocked);
+            const rest = level.filter((x) => x !== id);
+            const next = [...rest.slice(0, to), id, ...rest.slice(to)];
+            if (next.every((x, i) => x === level[i])) return;
+            setMoved((m) => ({ ...m, ...Object.fromEntries(next.map((x, i) => [x, i + 1])) }));
+            onReorder(next).then(
+              // The sessions normally come back first; should they not, the list follows them again after a while.
+              () => setTimeout(() => setMoved(null), 3000),
+              (err: unknown) => {
+                setMoved(null);
+                say(`顺序没改成：${err instanceof Error ? err.message : String(err)}`);
+              },
+            );
+          },
+        };
   // The model by name when known ("Opus 5.5"), from the last list this install saw.
   const modelOf = (s: Session) => {
     const p = profile(s.profileId);
@@ -153,53 +162,24 @@ export function SessionTree({ link, task, sessions, workspaces, profiles, select
     <aside className="session-list" aria-label="会话" style={{ flexBasis: listW.width }}>
       <div className="slist-head">
         <span className="nav-label">会话 {live.length}</span>
-        {formOpen && live.length > 0 && (
-          <button type="button" className="btn-ghost small" onClick={() => setCreating(false)}>
-            收起
-          </button>
-        )}
       </div>
+      {orderNote && (
+        <div className="slist-note" role="status" data-testid="session-order-note">
+          {orderNote}
+        </div>
+      )}
 
-      {formOpen && remote && <RemoteNewSession name={remote.name} allowed={remote.allowed} blocked={remote.blocked} profiles={profiles} busy={busy} onStart={(profileId) => {
-        onNewSession({ profileId });
-        setCreating(false);
-      }} />}
-      {formOpen && !remote && (
-        <div className="new-session" aria-label="新会话">
-          <ModelRow
-            link={link}
-            profiles={profiles}
-            pick={pick}
-            onPick={(next) => {
-              setPick(next);
-              setEffort(null);
-              setFast(undefined);
-            }}
-            drawer={drawer}
-            onToggleDrawer={() => setDrawer((v) => !v)}
-            small
-          />
-          {model && model.efforts.length > 0 && <EffortBars efforts={model.efforts} value={effort} fallback={model.defaultEffort} onChange={setEffort} small />}
-          <FastToggle fast={model?.fast} value={fast} onChange={setFast} small />
-          <button
-            type="button"
-            className="btn-primary small"
-            disabled={busy || !pick.profileId}
-            onClick={() => {
-              rememberProfile(pick.profileId);
-              rememberPick(pick);
-              const options: SessionOptions = { ...(pick.model ? { model: pick.model } : {}), ...(effort ? { effort } : {}), ...(fast !== undefined && model?.fast ? { fast } : {}) };
-              onNewSession({ profileId: pick.profileId, ...(Object.keys(options).length ? { options } : {}) });
-              setCreating(false);
-            }}
-          >
-            开始新会话
+      {!closed && live.length === 0 && (
+        <div className="new-session-empty">
+          <span className="settings-hint">这个任务还没有会话。</span>
+          <button type="button" className="btn-primary small" disabled={busy} onClick={onNewSession} data-testid="new-session-empty">
+            开始新会话…
           </button>
         </div>
       )}
 
       <div className="slist tree" role="tree" aria-label="会话树">
-        <TreeLevel nodes={tree} all={live} elsewhere={elsewhere} depth={0} parentProfile={null} selected={selected} unread={unread} profileOf={profile} onSelect={onSelect} modelOf={modelOf} folded={folded} />
+        <TreeLevel nodes={tree} all={live} elsewhere={elsewhere} depth={0} parentProfile={null} selected={selected} unread={unread} profileOf={profile} onSelect={onSelect} modelOf={modelOf} folded={folded} order={order} />
       </div>
       {selectedLive && <SessionDetail session={selectedLive} all={live} project={elsewhere(selectedLive)} model={modelOf(selectedLive)} letters={unread?.get(selectedLive.id) ?? 0} />}
 
@@ -310,6 +290,7 @@ function TreeLevel({
   onSelect,
   modelOf,
   folded,
+  order,
 }: {
   nodes: readonly SessionNode[];
   all: readonly Session[];
@@ -322,8 +303,16 @@ function TreeLevel({
   onSelect(id: string): void;
   modelOf(s: Session): string;
   folded: { has(id: string): boolean; toggle(id: string): void };
+  order: OrderCtl | null;
 }) {
   const duty = useDuty();
+  // 拖拽排序: this level's sessions, the only ones a session of it changes places with.
+  const level = nodes.map((n) => n.session.id);
+  const afterMiddle = (e: React.DragEvent<HTMLElement>) => {
+    const box = e.currentTarget.getBoundingClientRect();
+    return e.clientY > box.top + box.height / 2;
+  };
+  const ours = (id: string) => !!order?.dragging && order.dragging !== id && level.includes(order.dragging);
   return (
     <>
       {nodes.map((node) => {
@@ -347,16 +336,59 @@ function TreeLevel({
         const forkedFrom = s.forkOf ? `从「${source?.title || "会话"}」第 ${s.forkOf.turn} 轮分出` : "";
         const peer = !!s.forkOf && s.kind === "main";
         return (
-          <div key={s.id} className="tree-node" role="none">
-            <div className="tree-line">
+          <div key={s.id} className="tree-node" role="none" data-drop={order?.over?.id === s.id && ours(s.id) ? (order.over.after ? "after" : "before") : undefined} data-dragging={order?.dragging === s.id || undefined}>
+            <div
+              className="tree-line"
+              onDragOver={(e) => {
+                // Only among the sessions of its own level (2026-11-17: never across, never under another).
+                if (!order || !ours(s.id)) return;
+                e.preventDefault();
+                e.stopPropagation();
+                e.dataTransfer.dropEffect = "move";
+                order.overAt(s.id, afterMiddle(e));
+              }}
+              onDragLeave={(e) => {
+                if (order && !e.currentTarget.contains(e.relatedTarget as Node | null)) order.overAt(s.id, null);
+              }}
+              onDrop={(e) => {
+                if (!order || !ours(s.id)) return;
+                e.preventDefault();
+                e.stopPropagation();
+                const from = order.dragging!;
+                const rest = level.filter((x) => x !== from);
+                order.move(level, from, rest.indexOf(s.id) + (afterMiddle(e) ? 1 : 0));
+                order.end();
+              }}
+            >
               <button
                 type="button"
                 role="treeitem"
                 className={depth > 0 ? "srow tree-row child" : "srow tree-row"}
                 aria-current={s.id === selected}
                 aria-level={depth + 1}
-                title={[s.title || "新会话", [kind, modelOf(s), look.label, relativeTime(s.updatedAt)].join(" · "), starter ? `由「${starter.title || "新会话"}」开的，单独归档` : "", forkedFrom ? `${forkedFrom}${peer ? "，平级会话，单独归档" : ""}` : "", project ? `在项目「${project}」里工作（和任务的项目不同）` : ""].filter(Boolean).join("\n")}
+                title={[s.title || "新会话", [kind, modelOf(s), look.label, relativeTime(s.updatedAt)].join(" · "), starter ? `由「${starter.title || "新会话"}」开的，单独归档` : "", forkedFrom ? `${forkedFrom}${peer ? "，平级会话，单独归档" : ""}` : "", project ? `在项目「${project}」里工作（和任务的项目不同）` : "", order && level.length > 1 ? "拖动可以调整顺序（同一层里），Alt ↑ / ↓ 也行" : ""].filter(Boolean).join("\n")}
                 onClick={() => onSelect(s.id)}
+                draggable={!!order && level.length > 1}
+                onDragStart={(e) => {
+                  if (!order) return;
+                  e.stopPropagation();
+                  if (!order.start(s.id)) return e.preventDefault();
+                  e.dataTransfer.effectAllowed = "move";
+                  e.dataTransfer.setData("application/x-amo-session", s.id);
+                }}
+                onDragEnd={() => order?.end()}
+                onKeyDown={(e) => {
+                  // Alt ↑ / ↓ moves it among its level, as dragging does (and not the conversation's Alt ↑ / ↓ to the replies).
+                  if (!order || !e.altKey || e.ctrlKey || e.shiftKey || e.metaKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const to = level.indexOf(s.id) + (e.key === "ArrowDown" ? 1 : -1);
+                  if (to < 0 || to >= level.length) return;
+                  order.move(level, s.id, to);
+                  // The row moves in the list: keep it focused for the next press.
+                  setTimeout(() => document.querySelector<HTMLElement>(`[data-session-id="${s.id}"]`)?.focus());
+                }}
+                data-session-id={s.id}
                 data-testid="session-row"
                 data-kind={s.kind}
                 data-delegated={starter ? true : undefined}
@@ -429,7 +461,7 @@ function TreeLevel({
             </div>
             {open && node.children.length > 0 && (
               <div className={depth + 1 >= MAX_INDENT ? "tree-children flat" : "tree-children"} role="group">
-                <TreeLevel nodes={node.children} all={all} elsewhere={elsewhere} depth={depth + 1} parentProfile={s.profileId} selected={selected} unread={unread} profileOf={profileOf} onSelect={onSelect} modelOf={modelOf} folded={folded} />
+                <TreeLevel nodes={node.children} all={all} elsewhere={elsewhere} depth={depth + 1} parentProfile={s.profileId} selected={selected} unread={unread} profileOf={profileOf} onSelect={onSelect} modelOf={modelOf} folded={folded} order={order} />
               </div>
             )}
           </div>

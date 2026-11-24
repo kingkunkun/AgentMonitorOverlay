@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type SetStateAction } from "react";
-import { readSessionDraft, writeSessionDraft } from "./sessionDraft.js";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type ReactNode, type SetStateAction } from "react";
+import { readSessionDraft, SESSION_DRAFTS_KEY, writeSessionDraft } from "./sessionDraft.js";
 import type { Annotation, ApprovalDecision, DecisionRequest, ModelProfile, Session, SessionItem, SessionPreset, SlashCommand, SubsessionNote, SubsessionSetup, Task, Workspace } from "@amo-studio/protocol";
 import { call, copyText, HostApiError, type HostLink } from "../host/client.js";
 import { SessionOptionsBar } from "../chat/SessionOptionsBar.js";
@@ -44,6 +44,7 @@ import { unansweredPrompt } from "./takeBack.js";
 import type { AnnotationRefs } from "../review/annotationRefs.js";
 import { pendingQuestion } from "../chat/questions/flow.js";
 import { SlashMenu, useSlashCommands } from "../chat/cli/SlashMenu.js";
+import { useCoworkJoined } from "../teamrelay/Cowork.js";
 import { BackgroundTasks, latestSuggestion, SuggestionChips } from "../chat/cli/ComposerExtras.js";
 import { useChatSettings } from "../chat/cli/chatSettings.js";
 import { openReview } from "../gitreview/open.js";
@@ -52,6 +53,7 @@ import { cameFromFocus, forgetFocusJump } from "../lib/focusJump.js";
 import { TurnStartHint, useTurnStartHint } from "./TurnStartHint.js";
 import { useAnnotationMarks } from "./annotationMarks.js";
 import { AnnotationRefChips, ComposerStats, composerPlaceholder } from "./ThreadParts.js";
+import { useReviewProgress, type ReviewView } from "../chat/ReviewProgress.js";
 
 /** Studio's /compact, as the 压缩 button runs it. */
 const COMPACT: SlashCommand = { name: "compact", description: "", group: "studio" };
@@ -103,6 +105,20 @@ interface ThreadProps {
   forkOff?: string;
   /** 立即发送 greyed on a remote task's copy, and why (2026-11-12; Transcript's). */
   sendNowOff?: string;
+  /** 测试功能 「打字时不插队」 is on (2026-11-15): the composer tells the Host when it is written in. */
+  typingHold?: boolean;
+  /** 测试功能 「审阅进度」 is on (第二版 2026-11-16): the line at each reply's right (读到这里, 「!」), and 复盘 over the conversation. */
+  reviewProgress?: boolean;
+  /** Shown over the conversation, in its place (脉络的楼, 2026-11-15); the composer stays under it. */
+  cover?: ReactNode;
+  /**
+   * The composer is in a 会话弹窗 window of this session (2026-11-16, the user: 弹窗开启时，下面的输入栏先隐藏，且输入栏的内容也
+   * 展示到弹窗里; a window of its own since 2026-11-16): a faint line in its place, `onShow` brings that window forward. The
+   * draft goes there and comes back through storage (sessionDraft.ts), which both windows read.
+   */
+  composerAway?: { onShow(): void };
+  /** A small window of its own (the 会话弹窗): the annotation bubble scrolls the conversation to be seen whole. */
+  shortView?: boolean;
   /** Annotating in place (the bubble by the selection): resolve true once saved. */
   onSaveAnnotation(anchor: SelectionAnchor, note: string): Promise<boolean>;
   /** 书签 (2026-10-19) on the selection bar: the selected passage under the session's topic. */
@@ -126,7 +142,7 @@ interface ThreadProps {
 
 
 /** Conversation of one session plus its composer. */
-export function Thread({ link, presets, session, firstMessage, profile, profiles = [], subsessionNotes = [], tasks = [], sessions = [], projects, items, annotations, annotationRefs, model, busy, onApprove, onJump, onContinued, onSend, onInterrupt, onDelivery, onFork, forkRuntime, forkOff, sendNowOff, onSaveAnnotation, onEditAnnotation, onDeleteAnnotation, onBookmark, initialScroll, atPassage = false, onError, decisions = [], remote }: ThreadProps) {
+export function Thread({ link, presets, session, firstMessage, profile, profiles = [], subsessionNotes = [], tasks = [], sessions = [], projects, items, annotations, annotationRefs, model, busy, onApprove, onJump, onContinued, onSend, onInterrupt, onDelivery, onFork, forkRuntime, forkOff, sendNowOff, typingHold = false, reviewProgress = false, cover, composerAway, shortView = false, onSaveAnnotation, onEditAnnotation, onDeleteAnnotation, onBookmark, initialScroll, atPassage = false, onError, decisions = [], remote }: ThreadProps) {
   const scroller = useRef<HTMLDivElement>(null);
   const composerInput = useRef<HTMLTextAreaElement>(null);
   const stick = useRef(true);
@@ -145,6 +161,35 @@ export function Thread({ link, presets, session, firstMessage, profile, profiles
     pendingDraft.current = null;
     if (p) writeSessionDraft(p.id, p.text);
   }, []);
+  // 打字时不插队 (2026-11-15, plans/collab-framework.md; only with its 测试功能 switch on): the Host hears that this composer is being written in — at
+  // most once a minute, its hold lasts five — and holds what agents send here until the person's message goes; emptied
+  // by hand, it hears that too. Only keys count: a draft left from yesterday holds nothing.
+  const typingSaid = useRef<{ id: string; at: number } | null>(null);
+  const sayTyping = (text: string) => {
+    if (!sessionId || !typingHold) return;
+    const active = !!text.trim();
+    const last = typingSaid.current?.id === sessionId ? typingSaid.current : null;
+    if (active ? last && Date.now() - last.at < 60_000 : !last) return;
+    typingSaid.current = active ? { id: sessionId, at: Date.now() } : null;
+    void call(link, "POST /api/sessions/:id/typing", { id: sessionId }, { active }).catch(() => undefined);
+  };
+  // Sent (the box is empty again, and the Host let the held ones in with the message): the next key says it anew.
+  useEffect(() => {
+    if (!draft) typingSaid.current = null;
+  }, [draft]);
+  // 协作 (2026-11-23, teamrelay/cowork.ts): while this composer has words, the session's AI is 「等主人」 to its 协作 and what
+  // they send it waits. Said when that changes and again every minute while it holds (the Host forgets it after three).
+  const coworkJoined = useCoworkJoined(link);
+  const inCowork = !!sessionId && coworkJoined.some((j) => j.sessionId === sessionId);
+  const composerHasText = !!draft.trim();
+  useEffect(() => {
+    if (!inCowork || !sessionId) return;
+    const say = () => void call(link, "POST /api/sessions/:id/composer", { id: sessionId }, { hasText: composerHasText }).catch(() => undefined);
+    say();
+    if (!composerHasText) return;
+    const timer = setInterval(say, 60_000);
+    return () => clearInterval(timer);
+  }, [inCowork, sessionId, composerHasText, link]);
   useEffect(() => {
     window.addEventListener("pagehide", flushDraft);
     return () => {
@@ -163,6 +208,21 @@ export function Thread({ link, presets, session, firstMessage, profile, profiles
       }),
     [sessionId, flushDraft],
   );
+  // The same session's composer in another window (the 会话弹窗, 2026-11-16) wrote its draft: this one follows it, unless
+  // something typed here is still waiting to be kept. Stepping aside for that window, what is here is kept at once.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if ((e.key !== SESSION_DRAFTS_KEY && e.key !== null) || !sessionId || pendingDraft.current) return;
+      const text = readSessionDraft(sessionId);
+      setHeld((h) => (h.id === sessionId && h.text === text ? h : { id: sessionId, text }));
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [sessionId]);
+  const away = !!composerAway;
+  useEffect(() => {
+    if (away) flushDraft();
+  }, [away, flushDraft]);
   const view = useTranscriptView();
   const attach = useAttachments(link);
   // 找文件: the selector, opened with Ctrl+P or from the @ list (with what was typed after @).
@@ -347,6 +407,8 @@ export function Thread({ link, presets, session, firstMessage, profile, profiles
   const isRemote = session?.runtime === "remote";
   const remoteSub = isRemote && session.kind === "sub";
   const blocked = isRemote ? (remote?.blocked ?? null) : null;
+  // The copy's own computer (远程选 MCP, 2026-11-17: the composer's MCP is that one's).
+  const copyRemote = isRemote && session?.taskId ? tasks?.find((t) => t.id === session.taskId)?.remote : undefined;
   const readOnly = !session || claudeSub || remoteSub || !!remote?.revoked || session.writer === "archived" || session.writer === "terminal-handoff";
   // An archived session has no composer (stage 14): the task page's banner says so and restores it.
   const archived = !!session && (session.writer === "archived" || !!session.archivedAt);
@@ -533,17 +595,35 @@ ${d}` : back));
         },
       };
 
+  // 脉络的楼 (2026-11-16): the stage is `display: contents` without a cover, so the page lays out as it always did; with
+  // one, it puts the building where the conversation was and the composer under it (the conversation hidden behind).
+  // Always there, never added or taken away, so the building does not make the conversation's elements anew.
+  const towerMode = cover ? "under" : undefined;
+
+  // 审阅进度 (plans/review-progress.md, 测试功能; 第二版 2026-11-16): the Host's record of how far this session's replies
+  // were read; each reply's line at its right is the Transcript's (ReadMarks). 复盘 was taken out on 2026-11-16 (the user: 现在的复盘我
+  // 觉得可以删掉，因为本体已经有右侧的看到哪的线了). Nothing is
+  // recorded by itself (the user: 也不要做自动标记完成).
+  const progress = useReviewProgress(link, reviewProgress ? sessionId : null, reviewProgress, onError);
+  const review = useMemo<ReviewView | undefined>(() => (reviewProgress && progress.loaded ? { replies: progress.replies, change: progress.change } : undefined), [reviewProgress, progress.loaded, progress.replies, progress.change]);
   return (
     <>
+      <div className="thread-stage" data-tower={towerMode}>
+      {cover && (
+        <div className="thread-cover" data-testid="thread-cover">
+          {cover}
+        </div>
+      )}
       <div className="thread-wrap" data-dragging={dragging || undefined} {...dropTarget}>
         <SessionDecisions decisions={decisions} openId={!readOnly && !nativeQuestionOpen ? decision?.id ?? null : null} onOpen={readOnly ? undefined : openDecision} />
         <ReplyNav scroller={scroller} itemCount={items.length} />
-        {/* Ctrl+F finds in the conversation on the page (folded steps are not searched). */}
-        <FindBar active={!!session} container={scroller} within=".thread-inner" />
+        {/* Ctrl+F finds in the conversation on the page (folded steps are not searched); not while the building covers it. */}
+        <FindBar active={!!session && !cover} container={scroller} within=".thread-inner" />
         <div
           className="thread"
           data-testid="thread"
           data-view={view}
+          data-reading={review ? "" : undefined}
           ref={scroller}
           onScroll={(e) => {
             const el = e.currentTarget;
@@ -628,7 +708,7 @@ ${d}` : back));
               <QuestionSeatContext.Provider value={seat}>
                 {/* A remote session's approvals grey while its computer is away (or the grant is gone): they are checked again there. */}
                 <SubagentStatusContext.Provider value={subagentStatus}>
-                  <Transcript session={session} items={items} annotations={annotations} model={model} busy={busy || !!blocked} view={view} onApprove={onApprove} onJump={onJump} keepTurn={initialScroll?.key} {...(onDelivery && !readOnly && !blocked ? { onDelivery: deliver, ...(sendNowOff ? { sendNowOff } : {}) } : {})} givingWay={halting === "now"} waitsForSubagents={waitsForSubagents} {...(onFork && !readOnly && !blocked ? { onFork, ...(forkRuntime ? { forkRuntime } : {}), ...(forkOff ? { forkOff } : {}) } : {})} />
+                  <Transcript session={session} items={items} annotations={annotations} model={model} busy={busy || !!blocked} view={view} onApprove={onApprove} onJump={onJump} keepTurn={initialScroll?.key} {...(onDelivery && !readOnly && !blocked ? { onDelivery: deliver, ...(sendNowOff ? { sendNowOff } : {}) } : {})} givingWay={halting === "now"} waitsForSubagents={waitsForSubagents} {...(onFork && !readOnly && !blocked ? { onFork, ...(forkRuntime ? { forkRuntime } : {}), ...(forkOff ? { forkOff } : {}) } : {})} {...(review ? { review } : {})} />
                 </SubagentStatusContext.Provider>
               </QuestionSeatContext.Provider>
             </AttachLink.Provider>
@@ -666,6 +746,7 @@ ${d}` : back));
               key={bubble.kind === "edit" ? bubble.annotation.id : `${bubble.anchor.itemId}:${bubble.anchor.start}`}
               scroller={scroller}
               target={bubble}
+              keepInView={shortView}
               onSave={(note) => (bubble.kind === "edit" ? onEditAnnotation(bubble.annotation.id, note) : onSaveAnnotation(bubble.anchor, note))}
               {...(bubble.kind === "edit"
                 ? {
@@ -711,7 +792,15 @@ ${d}` : back));
           </div>
         )}
       </div>
-      {session && (
+      {session && composerAway && (
+        <div className="composer-dock composer-away" data-testid="composer-away">
+          <span>输入栏在会话弹窗里</span>
+          <button type="button" className="link-btn" onClick={composerAway.onShow} title="把开着这个会话的弹窗带到前面" data-testid="composer-away-show">
+            切到弹窗
+          </button>
+        </div>
+      )}
+      {session && !composerAway && (
         <div className="composer-dock" {...dropTarget}>
           {planReview && !readOnly && (
             <PlanReviewBar
@@ -759,6 +848,7 @@ ${d}` : back));
                 onScroll={(e) => setInputScroll(e.currentTarget.scrollTop)}
                 onChange={(e) => {
                   setDraft(e.target.value);
+                  sayTyping(e.target.value);
                   mentions.track(e.target);
                   slash.track(e.target);
                 }}
@@ -817,9 +907,14 @@ ${d}` : back));
                   e.currentTarget.value = "";
                 }}
               />
-              <SessionOptionsBar onFiles={() => setAddingFiles(true)} onSketch={() => setSketching(true)} onSkill={(name) => { setDraft((old) => `/${name} ${old.replace(/^\/[\w:.-]+\s*/, "")}`); requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(".chat-input textarea")?.focus()); }} profiles={profiles} onContinued={onContinued ? (next) => { flushDraft(); writeSessionDraft(next.id, draft); writeSessionDraft(session.id, ""); pendingDraft.current = null; onContinued(next); } : undefined} link={link} session={session} profile={profile} presets={presets} disabled={readOnly || isRemote} />
+              <SessionOptionsBar onFiles={() => setAddingFiles(true)} onSketch={() => setSketching(true)} onSkill={(name) => { setDraft((old) => `/${name} ${old.replace(/^\/[\w:.-]+\s*/, "")}`); requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(".chat-input textarea")?.focus()); }} profiles={profiles} onContinued={onContinued ? (next) => { flushDraft(); writeSessionDraft(next.id, draft); writeSessionDraft(session.id, ""); pendingDraft.current = null; onContinued(next); } : undefined} link={link} session={session} profile={profile} presets={presets} disabled={readOnly || isRemote} {...(isRemote && copyRemote ? { remote: { name: copyRemote.name, mcp: !!copyRemote.mcp, writable: !readOnly && !blocked && copyRemote.state === "active" } } : {})} />
 
-
+              <span
+                className="composer-hint"
+                {...(blocked ? { "data-testid": "remote-blocked" } : {})}
+                {...(sending && sending === session?.id && !blocked && !attachHold ? { title: `Host 还没回应这条消息；${SEND_GIVE_UP_MS / 1000} 秒内还没有，文字会放回输入框` } : halting && !blocked && !attachHold ? { title: "模型手上的命令或回复收住可能要几秒，这一轮结束前会一直显示" } : {})}
+              >{blocked || attachHold || (sending && sending === session?.id ? "正在发送…" : "") || (halting === "stop" ? "正在停止…" : halting === "now" ? "正在打断，停下后马上发出…" : "") || (generating && !readOnly && !planReview ? (session?.runtime === "dsh" ? "本轮结束后发出 · Ctrl+Enter 立即发送" : `${sendsNow ? "" : "生成中："}${queues ? "工具调用后或本轮结束后读到" : "发送会插入到当前回合"}${sendsNow ? " · Ctrl+Enter 立即发送" : ""}`) : "")}</span>
+              <span className="spacer" />
               {generating && !readOnly && !blocked && (
                 <button
                   type="button"
@@ -850,6 +945,7 @@ ${d}` : back));
           <ComposerStats stats={stats} canCompact={!readOnly && session?.runtime !== "dsh" && !isRemote} busy={generating || compacting} compacting={compacting} onCompact={() => void runCommand(COMPACT, "")} />
         </div>
       )}
+      </div>
       {addingFiles && <AddFilesDialog attach={attach} onFind={() => setFinding({ query: "" })} onClose={() => setAddingFiles(false)} />}
       {sketching && <SketchDialog onAdd={(file) => attach.addImages([file])} onClose={() => setSketching(false)} />}
       {finding && session && (

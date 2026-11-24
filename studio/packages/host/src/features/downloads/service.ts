@@ -25,7 +25,7 @@ export class DownloadsFeature extends Feature {
     const c = this.config();
     if (!c.enabled) return;
     this.listener ??= new ToolDownloadServer(this.root);
-    try { await this.listener.start(c.lan); this.error = null; }
+    try { await this.listener.start(c.lan, process.env.AMO_STUDIO_TEST === "1" ? 0 : undefined); this.error = null; }
     catch (e) { this.error = String(e); this.log(`工具下载服务未启动: ${this.error}`); }
   }
   async configure(value: unknown): Promise<ToolDownloadsState> {

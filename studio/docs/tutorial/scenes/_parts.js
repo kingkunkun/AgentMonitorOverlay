@@ -4,7 +4,7 @@
   const T = globalThis.AMO_TUTORIAL;
   const P = (T.parts = {});
 
-  T.uses("WorkStudio", "书签", "远程", "便签", "Focus", "置顶", "需要你", "看板", "画布", "搜索任务或会话", "+ 新任务", "全部任务", "专题", "项目", "Host 运行中", "设置", "+ 新专题", "+ 添加项目");
+  T.uses("WorkStudio", "书签", "远程", "便签", "Focus", "置顶", "需要你", "看板", "画布", "搜索聊天记录", "新聊天", "全部任务", "专题", "项目", "Host 运行中", "设置", "+ 新专题", "+ 添加项目");
   /** Studio 主窗口。nav / main 是里面的内容；needs: 顶栏的「需要你」先显示出来。 */
   P.studio = ({ nav, main, needs = false, scope = "", withNav = false }) => `
     <div class="s-app${withNav ? " with-nav" : ""}" data-k="app">
@@ -19,13 +19,12 @@
         <span class="s-tb s-wide" data-k="tbPin">置顶<i></i></span>
         <span class="s-wbtn s-wide">─ ☐ ✕</span>
       </div>
-      <div class="s-nav">${nav}
+      <div class="s-nav"><span class="s-btn pri" data-k="newBtn">新聊天</span>${nav}
         <div class="s-nav-foot"><span class="s-dim"><span class="s-dot run"></span> Host 运行中</span><span data-k="settings">⚙ 设置</span></div>
       </div>
       <div class="s-viewbar">
         <span class="s-tab on" data-k="tabBoard">看板</span><span class="s-tab" data-k="tabCanvas">画布</span>
-        <span class="s-sp"></span><span class="s-search">搜索任务或会话</span>
-        <span class="s-btn pri" data-k="newBtn">+ 新任务</span>
+        <span class="s-sp"></span><span class="s-search">搜索聊天记录</span>
       </div>
       <div class="s-main">${main}</div>
     </div>`;
@@ -76,10 +75,10 @@
       <div class="s-head-btns"><span class="s-btn ghost s-hide-narrow">新会话</span><span class="s-btn ghost" data-k="review">Review</span><span class="s-btn ghost s-hide-narrow">书签</span><span class="s-btn ghost s-hide-narrow">归档</span><span class="s-btn ghost">⋯</span></div>
     </div>`;
 
-  T.uses("继续推进这个会话，回车发送，Shift+回车换行，输入 / 看命令", "每次询问");
+  T.uses("和 WorkStudio 一起工作", "每次询问");
   /** 会话的输入框（task/ThreadParts.tsx 的占位文字）。 */
   P.composer = (k = "input") => `
-    <div class="s-input"><div class="s-text" data-k="${k}" data-ph="继续推进这个会话，回车发送，Shift+回车换行，输入 / 看命令"></div>
+    <div class="s-input"><div class="s-text" data-k="${k}" data-ph="和 WorkStudio 一起工作"></div>
       <div class="s-cbar"><span class="s-faint">⌀</span><span class="s-tile"><i></i>Claude</span><span class="s-perm"><span class="sel">每次询问</span></span><span class="s-sp"></span><span class="s-btn ghost" data-k="${k}Send">↑</span></div></div>`;
 
   T.uses("AMO 平台", "工具", "环境", "目录", "账号");

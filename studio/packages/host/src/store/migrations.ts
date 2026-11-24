@@ -395,4 +395,8 @@ export const MIGRATIONS: readonly Migration[] = [
   `
   ALTER TABLE sessions ADD COLUMN fork_of TEXT;
   `,
+  // 30: 拖拽排序 (2026-11-17): a session's place among those beside it in the list (Session.rank); NULL: never moved.
+  `
+  ALTER TABLE sessions ADD COLUMN rank REAL;
+  `,
 ];

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { standInPort } from "@amo-studio/testkit";
 import { launchStudio, screenshot } from "../support/studio.js";
 
 test("cooperation has one non-draggable scroller: wheel, scrollbar and account-management jump remain usable", async () => {
@@ -9,7 +10,8 @@ test("cooperation has one non-draggable scroller: wheel, scrollbar and account-m
     await studio.api("POST", "/api/cooperation/phone-accounts", { name: "手机测试", password: "phone-password-123" });
     await page.route("**/api/cooperation", async (route) => {
       const response = await route.fetch(); const state = await response.json();
-      state.server = { ...state.server, running: true, lan: true, port: 47950, addresses: ["http://127.0.0.1:47950", "http://169.254.10.20:47950", "http://192.168.50.20:47950", "http://172.25.10.1:47950"] };
+      const port = standInPort(response.url(), ...[studio.mock?.baseUrl, studio.claudeMock?.baseUrl].filter((url): url is string => !!url));
+      state.server = { ...state.server, running: true, lan: true, port, addresses: ["127.0.0.1", "169.254.10.20", "192.168.50.20", "172.25.10.1"].map((host) => `http://${host}:${port}`) };
       await route.fulfill({ response, json: state });
     });
     await page.getByTestId("cooperation-open").click();

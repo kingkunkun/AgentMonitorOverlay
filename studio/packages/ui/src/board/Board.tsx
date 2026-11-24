@@ -119,6 +119,7 @@ export function Board({ tasks, sessions, workspaces, topics, scope, onOpen, onMo
 
   const head = (
     <div className="board-head">
+      <ModeSwitch mode={mode} />
       <FolderBar folders={folders} total={inBoard.length} value={folder} />
       <div className="board-tools">
         {mode === "timeline" && (
@@ -142,7 +143,6 @@ export function Board({ tasks, sessions, workspaces, topics, scope, onOpen, onMo
             按专题分组
           </label>
         )}
-        <ModeSwitch mode={mode} />
       </div>
     </div>
   );

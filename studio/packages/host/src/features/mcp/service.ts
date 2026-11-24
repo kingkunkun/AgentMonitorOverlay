@@ -9,6 +9,8 @@ import {
   type McpApply,
   type McpChoices,
   type McpEntry,
+  type McpOffer,
+  type McpOfferEntry,
   type McpProjectState,
   type McpServerSpec,
   type McpServerStatusSeen,
@@ -217,6 +219,31 @@ export class McpFeature extends Feature {
     if (unknown.includes(AMO_MCP_SERVER_NAME)) throw new HostError("bad_request", `${AMO_MCP_SERVER_NAME} 每个会话都带着，不用写进 mcp`);
     if (unknown.length) throw new HostError("bad_request", `没有这个 MCP：${unknown.join("、")}。这个项目能用的：${known.join("、") || "（没有）"}`);
     return { ...(base ?? this.inherited(taskId) ?? {}), ...want };
+  }
+
+  /**
+   * 远程选 MCP (2026-11-17): what a new session on `runtime` in `workspaceId` (null: the common folder) would have — the
+   * global level, the project's, then the task's latest choices (as startSession inherits them). Codex: Studio's servers
+   * on at the global level, nothing to pick per session (perSession false).
+   */
+  offered(workspaceId: Id | null, taskId: Id | null, runtime: string): { entries: McpEntry[]; perSession: boolean } {
+    const ws = (workspaceId ? this.store.getWorkspace(workspaceId) : null) ?? null;
+    if (runtime === "codex") return { entries: this.resolve(this.candidates(null).filter((c) => c.source === "studio"), [this.global().on ?? {}]), perSession: false };
+    return { entries: this.resolve(this.candidates(ws), [this.global().on ?? {}, ws ? this.projectChoices(ws.id) : {}, this.inherited(taskId) ?? {}]), perSession: true };
+  }
+
+  /**
+   * 新会话 / 新任务 (2026-11-17): what a new session of `profileId` in `workspaceId` (null: the common folder) would have, as
+   * the picker shows it (offerEntries: no command, address or key) — the same list a paired device is given.
+   */
+  offer(workspaceId: Id | null, taskId: Id | null, profileId: Id): McpOffer {
+    const list = this.offered(workspaceId ?? this.host.commonWorkspace().id, taskId, this.requireProfile(profileId).runtime);
+    return { entries: offerEntries(list.entries), perSession: list.perSession };
+  }
+
+  /** The names a session in `workspaceId` may turn on or off (another computer's choices are checked against them, 2026-11-17). */
+  names(workspaceId: Id | null): string[] {
+    return this.candidates((workspaceId ? this.store.getWorkspace(workspaceId) : null) ?? null).map((c) => c.name);
   }
 
   // ---- for the runtimes ---------------------------------------------------------------------------------------------
@@ -505,4 +532,12 @@ function spec(v: unknown): McpServerSpec {
   const parsed = parseSpec(v);
   if (!parsed) throw new HostError("bad_request", "MCP 配置不对：本地程序要有 command，远程的要有 url（type 为 http 或 sse）");
   return parsed;
+}
+
+/**
+ * A list of servers as a picker shows it (2026-11-17; 远程选 MCP sends it to paired devices): name, where it comes from, the
+ * note and whether it is on — never the command, address, env, headers or status.
+ */
+export function offerEntries(entries: readonly McpEntry[]): McpOfferEntry[] {
+  return entries.map((e) => ({ name: e.name, source: e.source, ...(e.note ? { note: e.note } : {}), on: e.on, inherited: e.inherited, ...(e.choice !== undefined ? { choice: e.choice } : {}) }));
 }

@@ -49,7 +49,7 @@ export async function launchStudio(
      * 看板的视图 (2026-11-23): people start on the timeline; most board specs drag between columns, so tests start on
      * 分列 unless a spec checks the timeline.
      */
-    boardMode?: "timeline" | "columns";
+    boardMode?: "timeline" | "columns" | "default";
     /** Focus starts folded to its tile, as for people (2026-11-10); the specs that work in its panel start it open. */
     focusCollapsed?: boolean;
   } = {},
@@ -104,8 +104,10 @@ export async function launchStudio(
       window.dispatchEvent(new CustomEvent("amo:transcript-view", { detail: view }));
       // The task page's right column is off for people by default; most specs work in it, so it starts on here.
       localStorage.setItem("amo.taskSidebar", sidebar ? "1" : "0");
-      localStorage.setItem("amo.boardMode", board);
-      window.dispatchEvent(new Event("amo:pref:amo.boardMode"));
+      if (board !== "default") {
+        localStorage.setItem("amo.boardMode", board);
+        window.dispatchEvent(new Event("amo:pref:amo.boardMode"));
+      }
       localStorage.setItem("amo.focusCollapsed", focusCollapsed ? "1" : "0");
     },
     { view: options.transcriptView ?? "verbose", sidebar: options.taskSidebar ?? true, board: options.boardMode ?? "columns", focusCollapsed: options.focusCollapsed ?? false },
@@ -163,7 +165,7 @@ export async function launchFirstRun(portableDir: string): Promise<{ app: Electr
 }
 
 /** Which window: the workbench, the Focus window (#focus), the scratchpad window (#scratchpad), a Git Review window (#review?…), the file marks window (#marks…) or a viewer window (#viewer?…). */
-export type WindowKind = "main" | "focus" | "scratchpad" | "review" | "marks" | "viewer" | "canvas-mini" | "plan";
+export type WindowKind = "main" | "focus" | "scratchpad" | "review" | "marks" | "viewer" | "canvas-mini" | "plan" | "round";
 
 /** Saves a PNG of the (hidden) main window, or another window, to studio/screenshots/<stage>/<name>.png. */
 /** 分支 (2026-11-10): from ⋯ at the latest turn, with the dialog as it opens (a fork under the session). */
@@ -189,7 +191,7 @@ export async function screenshot(app: ElectronApplication, stage: string, name: 
   // Several windows of a kind (viewers): the one showing `page`.
   const exact = page && which !== "main" ? page.url() : null;
   const base64 = await app.evaluate(async ({ BrowserWindow }, [kind, url]) => {
-    const kindOf = (url: string) => (url.endsWith("#focus") ? "focus" : url.endsWith("#scratchpad") ? "scratchpad" : url.includes("#review") ? "review" : url.includes("#marks") ? "marks" : url.includes("#viewer") ? "viewer" : url.includes("#canvas-mini") ? "canvas-mini" : url.includes("#plan") ? "plan" : "main");
+    const kindOf = (url: string) => (url.endsWith("#focus") ? "focus" : url.endsWith("#scratchpad") ? "scratchpad" : url.includes("#review") ? "review" : url.includes("#marks") ? "marks" : url.includes("#viewer") ? "viewer" : url.includes("#canvas-mini") ? "canvas-mini" : url.includes("#plan") ? "plan" : url.includes("#round") ? "round" : "main");
     const all = BrowserWindow.getAllWindows();
     const win = (url && all.find((w) => w.webContents.getURL() === url)) || all.find((w) => kindOf(w.webContents.getURL()) === kind)!;
     return (await win.webContents.capturePage()).toPNG().toString("base64");
@@ -203,7 +205,7 @@ export async function screenshot(app: ElectronApplication, stage: string, name: 
 /** Window state used to assert the red line: test windows never take focus and stay off every display. */
 export function windowState(app: ElectronApplication, which: WindowKind = "main") {
   return app.evaluate(({ BrowserWindow, screen }, kind) => {
-    const kindOf = (url: string) => (url.endsWith("#focus") ? "focus" : url.endsWith("#scratchpad") ? "scratchpad" : url.includes("#review") ? "review" : url.includes("#marks") ? "marks" : url.includes("#viewer") ? "viewer" : url.includes("#canvas-mini") ? "canvas-mini" : url.includes("#plan") ? "plan" : "main");
+    const kindOf = (url: string) => (url.endsWith("#focus") ? "focus" : url.endsWith("#scratchpad") ? "scratchpad" : url.includes("#review") ? "review" : url.includes("#marks") ? "marks" : url.includes("#viewer") ? "viewer" : url.includes("#canvas-mini") ? "canvas-mini" : url.includes("#plan") ? "plan" : url.includes("#round") ? "round" : "main");
     const win = BrowserWindow.getAllWindows().find((w) => kindOf(w.webContents.getURL()) === kind)!;
     const b = win.getBounds();
     const onScreen = screen.getAllDisplays().some((d) => {

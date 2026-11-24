@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { launchStudio, screenshot } from "../support/studio.js";
 
 test("工具下载在设置中显示真实清单，默认不启动公开服务", async () => {
-  const studio = await launchStudio({ env: { AMO_STUDIO_PORT: "47977", AMO_STUDIO_PHONE_PORT: "47978" } });
+  const studio = await launchStudio();
   try {
     const root = join(studio.dataDir, "tool-downloads"), data = Buffer.from("fixture-apk");
     const sha256 = createHash("sha256").update(data).digest("hex");

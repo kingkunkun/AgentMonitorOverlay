@@ -12,11 +12,12 @@ import { tmpdir } from "node:os";
 import { platformDataDir, removeStudioRunning, resolveDataDir, writeStudioRunning } from "./paths.js";
 import { runSetup, SETUP_TEMP_PROFILE } from "./setup.js";
 import { installNotesLink } from "./notes-link.js";
-import { findRelayExe, openInRelay } from "./relay-link.js";
+import { openInRelay } from "./relay-link.js";
 import { installCopyImage, installSaveFile, installWindowControls, sendMaximized, setupReviewWindows, setupViewerWindows } from "@amo-studio/reviewer";
 import { TrayMenu, type MenuEntry } from "@amo-studio/traymenu";
 import { installCanvasWindow } from "./canvas-window.js";
 import { installPlanWindows } from "./plan-window.js";
+import { installRoundWindows } from "./round-window.js";
 import { ResizeTrace } from "./resize-trace.js";
 import { setupBotFlight } from "./bot-window.js";
 import { setupBreakReminder } from "./break-reminder.js";
@@ -37,10 +38,10 @@ import { installFolderIpc } from "./folders.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const studioRoot = resolve(here, "..", "..", "..");
-// A locally compiled client, or a portable sibling; the platform's install still takes precedence.
-const localRelayExe = app.isPackaged ? process.execPath : join(studioRoot, "release", "workstudio-integrated", "WorkStudio", "WorkStudio.exe");
-const bundledRelay = app.isPackaged && existsSync(join(studioRoot, "packages", "relay-app", "dist", "main.js"));
-const relayLaunch = { localExe: bundledRelay ? process.execPath : localRelayExe, localArgs: ["--amo-app=relay"] };
+// Use this build's own relay shell and content. An exe from an older running.json may open Studio instead.
+const relayDir = join(studioRoot, "packages", "relay-app");
+const relayReady = () => existsSync(join(relayDir, "dist", "main.js")) && existsSync(join(relayDir, "client", "index.html"));
+const relayLaunch = () => ({ localExe: relayReady() ? process.execPath : undefined, localArgs: app.isPackaged ? ["--amo-app=relay"] : [relayDir, "--workstudio-bundled-relay"], localOnly: true });
 const testMode = process.env.AMO_STUDIO_TEST === "1";
 /** Window and taskbar icon (the exe's own icon is set when packaging). */
 const APP_ICON = join(here, "..", "assets", "icon.png");
@@ -535,8 +536,8 @@ if (!app.requestSingleInstanceLock() || quitAsked(process.argv)) {
     resizeFocus?.(phase);
   });
   // 在中转里打开 (2026-11-05, relay-link.ts): the AMO 中转 client shows a thread a session sent. Tests only record it.
-  ipcMain.handle("amo:relay-available", () => testMode || findRelayExe(process.env, relayLaunch.localExe) !== null);
-  ipcMain.handle("amo:relay-open", (_event, threadId: unknown) => (threadId === undefined || typeof threadId === "string") && openInRelay(threadId, { testMode, ...relayLaunch }));
+  ipcMain.handle("amo:relay-available", () => testMode || relayReady());
+  ipcMain.handle("amo:relay-open", (_event, threadId: unknown) => (threadId === undefined || typeof threadId === "string") && openInRelay(threadId, { testMode, ...relayLaunch() }));
   // "在工作台打开" from Focus: the workbench shows that task and session (and comes forward, except in tests).
   ipcMain.handle("amo:open-in-workbench", (_event, target: unknown) => {
     const t = target as { taskId?: unknown; sessionId?: unknown; show?: unknown; passage?: unknown; topicId?: unknown; calloutId?: unknown; settings?: unknown } | null;
@@ -700,6 +701,8 @@ if (!app.requestSingleInstanceLock() || quitAsked(process.argv)) {
       installCanvasWindow({ url: process.env.AMO_STUDIO_DEV_URL ?? `${host.url}/`, preload: join(here, "preload.cjs"), icon: APP_ICON, testMode, mainWindow });
       // 计划窗口 (2026-11-09): a plan Claude asks to have reviewed, one window per session.
       installPlanWindows({ url: process.env.AMO_STUDIO_DEV_URL ?? `${host.url}/`, preload: join(here, "preload.cjs"), icon: APP_ICON, testMode, mainWindow });
+      // 会话弹窗 (2026-11-16): a card of 脉络's building, its conversation in a window of its own.
+      installRoundWindows({ url: process.env.AMO_STUDIO_DEV_URL ?? `${host.url}/`, preload: join(here, "preload.cjs"), icon: APP_ICON, testMode, mainWindow, prefs });
       if (!testMode) {
         // Displays unplugged, rearranged or rescaled: keep both windows reachable.
         const refit = () => {

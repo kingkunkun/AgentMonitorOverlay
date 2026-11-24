@@ -205,6 +205,12 @@ export interface Session {
    * null: no turn has ended yet. Absent: from a Host before it — readers take updatedAt.
    */
   endedAt?: Timestamp | null;
+  /**
+   * 拖拽排序 (2026-11-17, the user: task 里的 session list 和 session 下的子 session list，允许拖拽改排序): its place among
+   * the sessions it stands beside in the list (the task's main sessions, or those under one session); smaller first.
+   * Absent: never moved — after the ranked ones, by createdAt, so a new session goes to the end as before.
+   */
+  rank?: number;
 }
 
 /** The statuses a session is in once a turn has ended. */
@@ -353,6 +359,33 @@ export interface MessageImage {
 export type UserDelivery = "waiting" | "unsent" | "held";
 
 /**
+ * Who put a message into a session when it was not the person (交流框架, 2026-11-15, plans/collab-framework.md — the
+ * user: 子会话和主会话之间的往来现在都以用户气泡铺在对话里，影响人的判断). These went in as plain text, told apart only by a
+ * 【…】 line the model reads; kept on the row, the conversation shows them as what they are (an agent's or a colleague's
+ * words, folded) and the session's 事项 can be listed without reading the text. `start`: the first message of a session
+ * another one opened (session_start); `report`: that session's turn ended, told to the one that opened it; `send`:
+ * session_send; `team`: replies from AMO 中转 (team_ask); `relay`: 主控传话 (task_message); `mail`: a 留言 the person
+ * forwarded; `duty`: a 值守 item going on in its session; `cowork` (协作, 2026-11-23, plans/cowork.md): someone in a 协作 the
+ * session was brought into @-ed it or answered a 子会话 it started, or its owner handed it a 子会话 (转到我的会话). Rows
+ * from before have none: `messageOrigin` (origin.ts) reads the 【…】 line instead.
+ */
+export type MessageOriginKind = "start" | "report" | "send" | "team" | "relay" | "mail" | "duty" | "cowork";
+
+export interface MessageOrigin {
+  kind: MessageOriginKind;
+  /** Who said it, for the row's head: a session's or a task's title, the people who answered (中转), a 值守 item's title. */
+  from: string;
+  /** The session it came from, when it is one of this Host's. */
+  sessionId?: Id;
+  /** `team`: the 中转 sessions whose replies it brings. */
+  threadIds?: string[];
+  /** `report`: how the turn it tells of ended. */
+  state?: "done" | "stopped" | "failed";
+  /** `cowork`: the 协作 and where in it (「在群聊里 @ 了你」「回复了子会话「X」」…); its thread is the first of `threadIds`. */
+  cowork?: { id: string; title: string; where: string };
+}
+
+/**
  * What a notice offers to do (2026-10-23). `folder-access`: DSH's write sandbox cannot be set up on the session's
  * folder for want of the person's full control of it; POST /api/sessions/:id/folder-access gives it. `state` follows
  * the fix (the row is updated in place).
@@ -396,9 +429,10 @@ export type SessionItem =
    * step); `unsent` — its process went before it was read (it can be sent again). Absent: it reached the model.
    * `withPerson` (2026-11-08): a held one that went in right behind the person's message that ended a pause (inbox.ts,
    * resume) — the model reads it next by itself, so the row says so and offers no 立即发送 (which would cut off the
-   * person's own turn; the user: 「留言的立即发送 触发了 打断重发」).
+   * person's own turn; the user: 「留言的立即发送 触发了 打断重发」). `origin` (2026-11-15): not the person's — who put it
+   * there (see MessageOrigin).
    */
-  | (ItemBase & { type: "user"; text: string; images?: MessageImage[]; delivery?: UserDelivery; withPerson?: true })
+  | (ItemBase & { type: "user"; text: string; images?: MessageImage[]; delivery?: UserDelivery; withPerson?: true; origin?: MessageOrigin })
   | (ItemBase & { type: "agent"; markdown: string; streaming: boolean })
   /** The model's thinking before or between steps. */
   | (ItemBase & { type: "reasoning"; text: string; streaming: boolean; durationMs?: number })
@@ -601,6 +635,59 @@ export interface TeamThread {
   deliveredAt: number | null;
   /** 已接手，不用回复 (2026-11-05): when `to` took it on without replying (it is done then); null/absent otherwise. */
   takenAt?: number | null;
+}
+
+/**
+ * 协作 (cowork, 2026-11-23, plans/cowork.md): one of this computer's sessions brought into a 协作 on AMO 中转, as the team
+ * server lists it, with what this Host last reported for it: idle 待命, busy 处理中, owner 等主人, offline 不在线 (the
+ * session is gone or archived).
+ */
+export interface CoworkJoin {
+  coworkId: string;
+  coworkTitle: string;
+  sessionId: Id;
+  /** Its mark on 中转 (`studio:<设备号>:<会话 id>`). */
+  mark: string;
+  /** 会话名 as shown there; `name` is 「<主人> 的 AI · <label>」. */
+  label: string;
+  name: string;
+  state: "idle" | "busy" | "owner" | "offline";
+  /** Messages for it still waiting on 中转 (排队中). */
+  queued: number;
+  /** Its drafts waiting for the person (「AI 发起 @ 和提问」 off): sent or dropped in AMO 中转. */
+  drafts: number;
+  /** The 协作 was ended (结束). */
+  ended: boolean;
+  joinedAt: number;
+}
+
+/** A 协作 the person is in, to bring a session into (拉进协作). */
+export interface CoworkChoice {
+  id: string;
+  title: string;
+  goal: string;
+  repo: string;
+  branch: string;
+  members: string[];
+  /** Its agents' names (「X 的 AI · 会话名」). */
+  agents: string[];
+  ended: boolean;
+  updatedAt: number;
+}
+
+/**
+ * 转到我的会话 (2026-11-23): the person, in AMO 中转, handed a 子会话 of a 协作 to Studio on this computer; the workbench asks
+ * which session takes it (or a new one). Kept until taken or put away, or for an hour.
+ */
+export interface CoworkHandoff {
+  threadId: string;
+  coworkId: string;
+  coworkTitle: string;
+  /** The 子会话's title, who asked and whom it waits on. */
+  title: string;
+  from: string;
+  to: string;
+  at: Timestamp;
 }
 export const TOPIC_DOC_BODY_MAX = 50_000;
 

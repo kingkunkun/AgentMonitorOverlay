@@ -45,7 +45,7 @@
     <div class="iw-top"><span class="iw-logo"></span><b class="iw-brand">WorkStudio</b><span class="s-sp"></span>
       <span class="iw-tb">书签</span><span class="iw-tb">远程</span><span class="iw-tb">便签</span><span class="iw-tb">Focus<i></i></span><span class="iw-wb">─ ☐ ✕</span></div>
     <div class="iw-nav">${nav}${usage ? S.usage : '<div class="iw-host"><span class="s-dot run"></span> Host 运行中</div>'}<div class="iw-set">⚙ 设置</div></div>
-    ${view ? `<div class="iw-view"><span class="s-tab${canvas ? "" : " on"}" data-k="tabBoard">看板</span><span class="s-tab${canvas ? " on" : ""}" data-k="tabCanvas">画布</span><span class="s-sp"></span><span class="iw-search">搜索任务或会话</span><span class="s-btn pri iw-new-btn" data-k="newBtn">+ 新任务</span></div>` : ""}
+    ${view ? `<div class="iw-view"><span class="s-tab${canvas ? "" : " on"}" data-k="tabBoard">看板</span><span class="s-tab${canvas ? " on" : ""}" data-k="tabCanvas">画布</span><span class="s-sp"></span><span class="iw-search">搜索聊天记录</span><span class="s-btn pri iw-new-btn" data-k="newBtn">新聊天</span></div>` : ""}
     ${main}`;
 
   // 翻页动画共用的动作。

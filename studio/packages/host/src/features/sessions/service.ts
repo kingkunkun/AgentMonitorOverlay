@@ -1,12 +1,16 @@
 import { boundedChatContext, composeChatContext, splitChatContext, splitRoleUpdate, type ChatContext, type ChatContextMessage } from "@amo-studio/protocol";
 import { sessionMoving } from "../../core/shared.js";
 import { resolve } from "node:path";
-import { inTurn, isCommon, type ModelOption, type SubsessionNote, type SubsessionSetup, type Workspace, asyncAnswerText, composeAnnotationRefs, composeRoleUpdate, formContent, type Attachment, type SessionOptions, type ProfileChoices, type ApprovalDecision, type ForkRequest, type ForkTurn, type Id, type QuestionAnswer, type QuestionReply, type Session, type SessionItem, type TerminalAttach } from "@amo-studio/protocol";
+import { experimentalEnabled, inTurn, isCommon, type ModelOption, type SubsessionNote, type SubsessionSetup, type Workspace, asyncAnswerText, composeAnnotationRefs, composeRoleUpdate, formContent, type Attachment, type SessionOptions, type ProfileChoices, type ApprovalDecision, type ForkRequest, type ForkTurn, type Id, type QuestionAnswer, type QuestionReply, type Session, type SessionItem, type TerminalAttach } from "@amo-studio/protocol";
 import type { SendMode, SendOptions } from "../../runtime/runtime.js";
 import type { TerminalHandle } from "../../terminal/launcher.js";
 import { HostError, isRemoteCopy, optionValue, boundedText, TERMINAL_TOKEN_ENV } from "../../core/shared.js";
 import { Feature } from "../../core/feature.js";
 import { roleUpdate } from "../../core/role.js";
+import { tracksHint } from "../../core/tracks.js";
+import { whiteboardHint, readWhiteboard } from "../../core/whiteboard.js";
+import { readReviewProgress, reviewProgressHint } from "../../core/reviewprogress.js";
+import { coworkHint } from "../../core/cowork.js";
 import { fillDefaults, readModelPrefs } from "../../core/model-prefs.js";
 import { SessionInbox } from "./inbox.js";
 import { readSetups, rememberSetups } from "./setups.js";
@@ -155,7 +159,32 @@ export class SessionsFeature extends Feature<"attachments" | "collab" | "config"
     const carriesContext = !!continuation && !continuation.sent;
     if (carriesContext) this.sendingContext.add(sessionId);
     const outbound = carriesContext ? composeChatContext(text, continuation!.context) : text;
-    const update = this.roleUpdate(sessionId);
+    const role = this.roleUpdate(sessionId);
+    // 脉络会话 (2026-11-15): its AI is asked to title its rounds, once after it was turned on and after each compaction.
+    const tracks = experimentalEnabled(this.f.config.experimentalFeatures(), "tracks") ? tracksHint(this.store, sessionId) : null;
+    // 白板 (2026-11-16): its AI is told what the board is (once, and after each compaction), and the notes the person pinned since.
+    const board = experimentalEnabled(this.f.config.experimentalFeatures(), "whiteboard") ? whiteboardHint(this.store, sessionId) : null;
+    // 审阅进度 (2026-11-16): the blocks the person newly marked 「!」, and how far they read the last reply when only partly.
+    const reading = experimentalEnabled(this.f.config.experimentalFeatures(), "review-progress") ? reviewProgressHint(this.store, sessionId) : null;
+    // 协作 (2026-11-23): that it was brought into one, and 「协作里有 N 条新的」 (core/cowork.ts).
+    const cowork = coworkHint(this.store, sessionId);
+    const update = {
+      lines: [...role.lines, ...(tracks?.lines ?? []), ...(board?.lines ?? []), ...(reading?.lines ?? []), ...(cowork?.lines ?? [])],
+      told: () => {
+        role.told();
+        tracks?.told();
+        cowork?.told();
+        if (reading?.lines.length) {
+          reading.told();
+          this.publish({ type: "reviewprogress.changed", sessionId, replies: readReviewProgress(this.store, sessionId).replies });
+        }
+        if (!board?.lines.length) return;
+        board.told();
+        // The notes are 「已发给 AI」 now: the workbench reads the board again.
+        const now = readWhiteboard(this.store, sessionId);
+        this.publish({ type: "whiteboard.changed", sessionId, on: now.on, rev: now.rev, seenRev: now.seenRev });
+      },
+    };
     // 2026-11-05: a message the person sent right after 停止 (a DSH session) never came back and left no trace; the
     // composer had already cleared it. One that fails, or is still on its way after SLOW_SEND_MS, is written to host.log.
     const started = Date.now();
@@ -240,6 +269,11 @@ export class SessionsFeature extends Feature<"attachments" | "collab" | "config"
     } catch {
       return none;
     }
+  }
+
+  /** 测试功能 脉络 → 「打字时不插队」 is on (2026-11-15, the user: 先去掉，等我体验一段时间 — off by default; inbox.ts, typed). */
+  typingHoldOn(): boolean {
+    return experimentalEnabled(this.f.config.experimentalFeatures(), "typing-hold");
   }
 
   /** 停止, the person's (here or from another device): the inbox holds what comes until they write again (2026-11-04, the user). */
@@ -509,7 +543,8 @@ export class SessionsFeature extends Feature<"attachments" | "collab" | "config"
         else if (fast && setup?.fast === undefined && agentFast === true) throw new HostError("bad_request", `${this.requireProfile(profileId).label}（${runs?.label ?? picked.model ?? "默认型号"}）没有 Fast：去掉 fast 再开`);
       }
     }
-    const mcp = this.f.mcp.chooseFor(workspace.id, task.id, this.requireProfile(profileId).runtime, input.mcp);
+    // Checked alone: startSession puts the task's latest choices under it.
+    const mcp = this.f.mcp.chooseFor(workspace.id, task.id, this.requireProfile(profileId).runtime, input.mcp, {});
     if (mcp) options = { ...options, mcp };
     const elsewhere = workspace.id !== task.workspaceId;
     const message = [
@@ -589,7 +624,7 @@ export class SessionsFeature extends Feature<"attachments" | "collab" | "config"
     if (!s || s.startedBy !== from.id || s.taskId !== from.taskId) throw new HostError("bad_request", `会话 ${input.sessionId} 不是你用 session_start 开的，不能往里发：只能发给你自己开的会话（人开的、别的会话开的、forPerson 开给人的都不行）。`);
     if (s.archivedAt) throw new HostError("bad_request", `会话 ${s.id} 已经归档了：要接着做就用 session_start 开个新的。`);
     const text = boundedText(input.text, "text", 20_000);
-    const { delivered, waiting } = await this.inbox.put(s.id, `【开启你的会话「${from.title || "未命名会话"}」（${from.id}）发来】\n${text}`);
+    const { delivered, waiting } = await this.inbox.put(s.id, `【开启你的会话「${from.title || "未命名会话"}」（${from.id}）发来】\n${text}`, { kind: "send", from: from.title || "未命名会话", sessionId: from.id });
     return { session: this.requireSession(s.id), delivered, waiting };
   }
 
@@ -760,7 +795,7 @@ export class SessionsFeature extends Feature<"attachments" | "collab" | "config"
       text = mailed ? `【你开的会话${name}这一轮做完了，它已经用留言把结果发给你】` : `【你开的会话${name}这一轮做完了】\n${excerpt || "（它没有回复文字）"}`;
     }
     // Into the caller's inbox (2026-11-04): it goes in once the caller is free, rather than into its running turn.
-    this.inbox.put(to, text).catch(() => {
+    this.inbox.put(to, text, { kind: "report", from: s.title || "未命名会话", sessionId: s.id, state: turn.state === "interrupted" ? "stopped" : turn.state === "failed" ? "failed" : "done" }).catch(() => {
       // The caller is gone or archived: it can still read it as mail.
       try {
         this.f.collab.sendMail(s.id, { kind: "session", sessionId: to }, text);

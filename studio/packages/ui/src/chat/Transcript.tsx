@@ -1,6 +1,7 @@
 import { createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Annotation, ApprovalDecision, Session, SessionItem, TurnUsage } from "@amo-studio/protocol";
-import { splitChatContext, splitAnnotationRefs, splitRoleUpdate } from "@amo-studio/protocol";
+import { inTurn, messageOrigin, splitChatContext, splitAnnotationRefs, splitRoleUpdate } from "@amo-studio/protocol";
+import { OriginMessage } from "./OriginMessage.js";
 import { Markdown } from "../lib/markdown.js";
 import { copyText } from "../host/client.js";
 import { IconCheck, IconChevronDown, IconChevronRight, IconCopy, IconEdit, IconFork, IconTerminal, IconSparkle } from "./icons.js";
@@ -23,6 +24,8 @@ import { QuestionRecord } from "./questions/QuestionRecord.js";
 import { CommandRecord, CompactionRow, NoticeRow } from "./cli/CliRows.js";
 import { RowBoundary } from "../lib/ErrorBoundary.js";
 import { pinScroll } from "../lib/scrollPin.js";
+import { ReadMarks, ReviewContext, type ReviewView } from "./ReviewProgress.js";
+import { reviewKey } from "./reviewLogic.js";
 
 // The conversation, one turn after another (DSH ui-chat): the person's bubble, the work (folded once the turn is
 // done), the answer, and a footer with copy, time and token usage. A running turn ends with a live status line.
@@ -63,12 +66,14 @@ interface TranscriptProps {
   forkOff?: string;
   /** 立即发送 greyed, and why (2026-11-12): a remote task whose computer's Studio is too old to take it from this one. */
   sendNowOff?: string;
+  /** 审阅进度 (测试功能; 第二版 2026-11-16): each reply's line at its right. Absent: nothing of it is drawn. */
+  review?: ReviewView;
 }
 
 export type DeliveryAction = "now" | "resend";
 
 /** onDelivery for the person's messages, however deep in the turns they are drawn. */
-const DeliveryContext = createContext<{ onDelivery: TranscriptProps["onDelivery"]; givingWay: boolean; waitsForSubagents: boolean; sendNowOff?: string }>({ onDelivery: undefined, givingWay: false, waitsForSubagents: false });
+const DeliveryContext = createContext<{ onDelivery: TranscriptProps["onDelivery"]; givingWay: boolean; waitsForSubagents: boolean; sendNowOff?: string; idle?: boolean }>({ onDelivery: undefined, givingWay: false, waitsForSubagents: false });
 /**
  * onFork for each turn's footer. `claude`: a Claude turn from before fork points (none recorded) can only be forked
  * when it is the latest (plans/done/session-fork.md), so the older ones show no button.
@@ -88,10 +93,13 @@ function TranscriptBody(props: TranscriptProps) {
   );
 }
 
-function TranscriptInner({ session, items, annotations, model, busy, view, onApprove, onJump, keepTurn, onDelivery, givingWay = false, waitsForSubagents = false, sendNowOff }: TranscriptProps) {
-  const delivery = useMemo(() => ({ onDelivery, givingWay, waitsForSubagents, ...(sendNowOff ? { sendNowOff } : {}) }), [onDelivery, givingWay, waitsForSubagents, sendNowOff]);
+function TranscriptInner({ session, items, annotations, model, busy, view, onApprove, onJump, keepTurn, onDelivery, givingWay = false, waitsForSubagents = false, sendNowOff, review }: TranscriptProps) {
+  // No turn runs (2026-11-15): a held message then waits for the person — they stopped the session or are writing in it.
+  const idle = !!session && !inTurn(session.status);
+  const delivery = useMemo(() => ({ onDelivery, givingWay, waitsForSubagents, idle, ...(sendNowOff ? { sendNowOff } : {}) }), [onDelivery, givingWay, waitsForSubagents, idle, sendNowOff]);
   const sessionRunning = session?.status === "running" || session?.status === "awaiting-approval" || session?.status === "awaiting-answer";
   const segments = useMemo(() => buildTranscript(items, sessionRunning), [items, sessionRunning]);
+  const reviewCtx = review ?? null;
   // Turns the person unfolded or folded, against how finished turns start: folded, except in 详细 (2026-11-04, the
   // user: the replies in between and the work's headings are what is read there) — 完全展开 does not fold at all.
   const [toggled, setToggled] = useState<ReadonlySet<string>>(new Set());
@@ -156,6 +164,7 @@ function TranscriptInner({ session, items, annotations, model, busy, view, onApp
 
   return (
     <DeliveryContext.Provider value={delivery}>
+    <ReviewContext.Provider value={reviewCtx}>
       {start > 0 && (
         <button ref={earlierRef} type="button" className="turn-earlier" data-testid="turn-earlier" onClick={showEarlier}>
           显示更早的对话（还有 {start} 轮）
@@ -193,6 +202,7 @@ function TranscriptInner({ session, items, annotations, model, busy, view, onApp
           awaiting={session?.status === "awaiting-answer" ? "等你回答" : session?.status === "awaiting-approval" ? "等待你的确认" : null}
         />
       )}
+    </ReviewContext.Provider>
     </DeliveryContext.Provider>
   );
 }
@@ -240,6 +250,8 @@ function TurnView({
   const folded = canFold && !unfolded;
   const finished = !seg.running;
   const flat = view === "verbose" || (view === "detailed" && seg.running);
+  // 审阅进度: a finished round's reply has the line at its right (ReadMarks).
+  const reading = !!useContext(ReviewContext) && reviewKey(seg) !== null;
   return (
     <section className="turn" data-testid="turn" data-key={seg.key} data-recent={recent || undefined} data-running={seg.running || undefined} data-folded={folded || undefined}>
       {seg.inputs.map((item) => (item.type === "user" ? <UserBubble key={item.id} item={item} /> : null))}
@@ -274,7 +286,7 @@ function TurnView({
             <CompactionRow key={row.key} item={row.item} />
           ) : null,
         )}
-      {seg.answer && <AgentReply item={seg.answer} highlights={highlights(seg.answer.id)} />}
+      {seg.answer && <AgentReply item={seg.answer} highlights={highlights(seg.answer.id)} reading={reading} />}
       {finished && <TurnChanges items={segmentMembers(seg)} />}
       {seg.tail.map((item) => (
         <RowBoundary key={item.id}>
@@ -361,15 +373,24 @@ function StandaloneItem({ item, busy, highlights, onApprove }: { item: SessionIt
 function UserBubble({ item }: { item: Extract<SessionItem, { type: "user" }> }) {
   const { text: sent, update } = splitRoleUpdate(item.text);
   const carried = splitChatContext(sent);
+  // From an agent or from Studio, not the person (2026-11-15, 交流框架): a folded row instead of their bubble.
+  const from = messageOrigin({ text: carried.text, origin: item.origin });
+  if (from)
+    return (
+      <OriginMessage itemId={item.id} origin={from.origin} body={from.body}>
+        {item.delivery && <DeliveryLine itemId={item.id} delivery={item.delivery} withPerson={item.withPerson === true} />}
+      </OriginMessage>
+    );
   const { text: own, refs: annotations } = splitAnnotationRefs(carried.text);
   const { text: withRefs, refs } = splitFileRefItems(own);
   // Its @ names (快速提交 among them) coloured as in the composer; what the message told the model of them on hover.
   const { text, names, commit, blocks } = splitMentionRefs(withRefs);
   return (
-    <div className="msg-user-row">
+    // data-row-id: a round of 脉络的楼 starts at its message; picking the round's card scrolls here (2026-11-16, 会话弹窗).
+    <div className="msg-user-row" data-row-id={item.id}>
       <div className="msg-user" data-testid="msg-user">
         {carried.context && <details className="carried-context" data-testid="carried-context"><summary>已携带此前聊天文本{carried.context.truncated ? "（最近部分）" : ""} · {carried.context.messages.length} 条</summary><div>{carried.context.messages.map((m, i) => <section key={i}><b>{m.role === "user" ? "你" : "AI"}</b><pre>{m.text}</pre></section>)}</div></details>}
-        {item.images?.length ? <MessageImages images={item.images} /> : null}
+        {item.images?.length ? <MessageImages images={item.images} itemId={item.id} /> : null}
         {annotations.length > 0 && (
           <span className="msg-anno-refs">
             {annotations.map((r) => (
@@ -416,12 +437,14 @@ function UserBubble({ item }: { item: Extract<SessionItem, { type: "user" }> }) 
  * the turn's end; Codex: at its next step), or one whose process went before reading it.
  */
 function DeliveryLine({ itemId, delivery, withPerson }: { itemId: string; delivery: NonNullable<Extract<SessionItem, { type: "user" }>["delivery"]>; withPerson: boolean }) {
-  const { onDelivery, givingWay, waitsForSubagents, sendNowOff } = useContext(DeliveryContext);
+  const { onDelivery, givingWay, waitsForSubagents, sendNowOff, idle } = useContext(DeliveryContext);
   const [asked, setAsked] = useState(false);
   useEffect(() => setAsked(false), [delivery]);
   // `held` (2026-11-04): from an agent or from Studio (中转回复, 值守, 传话…), in the session's inbox until its turn is over;
   // 立即发送 puts it in now, as a waiting message's does.
   const held = delivery === "held";
+  // 打字时不插队 (2026-11-15): held though no turn runs — the person stopped the session, or is writing in its composer.
+  const forPerson = held && !!idle;
   const waiting = delivery === "waiting" || held;
   // 问题 #16: once 立即发送 is under way (this button, or Ctrl+Enter in the composer) the row says so until it is read.
   const interrupting = delivery === "waiting" && (asked || givingWay);
@@ -433,7 +456,9 @@ function DeliveryLine({ itemId, delivery, withPerson }: { itemId: string; delive
     ? "正在让模型停下当前这一步，停下后马上读到这条（它手上的命令或输出可能要几秒才收得住）"
     : behindPerson
       ? "你停下会话期间转来的消息，已经随你刚发的消息一起送进去了（排在它后面），模型接下来会读到，不用再点"
-      : held
+      : forPerson
+        ? "这条先不送进去，等你发出下一条消息时排在它后面一起送：你停下了这个会话；或者开着测试功能里脉络的「打字时不插队」、最近 5 分钟在它的输入框里写过东西（那样的话输入框 5 分钟没动也会自己送进去）。想现在送就点「立即发送」"
+        : held
         ? "这条是 AMO 替别处转来的（中转回复、值守、传话、子会话的回报…）：等会话这一轮做完再送进去，不打断它；Studio 重启了也会接着送"
         : forSubagents
           ? "DSH 要等它开的子 agent 都跑完，这一轮才结束，这条要等那时才送到。「立即发送」会打断这一轮。不想等的话，让它用 AMO 的子会话（session_start）开子 agent"
@@ -443,7 +468,7 @@ function DeliveryLine({ itemId, delivery, withPerson }: { itemId: string; delive
   return (
     <div className={`msg-delivery ${delivery}${interrupting ? " interrupting" : ""}`} data-testid="msg-delivery" data-delivery={interrupting ? "interrupting" : behindPerson ? "behind-person" : delivery}>
       <span className="msg-delivery-state" title={title}>
-        {interrupting ? "◐ 正在打断当前这一步，停下后马上发出…" : behindPerson ? "◐ 已随你刚发的消息一起送进去，模型接下来会读到" : held ? (asked ? "◐ 正在送进去…" : "◐ 等这一轮结束后送进去") : forSubagents ? "◐ 等子 agent 跑完后送到" : waiting ? "◐ 等待送达" : "! 没送到"}
+        {interrupting ? "◐ 正在打断当前这一步，停下后马上发出…" : behindPerson ? "◐ 已随你刚发的消息一起送进去，模型接下来会读到" : held ? (asked ? "◐ 正在送进去…" : forPerson ? "◐ 等你发出下一条消息时一起送进去" : "◐ 等这一轮结束后送进去") : forSubagents ? "◐ 等子 agent 跑完后送到" : waiting ? "◐ 等待送达" : "! 没送到"}
       </span>
       {onDelivery && !interrupting && !behindPerson && (
         <button
@@ -451,7 +476,7 @@ function DeliveryLine({ itemId, delivery, withPerson }: { itemId: string; delive
           className="msg-delivery-btn"
           data-testid={waiting ? "send-now" : "resend"}
           disabled={asked || (waiting && !!sendNowOff)}
-          title={waiting && sendNowOff ? sendNowOff : held ? "不等这一轮结束，现在就送进去：会打断当前这一步，让模型马上读到这条" : waiting ? "打断当前这一步，让模型马上读到这条（Ctrl+Enter 发送也是这样）" : "把这条消息再发一次"}
+          title={waiting && sendNowOff ? sendNowOff : forPerson ? "不等了，现在就送进去：模型会马上开始读这条" : held ? "不等这一轮结束，现在就送进去：会打断当前这一步，让模型马上读到这条" : waiting ? "打断当前这一步，让模型马上读到这条（Ctrl+Enter 发送也是这样）" : "把这条消息再发一次"}
           onClick={() => {
             setAsked(true);
             onDelivery(itemId, waiting ? "now" : "resend");
@@ -469,11 +494,13 @@ function DeliveryLine({ itemId, delivery, withPerson }: { itemId: string; delive
   );
 }
 
-function AgentReply({ item, highlights }: { item: AgentItem; highlights: readonly Annotation[] }) {
+/** `reading`: 审阅进度's marks are drawn over and beside it (ReadMarks, after the Markdown so they do not move it). */
+function AgentReply({ item, highlights, reading = false }: { item: AgentItem; highlights: readonly Annotation[]; reading?: boolean }) {
   return (
-    <div className="msg-agent" data-testid="msg-agent" data-item-id={item.id} data-item-type="agent" data-streaming={item.streaming || undefined}>
+    <div className="msg-agent" data-testid="msg-agent" data-item-id={item.id} data-item-type="agent" data-streaming={item.streaming || undefined} data-reading={reading || undefined}>
       {item.markdown ? <Markdown source={item.markdown} highlights={highlights} /> : null}
       {item.streaming && <span className="stream-caret" aria-label="生成中" />}
+      {reading && <ReadMarks item={item} />}
     </div>
   );
 }
@@ -483,7 +510,7 @@ const APPROVAL_TITLE: Record<ApprovalItem["kind"], string> = { command: "请求�
 function ApprovalCard({ item, busy, onApprove }: { item: ApprovalItem; busy: boolean; onApprove: TranscriptProps["onApprove"] }) {
   const Icon = item.kind === "command" ? IconTerminal : item.kind === "fileChange" ? IconEdit : IconSparkle;
   return (
-    <div className="approval pending" data-testid="approval" data-state={item.state}>
+    <div className="approval pending" data-testid="approval" data-state={item.state} data-row-id={item.id}>
       <div className="approval-head">
         <Icon />
         <span className="approval-title">{APPROVAL_TITLE[item.kind]}</span>

@@ -44,12 +44,31 @@ describe("Store", () => {
   it("applies migrations once", () => {
     const path = tempDbPath();
     const first = makeStore(path);
-    expect(first.schemaVersion()).toBe(29);
+    expect(first.schemaVersion()).toBe(30);
     first.db.prepare("INSERT INTO studio_request_usage VALUES (?,?,?,?,?)").run("2026-01-01", "fixture", 3, 2, 1);
     open.pop()!.close();
     const reopened = makeStore(path);
-    expect(reopened.schemaVersion()).toBe(29);
+    expect(reopened.schemaVersion()).toBe(30);
     expect(reopened.db.prepare("SELECT input,cached,output FROM studio_request_usage").get()).toMatchObject({ input: 3, cached: 2, output: 1 });
+  });
+
+  it("upgrades an installed WorkStudio v28 database without resetting its data", () => {
+    const path = tempDbPath();
+    const db = new DatabaseSync(path, { enableForeignKeyConstraints: false });
+    try {
+      db.exec("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
+      MIGRATIONS.slice(0, 28).forEach((m, i) => {
+        db.exec(typeof m === "string" ? m : m.sql);
+        db.prepare("INSERT INTO schema_migrations VALUES (?, ?)").run(i + 1, "2026-11-23");
+      });
+      db.prepare("INSERT INTO studio_request_usage VALUES (?,?,?,?,?)").run("2026-11-23", "fixture", 3, 2, 1);
+      db.prepare("INSERT INTO company_agents VALUES (?,?)").run("fixture", "{}");
+    } finally { db.close(); }
+    const store = makeStore(path);
+    expect(store.schemaVersion()).toBe(30);
+    expect(store.db.prepare("SELECT input,cached,output FROM studio_request_usage").get()).toMatchObject({ input: 3, cached: 2, output: 1 });
+    expect(store.db.prepare("SELECT id FROM company_agents").get()).toMatchObject({ id: "fixture" });
+    expect(store.db.prepare("PRAGMA table_info(sessions)").all().map((r) => r.name)).toEqual(expect.arrayContaining(["fork_of", "rank"]));
   });
 
   it("refuses data a newer Studio migrated, says so for the person, and leaves the file alone (2026-10-28)", () => {

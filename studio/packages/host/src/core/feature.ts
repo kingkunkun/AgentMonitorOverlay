@@ -46,7 +46,10 @@ export type FeatureName =
   | "teamRelay"
   | "issues"
   | "delivery"
-  | "duty";
+  | "duty"
+  | "tracks"
+  | "reviewProgress"
+  | "whiteboard";
 
 /** The Host without its features: the store, the runtimes, the event stream and the helpers every feature shares. */
 export type HostCore = Omit<HostService, FeatureName>;

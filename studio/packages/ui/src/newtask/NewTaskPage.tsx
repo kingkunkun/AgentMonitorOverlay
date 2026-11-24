@@ -20,6 +20,8 @@ import { DSH_FULL_ACCESS, SandboxHint } from "../settings/SandboxHint.js";
 import { draftText, submitDraft, useTaskDraft } from "./draft.js";
 import { ModelRow, tilePicks } from "./ModelRow.js";
 import { ChoicePicker } from "./ChoiceRow.js";
+import { PresetChips } from "./PresetChips.js";
+import { McpPick, mcpToSend, useMcpOffer } from "../mcp/McpPick.js";
 import { useDraftChoices } from "./useDraftChoices.js";
 import { MentionList, useComposerMentions } from "../attach/useMentions.js";
 import { FileSelector } from "../attach/FileSelector.js";
@@ -113,6 +115,9 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
   const presets = settings?.presets ?? [];
   const { choices } = useProfileChoices(link, draft.pick.profileId);
   const model = choices ? activeModel(choices, draft.pick.model ? { model: draft.pick.model } : {}) : undefined;
+  // MCP of the first session (2026-11-17: the same choices as 新会话 and 分支), for the project and model picked; what the
+  // person changes is kept in the draft's options, and only names of the list as read now go.
+  const mcpOffer = useMcpOffer(!remoteMode && draft.pick.profileId ? () => call(link, "GET /api/mcp/offer", {}, undefined, { profile: draft.pick.profileId, ...(draft.projectId ? { workspace: draft.projectId } : {}) }) : null, `${draft.projectId ?? ""} ${draft.pick.profileId}`);
   // 接续已有会话 (2026-11-05): the outside session picked; not kept in the draft (it may be taken on elsewhere meanwhile).
   const [resume, setResume] = useState<OutsideSession | null>(null);
   const [pickingResume, setPickingResume] = useState(false);
@@ -177,7 +182,9 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
       const images = attach.images.flatMap((i) => (i.id ? [i.id] : []));
       const setups = draft.refs ? subSessionSetups(draft.text, new Map(Object.entries(draft.refs))) : [];
       const { refs: _refs, ...rest } = draft;
-      const created = await submitDraft(link, { ...rest, title: "", lead: false, text, ...(resume && !rest.title.trim() ? { title: resume.title } : {}) }, file, onCanvas, images, resume?.id, setups, draft.text.trim());
+      const { mcp: _mcp, ...others } = rest.options;
+      const mcp = file ? undefined : mcpToSend(mcpOffer, draft.options.mcp ?? {});
+      const created = await submitDraft(link, { ...rest, options: { ...others, ...(mcp ? { mcp } : {}) }, title: "", lead: false, text, ...(resume && !rest.title.trim() ? { title: resume.title } : {}) }, file, onCanvas, images, resume?.id, setups, draft.text.trim());
       setResume(null);
       attach.reset();
       reset({ projectId: draft.projectId, topicId: draft.topicId });
@@ -391,23 +398,11 @@ export function NewTaskPage({ link, workspaces, topics, tasks, sessions = [], pr
               active={profiles.find((p) => p.id === draft.pick.profileId)?.runtime === "dsh" && !!choices && (draft.options.permission ?? choices.defaultPermission) === "workspace-write"}
               onUseFull={() => update({ options: { ...draft.options, permission: DSH_FULL_ACCESS } })}
             />
-            {presets.length > 0 && (
-              <div className="cbar presets" role="group" aria-label="常用预设">
-                <span className="pick-lab">预设</span>
-                {presets
-                  .filter((p) => profiles.some((x) => x.id === p.profileId && !x.hidden && !x.unavailable))
-                  .map((p) => {
-                    const pick = { profileId: p.profileId, model: p.options.model ?? null };
-                    const { model: _model, ...rest } = p.options;
-                    const active = samePick(pick, draft.pick) && sameOptions(rest, draft.options);
-                    return (
-                      <button key={p.id} type="button" className="chip small" aria-pressed={active} onClick={() => update({ pick, options: rest })} data-testid="preset-chip">
-                        {p.name}
-                      </button>
-                    );
-                  })}
-              </div>
-            )}
+            <div className="cbar draft-mcp" data-testid="draft-mcp">
+              <span className="pick-lab">MCP</span>
+              <McpPick state={mcpOffer} want={draft.options.mcp ?? {}} onWant={(mcp) => update({ options: { ...draft.options, mcp } })} disabled={busy} />
+            </div>
+            <PresetChips presets={presets} profiles={profiles} pick={draft.pick} options={draft.options} onPick={(pick, options) => update({ pick, options })} />
           </div>
 
           {error && (

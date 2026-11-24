@@ -86,15 +86,14 @@ afterAll(async () => {
 });
 
 describe("AMO MCP", () => {
-  it("lists twenty-one read-only tools and thirty-nine that write for the caller", async () => {
+  it("lists twenty-two read-only tools and forty-nine that write for the caller", async () => {
     const client = await connect();
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
-      "amo_guide", "amo_whoami", "board_list", "canvas_callout", "canvas_callout_close", "canvas_color", "canvas_depend", "canvas_group_create", "canvas_item_update", "canvas_items_post", "canvas_place", "canvas_read", "checklist_check", "company_group_read", "company_message_send", "company_self_improve", "company_work_read", "company_work_report", "decision_request", "duty_list", "duty_save", "duty_stop", "handoff_submit", "issue_get", "issue_list", "issue_released", "issue_reply", "issue_update",
-      "mailbox_read", "mailbox_send", "mcp_server_list", "mcp_server_save", "project_context", "prompt_template_delete", "prompt_template_list", "prompt_template_save", "review_open", "session_archive", "session_rename", "session_send", "session_start", "session_tree", "task_describe", "task_get", "task_message", "task_note_add", "task_plan_propose", "task_rename", "team_ask", "team_done", "team_file_get", "team_followup", "team_members", "team_session", "team_sessions", "topic_doc_write", "topic_docs", "topic_get", "topic_list", "view_open",
+      "amo_guide", "amo_whoami", "board_list", "canvas_callout", "canvas_callout_close", "canvas_color", "canvas_depend", "canvas_group_create", "canvas_item_update", "canvas_items_post", "canvas_place", "canvas_read", "checklist_check", "company_group_read", "company_message_send", "company_self_improve", "company_work_read", "company_work_report", "cowork_ask", "cowork_board", "cowork_conclude", "cowork_note", "cowork_post", "cowork_read", "decision_request", "duty_list", "duty_save", "duty_stop", "handoff_submit", "issue_get", "issue_list", "issue_released", "issue_reply", "issue_update", "mailbox_read", "mailbox_send", "mcp_server_list", "mcp_server_save", "project_add", "project_context", "project_group_delete", "project_group_save", "project_remove", "prompt_template_delete", "prompt_template_list", "prompt_template_save", "review_open", "session_archive", "session_rename", "session_send", "session_start", "session_tree", "task_describe", "task_get", "task_message", "task_note_add", "task_plan_propose", "task_rename", "team_ask", "team_done", "team_file_get", "team_followup", "team_members", "team_session", "team_sessions", "topic_doc_write", "topic_docs", "topic_get", "topic_list", "view_open",
     ]);
     expect(tools.filter((t) => t.annotations?.readOnlyHint === true).map((t) => t.name).sort()).toEqual([
-      "amo_guide", "amo_whoami", "board_list", "canvas_read", "company_group_read", "company_work_read", "duty_list", "issue_get", "issue_list", "mcp_server_list", "project_context", "prompt_template_list", "session_tree", "task_get", "team_file_get", "team_members", "team_session", "team_sessions", "topic_docs", "topic_get", "topic_list",
+      "amo_guide", "amo_whoami", "board_list", "canvas_read", "company_group_read", "company_work_read", "cowork_read", "duty_list", "issue_get", "issue_list", "mcp_server_list", "project_context", "prompt_template_list", "session_tree", "task_get", "team_file_get", "team_members", "team_session", "team_sessions", "topic_docs", "topic_get", "topic_list",
     ]);
     await client.close();
   });
@@ -192,7 +191,7 @@ describe("AMO MCP", () => {
 
   it("opens /mcp, and only /mcp, with the MCP token", async () => {
     const client = await connect(MCP_TOKEN);
-    expect((await client.listTools()).tools).toHaveLength(60);
+    expect((await client.listTools()).tools).toHaveLength(70);
     await client.close();
     const res = await fetch(`${http.url}/api/state`, { headers: { authorization: `Bearer ${MCP_TOKEN}`, connection: "close" } });
     expect(res.status).toBe(401);

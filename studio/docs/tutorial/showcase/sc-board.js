@@ -26,7 +26,7 @@
     <div class="h-acct" data-k="u-${k}"><div class="h-acct-line"><b>${name}</b><span class="h-acct-sub">${sub}</span><span class="h-left" data-k="u-${k}-left">${left}</span></div>
       ${used === undefined ? "" : `<div class="h-bar"><span data-k="u-${k}-bar" style="--w:${used}%"></span></div>`}</div>`;
 
-  T.uses("WorkStudio", "书签", "便签", "Focus", "全部任务", "专题", "项目", "看板", "画布", "+ 新任务", "Host 运行中", "要推进什么？", "放进待办", "开始", "待办", "进行中", "待审阅", "完成", "待批准", "运行中", "空闲");
+  T.uses("WorkStudio", "书签", "便签", "Focus", "全部任务", "专题", "项目", "看板", "画布", "新聊天", "Host 运行中", "今天想做些什么？", "放进待办", "开始", "待办", "进行中", "待审阅", "完成", "待批准", "运行中", "空闲");
   T.scene({
     id: "sc-board",
     title: "一句话加一个模型，就是看板上的一个任务",
@@ -51,7 +51,7 @@
           <div class="h-host"><span class="s-dot run"></span>Host 运行中</div>
         </div>
       </div>
-      <div class="h-viewbar"><span class="s-tab on">看板</span><span class="s-tab">画布</span><span class="s-sp"></span><span class="s-btn pri" data-k="newBtn">+ 新任务</span></div>
+      <div class="h-viewbar"><span class="s-tab on">看板</span><span class="s-tab">画布</span><span class="s-sp"></span><span class="s-btn pri" data-k="newBtn">新聊天</span></div>
       <div class="h-main">
         <div class="s-board h-board">
           ${col("todo", "待办", 0, '<div class="s-col-empty">空</div>', "h-side")}
@@ -60,7 +60,7 @@
           ${col("done", "完成", 1, card("c0", "未归专题 › MyGame", "登录页文案改成新版", "ds", { word: "完成", tone: "", hidden: false, running: false }), "h-side")}
         </div>
         <div class="h-new" data-k="composer" data-off>
-          <div class="h-new-q">要推进什么？</div>
+          <div class="h-new-q">今天想做些什么？</div>
           <div class="h-new-text" data-k="prompt"></div>
           <div class="h-models">${tile("claude")}${tile("gpt")}${tile("ds")}${tile("api")}</div>
           <div class="h-new-foot"><span class="s-sp"></span><span class="s-btn ghost">放进待办</span><span class="s-btn pri" data-k="start">开始</span></div>

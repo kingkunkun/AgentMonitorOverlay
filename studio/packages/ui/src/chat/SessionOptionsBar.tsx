@@ -10,7 +10,7 @@ import { FastUsageHint } from "./FastUsageHint.js";
 import { ComposerModelPicker } from "./ComposerModelPicker.js";
 import { PermissionIcon, PermissionMenu, permissionView } from "./PermissionPicker.js";
 import { DSH_FULL_ACCESS, SandboxHint } from "../settings/SandboxHint.js";
-import { SessionMcpTray, useSessionMcp } from "../mcp/SessionMcp.js";
+import { remoteMcpOld, SessionMcpTray, useSessionMcp } from "../mcp/SessionMcp.js";
 import { CodexAddMenu } from "./CodexAddMenu.js";
 import { SessionModePicker } from "./CodexModePicker.js";
 
@@ -30,6 +30,7 @@ export function SessionOptionsBar({
   profiles = [],
   onContinued,
   onFiles, onSketch, onSkill,
+  remote,
 }: {
   link: HostLink;
   session: Session;
@@ -41,13 +42,18 @@ export function SessionOptionsBar({
   onFiles?(): void;
   onSketch?(): void;
   onSkill?(name: string): void;
+  /**
+   * 远程选 MCP (2026-11-17): a remote task's copy — the computer it runs on, whether it lists its MCP (an older Studio
+   * does not: the button is greyed, saying so) and whether it can be changed now (granted, not archived).
+   */
+  remote?: { name: string; mcp: boolean; writable: boolean };
 }) {
   const { choices } = useProfileChoices(link, session.profileId);
   const [tray, setTray] = useState<Tray>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<{ text: string; error?: boolean } | null>(null);
   const box = useRef<HTMLDivElement>(null);
-  const mcp = useSessionMcp(link, session);
+  const mcp = useSessionMcp(link, session, !!remote?.mcp);
   const mcpOn = mcp.state?.entries.filter((e) => e.on).length ?? 0;
   const mine = presets.filter((p) => p.profileId === session.profileId);
   const availableProfiles = pickable(profiles, session.profileId);
@@ -151,18 +157,18 @@ export function SessionOptionsBar({
       {session.runtime === "codex" && <SessionModePicker key={`mode:${session.id}`} link={link} session={session} open={tray === "mode"} onOpen={on => setTray(on ? "mode" : null)} disabled={disabled || busy} />}
       {session.runtime === "codex" && <CodexAddMenu key={session.id} link={link} session={session} open={tray === "tools"} disabled={disabled} onClose={() => setTray(null)} onModes={() => setTray("mode")} onFiles={onFiles} onSketch={onSketch} onSkill={onSkill}>
         <div className="composer-popover-heading">工具</div>
-        <button type="button" data-testid="switch-mcp" onClick={() => { mcp.refresh(); setTray("mcp"); }}>MCP{mcp.state ? ` · ${mcpOn} 个已启用` : ""}<span aria-hidden="true">›</span></button>
+        <button type="button" data-testid="switch-mcp" disabled={!!remote && !remote.mcp} title={remote && !remote.mcp ? remoteMcpOld(remote.name) : undefined} onClick={() => { mcp.refresh(); setTray("mcp"); }}>MCP{mcp.state ? ` · ${mcpOn} 个已启用` : ""}<span aria-hidden="true">›</span></button>
         {mine.map((p) => <button type="button" key={p.id} disabled={disabled || busy} onClick={() => void apply(p.options, `已换成预设「${p.name}」`)}>{p.name}</button>)}
       </CodexAddMenu>}
       {tray === "tools" && session.runtime !== "codex" && <div className="composer-popover composer-tools-menu" role="dialog" aria-label="更多工具">
         {onFiles && <button type="button" disabled={disabled} onClick={() => { setTray(null); onFiles(); }}>文件和文件夹</button>}
         {onSketch && <button type="button" disabled={disabled} onClick={() => { setTray(null); onSketch(); }}>绘图</button>}
-        {session.runtime !== "remote" && <button type="button" data-testid="switch-mcp" onClick={() => { mcp.refresh(); setTray("mcp"); }}>MCP{mcp.state ? ` · ${mcpOn} 个已启用` : ""}<span aria-hidden="true">›</span></button>}
+        {(session.runtime !== "remote" || !!remote) && <button type="button" data-testid="switch-mcp" disabled={!!remote && !remote.mcp} title={remote && !remote.mcp ? remoteMcpOld(remote.name) : undefined} onClick={() => { mcp.refresh(); setTray("mcp"); }}>MCP{mcp.state ? ` · ${mcpOn} 个已启用` : ""}<span aria-hidden="true">›</span></button>}
         {mine.length > 0 && <div className="composer-popover-heading">常用预设</div>}
         {mine.map((p) => <button type="button" key={p.id} data-testid="preset-chip" aria-pressed={sameOptions(p.options, session.options)} disabled={disabled || busy} title={optionsSummary(choices, p.options)} onClick={() => void apply(p.options, `已换成预设「${p.name}」`)}>{p.name}<span aria-hidden="true">{sameOptions(p.options, session.options) ? "✓" : ""}</span></button>)}
         {!mine.length && session.runtime === "remote" && <p className="composer-popover-note">此会话暂无其他工具选项。</p>}
       </div>}
-      {tray === "mcp" && <div className="tray" role="dialog" aria-label="MCP" data-testid="options-tray"><SessionMcpTray link={link} session={session} state={mcp.state} onState={mcp.setState} disabled={disabled} /></div>}
+      {tray === "mcp" && <div className="tray" role="dialog" aria-label="MCP" data-testid="options-tray"><SessionMcpTray link={link} session={session} state={mcp.state} onState={mcp.setState} disabled={remote ? !remote.writable : disabled} {...(remote ? { remote: remote.name } : {})} /></div>}
       <span className="composer-options-spacer" />
       <ComposerModelPicker groups={modelGroups} profileId={session.profileId} onProfileModel={(profileId, id, name) => void selectAcrossProfiles(profileId, id, name)} models={choices?.models ?? []} model={model} label={label.main} effort={session.options.effort} fast={session.options.fast} disabled={disabled || busy || !choices} fastUsage={<FastUsageHint link={link} profileId={session.profileId} />} open={tray === "model"} onOpen={(on) => setTray(on ? "model" : null)} onModel={setModel} onEffort={setEffort} onFast={setFast} footer={<p className="composer-popover-note">当前账号：{profile?.label ?? "默认"}。当前渠道内切换{when}；其他渠道在本轮结束后接续当前 WorkStudio 聊天文本，不自动传附件。</p>} />
       {note && <span className={note.error ? "form-error composer-options-note" : "applied composer-options-note"} role={note.error ? "alert" : "status"} data-testid="options-note">{note.error ? note.text : `✓ ${note.text}`}</span>}

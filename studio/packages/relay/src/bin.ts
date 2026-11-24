@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { RelayClient, RelayClientError, clientFromSettings, loadSettings, relayHome, writeSettings } from "./client.js";
 import { createRelayMcp } from "./mcp.js";
-import { RELAY_DEFAULT_PORT, type NewMessage, type NewRequest, type TaskStatus } from "./protocol.js";
+import { listedOthers, RELAY_DEFAULT_PORT, type NewMessage, type NewRequest, type TaskStatus } from "./protocol.js";
 import { startRelayServer } from "./server.js";
 import { createMirrors } from "./mirror.js";
 import { RelayStore } from "./store.js";
@@ -122,7 +122,7 @@ async function main(): Promise<void> {
       // hundreds of MB on its own. Each tool can still be switched off on the admin page.
       const withMirror = flags["no-mirror"] ? false : !!flags.mirror || !!platformDir;
       const mirrors = withMirror ? createMirrors({ dir: join(data, "mirror"), log: (line) => out(`${new Date().toISOString()} ${line}`) }) : undefined;
-      const server = await startRelayServer({ store, passphrase, publicDir, platformDir, filesDir: join(data, "files"), dataDir: data, name: flags.name, host: flags.host, port: flags.port ? Number(flags.port) : RELAY_DEFAULT_PORT, mirrors });
+      const server = await startRelayServer({ store, passphrase, publicDir, platformDir, filesDir: join(data, "files"), transfersDir: join(data, "transfers"), dataDir: data, name: flags.name, host: flags.host, port: flags.port ? Number(flags.port) : RELAY_DEFAULT_PORT, mirrors });
       for (const m of Object.values(mirrors ?? {})) m.start();
       out(`AMO 中转服务已启动：端口 ${server.port}；数据 ${data}；客户端 ${publicDir}；平台 ${platformDir ?? "（没有指定）"}；工具镜像（Claude Code、Codex）${mirrors ? "开着（设置在管理页）" : "没开"}；${passphrase ? "注册要邀请口令" : "任何人都能注册"}`);
       const stop = () => void Promise.all([...Object.values(mirrors ?? {}).map((m) => m.close()), server.close()]).then(() => (store.close(), process.exit(0)));
@@ -172,7 +172,7 @@ async function main(): Promise<void> {
     }
     case "people": {
       const { client, me } = await joined();
-      for (const m of await client.members()) if (m.name !== me) out(`${m.name}${m.role ? `（${m.role}）` : ""}${m.online ? " · 在线" : ""}`);
+      for (const m of listedOthers(await client.members(), me)) out(`${m.name}${m.role ? `（${m.role}）` : ""}${m.online ? " · 在线" : ""}`);
       return;
     }
     case "prompt": {

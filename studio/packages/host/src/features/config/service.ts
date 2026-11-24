@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { parseRemoteProfileId, AUTO_COMPACT_MAX, AUTO_COMPACT_MIN, MAX_PROJECT_GROUPS, MAX_QUICK_MODELS, MAX_SUBSESSION_NOTES, SUBSESSION_NOTE_MAX, SUBSESSION_PERMISSIONS, type SubsessionNote, type SubsessionPermission, OPTIONAL_FEATURES, EXPERIMENTAL_FEATURES, type ExperimentalFeature, type ProjectGroup, type TopicGroup, type QuickModel, type AccountUsage, type CredentialStatus, type OptionalFeature, type ProfileChoices, type SessionPreset, type Id, type QuotaDisplay, type StudioSettings } from "@amo-studio/protocol";
 import { localClaudeHome, localClaudeSignedIn } from "../../runtime/claude/claude-login.js";
-import { readAutoCompact, readAutoCompactProfiles, writeAutoCompact, writeAutoCompactProfiles } from "../../runtime/compact.js";
+import { autoCompactUnset, readAutoCompact, readAutoCompactProfiles, writeAutoCompact, writeAutoCompactProfiles } from "../../runtime/compact.js";
 import { readShellHelp, SHELL_HELP_KEY } from "../../runtime/agent-env.js";
 import { compareModelVersions } from "@amo-studio/protocol";
 import { applyModelPrefs, readModelPrefs, writeModelPrefs } from "../../core/model-prefs.js";
@@ -35,6 +35,7 @@ export class ConfigFeature extends Feature<"claudeAccounts" | "scratchpad"> {
       scratchpadShortcut: this.f.scratchpad.shortcut(),
       scratchpadSafeNewlines: this.f.scratchpad.safeNewlines(),
       autoCompactTokens: readAutoCompact(this.store),
+      ...(autoCompactUnset(this.store) ? { autoCompactUnset: true } : {}),
       autoCompactProfiles: readAutoCompactProfiles(this.store),
       claudeLocal: { dir, signedIn: localClaudeSignedIn(dir) },
       claudeAccounts: this.f.claudeAccounts.state(),
@@ -94,7 +95,7 @@ export class ConfigFeature extends Feature<"claudeAccounts" | "scratchpad"> {
   }
 
   /** 项目分组, as saved (the UI leaves out projects that are gone or archived). */
-  private projectGroups(): ProjectGroup[] {
+  projectGroups(): ProjectGroup[] {
     try {
       const v = JSON.parse(this.store.getKv(PROJECT_GROUPS_KEY)?.value ?? "[]") as unknown;
       return Array.isArray(v) ? (v as ProjectGroup[]) : [];
@@ -122,6 +123,67 @@ export class ConfigFeature extends Feature<"claudeAccounts" | "scratchpad"> {
       });
       return { id, name: boundedText(o.name, "name", 40), description, workspaceIds };
     });
+  }
+
+  /** A 项目分组 by id or exact name. */
+  projectGroup(ref: string): ProjectGroup {
+    const want = ref.trim();
+    const list = this.projectGroups();
+    const found = list.find((g) => g.id === want) ?? list.find((g) => g.name === want);
+    if (!found) throw new HostError("not_found", list.length ? `没有叫 ${want} 的项目分组；现有的：${list.map((g) => g.name).join("、")}` : `没有叫 ${want} 的项目分组（现在一个分组也没有）`);
+    return found;
+  }
+
+  /**
+   * One 项目分组 made or changed (project_group_save, 2026-11-18, the user: ai 可以处理工程分组): without `id` a new one
+   * (name required) at the end; `projects` sets its projects in that order, `add` puts projects in (at the end, out of
+   * any other group: a project is in one group only), `remove` takes them out (ungrouped); `position` moves the group
+   * (0 = first). An archived project stays where it was (the left column leaves it out; restored, it is back in its
+   * group). Saved through the same check as 设置's list, so the windows hear of it the same way.
+   */
+  saveProjectGroup(input: { id?: Id; name?: string; description?: string; projects?: Id[]; add?: Id[]; remove?: Id[]; position?: number }): ProjectGroup {
+    const list = this.projectGroups().map((g) => ({ ...g, workspaceIds: [...g.workspaceIds] }));
+    let group: ProjectGroup;
+    if (input.id === undefined) {
+      if (list.length >= MAX_PROJECT_GROUPS) throw new HostError("bad_request", `项目分组最多 ${MAX_PROJECT_GROUPS} 个`);
+      group = { id: newId("pg"), name: boundedText(input.name, "name", 40), description: "", workspaceIds: [] };
+      list.push(group);
+    } else {
+      const found = list.find((g) => g.id === input.id);
+      if (!found) throw new HostError("not_found", `项目分组 ${input.id} 不存在`);
+      group = found;
+      if (input.name !== undefined) group.name = boundedText(input.name, "name", 40);
+    }
+    if (input.description !== undefined) group.description = input.description.trim() ? boundedText(input.description, "description", 2000) : "";
+    const takeOut = (ids: readonly Id[]) => {
+      for (const g of list) g.workspaceIds = g.workspaceIds.filter((w) => !ids.includes(w));
+    };
+    if (input.projects !== undefined) {
+      const archived = group.workspaceIds.filter((w) => this.store.getWorkspace(w)?.archivedAt && !input.projects!.includes(w));
+      takeOut(input.projects);
+      group.workspaceIds = [...new Set([...input.projects, ...archived])];
+    }
+    if (input.add?.length) {
+      takeOut(input.add);
+      group.workspaceIds.push(...new Set(input.add));
+    }
+    if (input.remove?.length) group.workspaceIds = group.workspaceIds.filter((w) => !input.remove!.includes(w));
+    if (input.position !== undefined) {
+      if (!Number.isInteger(input.position) || input.position < 0) throw new HostError("bad_request", "position must be 0 or more (0 = first)");
+      list.splice(list.indexOf(group), 1);
+      list.splice(Math.min(input.position, list.length), 0, group);
+    }
+    const saved = this.updateSettings({ projectGroups: list }).projectGroups;
+    return saved.find((g) => g.id === group.id)!;
+  }
+
+  /** Takes a 项目分组 away; its projects become ungrouped (as 解散分组 in the left column). */
+  deleteProjectGroup(id: Id): ProjectGroup {
+    const list = this.projectGroups();
+    const group = list.find((g) => g.id === id);
+    if (!group) throw new HostError("not_found", `项目分组 ${id} 不存在`);
+    this.updateSettings({ projectGroups: list.filter((g) => g.id !== id) });
+    return group;
   }
 
   /** 专题分组 (2026-10-27), as saved (the UI leaves out topics that are gone or archived). */

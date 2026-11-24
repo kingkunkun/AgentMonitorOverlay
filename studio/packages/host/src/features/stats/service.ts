@@ -6,7 +6,7 @@ import { HostError } from "../../core/shared.js";
 
 export { localDate } from "./meters.js";
 const zero = { input: 0, cached: 0, output: 0 };
-type Usage = Omit<TokenStatsDay, "date">;
+type Usage = TokenStatsRange["rows"][number];
 type Report = Omit<TokenSourceReport, "total">;
 
 export class StatsFeature extends Feature {
@@ -184,7 +184,7 @@ export class StatsFeature extends Feature {
   }
 }
 
-const empty = (profileId: Id): Usage => ({ profileId, source: "studio", input: 0, cached: 0, output: 0, unclassified: 0, turns: 0 });
+const empty = (profileId: Id): Usage => ({ profileId, input: 0, cached: 0, output: 0, turns: 0 });
 
 function add(u: Usage, t: { input: number; cached: number; output: number }): void {
   // The runtimes' input includes what came from the cache.

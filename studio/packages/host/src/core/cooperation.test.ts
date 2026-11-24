@@ -86,6 +86,10 @@ it("all-task sync applies only to an explicitly paired own-account device, and i
   cooperation.syncOwn(true);
   expect(service.remote.grants.list()).toEqual([expect.objectContaining({ taskId: task.id, account: "owner", device: "phone" })]);
   expect(cooperation.taskAllowed(imported.id)).toBe(false);
+  const { task: relocated } = await service.tasks.createTask({ title: "单独成任务的分支" });
+  const fork = service.store.createSession({ taskId: relocated.id, topicId: null, parentId: null, kind: "main", runtime: "codex", profileId: "p", workspaceId: relocated.workspaceId, title: "", status: "idle", writer: "workbench", runtimeRef: null });
+  service.store.setSessionForkOf(fork.id, { sessionId: s.id, turn: 1 });
+  expect(cooperation.taskAllowed(relocated.id)).toBe(false);
   const session = service.store.createSession({ taskId: task.id, topicId: null, parentId: null, kind: "main", runtime: "codex", profileId: "p", workspaceId: task.workspaceId, title: "", status: "idle", writer: "workbench", runtimeRef: null });
   service.remote.grants.grant(task.id, { account: "other", device: "other" });
   const build = vi.spyOn(service.buildJob, "command").mockResolvedValue({ mode: "start" });

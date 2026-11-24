@@ -16,7 +16,7 @@ function fixture() {
   return { root, data, item, server };
 }
 it("serves only cataloged APKs, supports HEAD/ranges and escapes the public landing", async () => {
-  const { server, data } = fixture(); await server.start(false, 47976);
+  const { server, data } = fixture(); await server.start(false, 0);
   const base = `http://127.0.0.1:${server.port}`;
   const html = await (await fetch(base)).text(); expect(html).toContain("&lt;script&gt;"); expect(html).not.toContain("<script>");
   const head = await fetch(`${base}/files/phone-workstudio`, { method: "HEAD" }); expect(head.status).toBe(200); expect(head.headers.get("content-length")).toBe(String(data.length)); expect(await head.text()).toBe("");

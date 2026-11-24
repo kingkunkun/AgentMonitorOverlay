@@ -223,7 +223,7 @@ amo-relay serve | passwd | admin-password | rename | register | login | whoami |
 | `POST /api/threads/:id/messages` `{kind: text\|reply, body, answers, verdict, pass}` | 发消息或回复；回复会把会话还给发起方，`pass` 让一条普通消息也换手（继续追问） |
 | `POST /api/threads/:id/read` `{seq}` | 标记已读 |
 | `GET /api/wait?thread=&after=&timeout=` | 等对方的新消息，最多 10 分钟 |
-| `WS /ws?key=` | 推送 `hello` / `message` / `thread` / `archived` / `members` / `read` / `client` / `tick` |
+| `WS /ws?key=[&device=&deviceName=]` | 推送 `hello` / `message` / `thread` / `archived` / `members` / `read` / `client` / `tick` / `transfer`；带设备（新版桌面客户端，传文件用）时记下这台设备，连着就算在线 |
 
 ### 设备和配对（远程会话第 1 步，2026-10-29）
 
@@ -249,9 +249,49 @@ Studio 的 Host 用平台登录的 key、以「账号 + 设备编号」（`%APPD
 | `GET /api/todo?device=&deviceName=&since=` | `{rev, items, devices, full}`：`since` 之后改过的（删掉的带 `deleted`）；`since` 是 0 或早于留着的删除标记时给全部（`full`） |
 | `POST /api/todo/ops` `{device, deviceName, ops}` | 按顺序应用改动：`put` 只写它带的字段（新的要有 `list`、`text`），`delete` 留 30 天标记；删掉的不会被 `put` 救回来。不合规的跳过，在 `rejected` 里按位置说明 |
 
+### 传文件（2026-11-23）
+
+文件或文件夹发到选定的设备（自己的或同事的），经服务中转。方案和做法在 `plans/done/relay-file-transfer.md`，格式在 `src/transfer-protocol.ts`，服务这边在 `src/transfers.ts`。内容存在数据目录的 `transfers/<传送号>/<文件序号>`（Mac 上 `~/Services/amo-relay/data/transfers`）：所有目标设备收完或拒绝、发送方取消、或者建立满 1 天就删，记录再留 7 天；服务启动时和每 10 分钟清一次。一次最多 2 GB、10000 个文件、50 台设备；建传送时磁盘要留得下所有进行中的传送还没传完的量再加 5 GB，不然拒绝。
+
+| | |
+|---|---|
+| `GET /api/transfer-devices` | `{devices: [{account, id, name, online, lastSeen}]}`：30 天内带设备连过 `/ws` 的设备 |
+| `GET /api/transfers`、`/api/transfers/:id` | 我发的和发给我（任一台设备）的，新的在前 |
+| `POST /api/transfers` `{device, deviceName, entries: [{path, size}], dirs, targets: [{account, device}]}` | 建一次传送，只带清单（`path` 用 `/` 分隔，Windows 认的名字），不带内容 |
+| `POST /api/transfers/:id/answer` `{device, accept}` | 这台设备接收或拒绝（接收后再拒绝 = 停止接收） |
+| `PUT /api/transfers/:id/files/:index?device=&offset=&sha256=` | 发送方那台设备传一块（最多 8 MB，请求体就是内容）；`offset` 要等于服务已有的字节数，不然 409，问 `GET /api/transfers/:id` 再接着传。`sha256` 是整个文件的，收完核对，对不上从头再传。至少一台设备接收了才收 |
+| `GET /api/transfers/:id/files/:index?device=` | 接收了的设备下载传完的文件，支持 `Range` |
+| `POST /api/transfers/:id/progress` `{device, got, done}` | 接收方报进度；`done` = 全部存好并核对过 |
+| `POST /api/transfers/:id/cancel` | 发送方取消 |
+
+### 协作（2026-11-23）
+
+人和各自拉进来的 agent 一起推进一件事。方案在 `plans/cowork.md`；类型、上限、/ws 事件和规则写在 `src/cowork-protocol.ts` 开头；服务这边是 `src/cowork.ts`（协作、成员、agent、待送、草稿、事件）和 `src/cowork-board.ts`（白板）。客户端方法在 `RelayClient`（`src/api.ts`）。群聊是 kind `cowork` 的会话（协作的 id 就是它的 id），消息、已读、`/api/wait`、/ws 的 `message` 照旧走；子会话是带 `coworkId` 的会话（request），协作里的人都在里面。这两种会话走 `/api/threads/:id/messages`，效果和 `/api/cowork/:id/messages` 一样；`/api/requests` 带 `coworkId` 就是新开子会话。agent 的调用都用主人的 key，加 `via: { kind: "ai", conv: <会话标记> }`。只有协作里的人能调用，别人一律 403。
+
+| | |
+|---|---|
+| `GET/POST /api/cowork` | 我在的协作（带未读）；发起 `{title, goal, repo, branch, members, options}` |
+| `GET/PATCH /api/cowork/:id` | 全貌（协作、最近的事件、待送、我的 AI 的草稿）；改 `{title, goal, repo, branch, options, ended}`，目标每一版都留着 |
+| `GET /api/cowork/:id/goals`、`/events?after=` | 目标的历史；事件（`decision` 就是已定的事） |
+| `POST /api/cowork/:id/events` `{kind: commit\|note, text, commit, files, via}` | 记事件；commit 带的文件让引用旧提交的卡标成已过时 |
+| `POST /api/cowork/:id/members` `{add}`、`/leave` | 拉人（群聊和所有子会话都加进去）、退出（我的 agent 一起离开） |
+| `POST /api/cowork/:id/agents` `{mark, label}`、`/agents/leave` `{mark}` | 把我的会话拉进来、让它离开 |
+| `POST /api/cowork/agents/status` `{agents: [{mark, state}]}` | Studio 报 agent 的状态（idle / busy / owner / offline），至少 30 秒一次；90 秒没报算不在线 |
+| `GET /api/cowork-inbox?prefix=&wait=` | Studio 取它的 agent（标记以 prefix 开头）排队中的待送，和各 agent 没读的条数；`wait` 毫秒：没有就等到有（最多 10 分钟） |
+| `POST /api/cowork-inbox/ack` `{ids}` | 送进会话了：已送达 |
+| `GET /api/cowork/:id/feed?after=&agent=` | 群聊和子会话的消息；带 `agent` 时记下它读到哪 |
+| `POST /api/cowork/:id/messages` `{threadId?, body, mentions, agentMentions, replyTo, via}` | 发消息；AI @ 人或 AI，而「AI 发起 @ 和提问」关着时，返回 `{draft}` |
+| `POST /api/cowork/:id/sessions` `{to, title, body, questions, via}` | 新开子会话（AI 的同上，可能成草稿）；`/sessions/:tid/conclude` `{conclusion}` 定下结论 |
+| `GET /api/cowork/:id/drafts`、`POST /api/cowork/:id/drafts/:did` `{action: send\|drop, edit}` | 主人看、发出（可以先改）或不发 AI 的草稿 |
+| `GET /api/cowork/:id/board?after=` | 白板：序号之后的操作，或者全部卡片（含删掉的），加上现在的软锁 |
+| `POST /api/cowork/:id/board/ops` `{ops, via}` | 按顺序执行操作：add / set（带 `base` 版本）/ delete / restore / resolve / undo；每条带 `opId`，重发不会做两次；做不了的放在 `rejected` 里按位置说明 |
+| `POST /api/cowork/:id/board/lock` `{card, on}`、`/board/presence`、`GET /board/history?card=` | 写字时占着一张卡（30 秒，续着写就续上）、在场（也可以用 /ws 发 `board-presence`）、一张卡的历史 |
+
+/ws 多推这些：`cowork`、`cowork-left`、`cowork-agent`、`cowork-event`、`cowork-delivery`、`cowork-draft`（只推给主人）、`board`、`board-lock`、`board-presence`。客户端可以经 /ws 发 `{type: "board-presence", coworkId, selected, dragging, open}`，每个连接每秒最多 10 条。
+
 ## 测试
 
-- 单测：`npx vitest run packages/relay packages/relay-app scripts`（`scripts` 是平台的发布）
+- 单测：`npx vitest run packages/relay packages/relay-app packages/relay-ui scripts`（`scripts` 是平台的发布；`relay-ui` 里是传文件的引擎对着真服务的续传测试）
 - e2e：`npm run relay:release && npx playwright test -c e2e/playwright.config.ts --project relay`
 
-e2e 会启动两个客户端，依次跑：注册、AI 用命令行发会话、对方逐条回复并返回、AI 取回、本人接手后 AI 被拒、标记完成、私聊和话题、归档、两种自动更新、服务断开又恢复、深色主题；最后一个用平台的程序文件夹布局（`amoBuild.mode: "platform"`）启动客户端，确认它不提示、也不执行「更新桌面程序」，界面要新外壳时指向平台，程序文件夹里没多文件。截图存在 `screenshots/relay/`。平台「工具」页里的中转（列出、安装、带 `--server` 打开、更新）在 `npx playwright test -c e2e/playwright.config.ts --project platform`。发布前可以先 `node scripts/relay-release.mjs --out <临时目录>`，再用 `AMO_RELAY_E2E_RELEASE=<临时目录>` 跑 e2e，通过后再发布到正在运行的服务。
+e2e 会启动两个客户端，依次跑：注册、AI 用命令行发会话、对方逐条回复并返回、AI 取回、本人接手后 AI 被拒、标记完成、私聊和话题、归档、两种自动更新、服务断开又恢复、深色主题；最后一个用平台的程序文件夹布局（`amoBuild.mode: "platform"`）启动客户端，确认它不提示、也不执行「更新桌面程序」，界面要新外壳时指向平台，程序文件夹里没多文件。截图存在 `screenshots/relay/`。传文件单独一个 `e2e/relay/transfer.spec.ts`：三个客户端（同一个人的两台电脑和另一个人的一台），发文件夹和文件、一台拒绝一台接收、同名改名、分块传完核对。平台「工具」页里的中转（列出、安装、带 `--server` 打开、更新）在 `npx playwright test -c e2e/playwright.config.ts --project platform`。发布前可以先 `node scripts/relay-release.mjs --out <临时目录>`，再用 `AMO_RELAY_E2E_RELEASE=<临时目录>` 跑 e2e，通过后再发布到正在运行的服务。

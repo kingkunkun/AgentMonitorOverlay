@@ -1,11 +1,12 @@
 import { readFileSync, statSync } from "node:fs";
 import { readCooperation, privateClientPath } from "@amo-studio/account";
 import { basename, isAbsolute, join } from "node:path";
-import { RELAY_TEXT_MAX, TEAM_SEND_FILES_MAX, type Id, type TeamSend, type TeamThread } from "@amo-studio/protocol";
-import { RelayClient, RelayClientError, downloadFile, dueForAi, filesAsText, newRepliesText, takeSession, threadAsText, type Downloaded, type RelayFile, type Thread, type Via } from "@amo-studio/relay/light";
+import { RELAY_TEXT_MAX, TEAM_SEND_FILES_MAX, type Id, type MessageOrigin, type TeamSend, type TeamThread } from "@amo-studio/protocol";
+import { RelayClient, RelayClientError, downloadFile, listedOthers, dueForAi, filesAsText, newRepliesText, takeSession, threadAsText, type Downloaded, type RelayFile, type Thread, type Via } from "@amo-studio/relay/light";
 import { newId } from "../../store/store.js";
 import { HostError, isRemoteCopy } from "../../core/shared.js";
 import { Feature } from "../../core/feature.js";
+import { TeamCowork } from "./cowork.js";
 
 // 会话里用中转 (2026-10-30, plans/done/relay-in-sessions.md): a session asks someone on the team to confirm something through
 // AMO 中转, as the person (the platform's login), marked as their AI's. Every send waits for the person first — in auto
@@ -28,7 +29,9 @@ const FILE_ID = /^[\w-]{1,64}$/;
 
 type Questions = TeamSend["questions"];
 
-export class TeamRelayFeature extends Feature<"config" | "sessions" | "attachments"> {
+export class TeamRelayFeature extends Feature<"config" | "sessions" | "attachments" | "tasks"> {
+  /** 协作 (2026-11-23, cowork.ts): this computer's sessions in coworks, their state, what comes for them, cowork_*. */
+  readonly cowork: TeamCowork = new TeamCowork(this.host, this);
   private running = false;
   private abort: AbortController | null = null;
   private scanning: Promise<void> | null = null;
@@ -40,6 +43,14 @@ export class TeamRelayFeature extends Feature<"config" | "sessions" | "attachmen
   // ---- who and where
 
   /** The 中转 client as the person, and this computer's mark prefix. */
+  /** For cowork.ts: the same login and refusals. */
+  relayLogin(): { client: RelayClient; me: string; prefix: string } {
+    return this.relay();
+  }
+  relayCall<T>(run: () => Promise<T>): Promise<T> {
+    return this.call(run);
+  }
+
   private relay(): { client: RelayClient; me: string; prefix: string } {
     if (!readCooperation(this.teamLink.env).relayEnabled) throw new HostError("read_only", "Work中转已关闭，请在合作模式中开启");
     const login = this.teamLink.login();
@@ -102,7 +113,7 @@ export class TeamRelayFeature extends Feature<"config" | "sessions" | "attachmen
     if (body.length > RELAY_TEXT_MAX) throw new HostError("bad_request", `body is limited to ${RELAY_TEXT_MAX} characters`);
     if (to === me) throw new HostError("bad_request", `你用的就是 ${me} 的身份：要问 ${me} 本人，直接在对话里问。`);
     const members = await this.call(() => client.members());
-    if (!members.some((m) => m.name === to)) throw new HostError("bad_request", `团队里没有「${to}」。能找的人：${members.filter((m) => m.name !== me).map((m) => m.name).join("、") || "（还没有别人）"}`);
+    if (!members.some((m) => m.name === to)) throw new HostError("bad_request", `团队里没有「${to}」。能找的人：${listedOthers(members, me).map((m) => m.name).join("、") || "（还没有别人）"}`);
     const files = localFiles(input.files);
     return this.asked(this.saveSend({ id: newId("tsend"), sessionId, kind: "ask", to, title, threadId: null, body, questions: questions(input.questions), files, state: "pending", createdAt: new Date().toISOString(), decidedAt: null }));
   }
@@ -200,15 +211,18 @@ export class TeamRelayFeature extends Feature<"config" | "sessions" | "attachmen
   }
 
   /**
-   * team_file_get (2026-11-13): a file of a 中转 session this session sent, saved in Studio's data folder
-   * (attachments/team/<fileId>/<name>) with the platform's login — the agent never holds the key. Only the caller's own
-   * sessions' files: one of another session, or of any other thread the person is in, is refused. Limits, name cleaning
-   * and the sha256 check are relay_file_download's (downloadFile).
+   * team_file_get (2026-11-13): a file of a 中转 session, saved in Studio's data folder (attachments/team/<fileId>/<name>)
+   * with the platform's login — the agent never holds the key. Limits, name cleaning and the sha256 check are
+   * relay_file_download's (downloadFile). Any session the person is in, not only the ones this conversation sent
+   * (2026-11-16, the user: relay 里有附件，但是 ai 说拿不到 — lks's AI asked dhy with a handoff attached, dhy pasted the session
+   * into a conversation, and team_session listed the file while team_file_get refused it): reading a file is reading,
+   * as team_session reads any of them and the person can download it in 中转. Following up and closing stay with the
+   * conversation that sent it (ownThread).
    */
-  async fileGet(sessionId: Id, input: { threadId?: unknown; fileId?: unknown }): Promise<Downloaded> {
-    const thread = await this.ownThread(sessionId, input.threadId);
+  async fileGet(input: { threadId?: unknown; fileId?: unknown }): Promise<Downloaded> {
+    const thread = await this.memberThread(input.threadId);
     const fileId = text(input.fileId, "fileId");
-    const notHere = new HostError("bad_request", `文件 ${fileId} 不在中转会话「${thread.title}」里：只能取你这个会话发出的中转会话里的文件（fileId 在回复和 team_session 的「会话里的文件」里）。`);
+    const notHere = new HostError("bad_request", `文件 ${fileId} 不在中转会话「${thread.title}」里（fileId 在回复和 team_session 的「会话里的文件」里）。`);
     if (!FILE_ID.test(fileId)) throw notHere;
     const { client } = this.relay();
     // In the session's list (latest versions), or an earlier version of one of them.
@@ -220,7 +234,18 @@ export class TeamRelayFeature extends Feature<"config" | "sessions" | "attachmen
 
   async members(): Promise<Array<{ name: string; nick: string; role: string; online: boolean }>> {
     const { client, me } = this.relay();
-    return (await this.call(() => client.members())).filter((m) => m.name !== me).map((m) => ({ name: m.name, nick: m.nick, role: m.role, online: m.online }));
+    // Not 测试 or turned-off accounts (2026-11-23, the 中转 service's 账号类型), as in the 中转 client's pickers.
+    return listedOthers(await this.call(() => client.members()), me).map((m) => ({ name: m.name, nick: m.nick, role: m.role, online: m.online }));
+  }
+
+  /** A 中转 session the person is in (asked, was asked, or a member of), fresh from the server. */
+  private async memberThread(threadId: unknown): Promise<Thread> {
+    const id = text(threadId, "threadId");
+    const { client, me } = this.relay();
+    const { thread } = await this.call(() => client.messages(id, Number.MAX_SAFE_INTEGER));
+    const r = thread.request;
+    if (!thread.members.includes(me) && r?.from !== me && r?.to !== me) throw new HostError("bad_request", `中转会话 ${id} 里没有你，取不了它的文件。`);
+    return thread;
   }
 
   /** A 中转 session the caller sent (it carries the caller's mark), fresh from the server. */
@@ -295,11 +320,13 @@ export class TeamRelayFeature extends Feature<"config" | "sessions" | "attachmen
     if (this.running) return;
     this.running = true;
     void this.loop();
+    this.cowork.start();
   }
 
   stop(): void {
     this.running = false;
     this.abort?.abort();
+    this.cowork.stop();
   }
 
   private async loop(): Promise<void> {
@@ -346,7 +373,9 @@ export class TeamRelayFeature extends Feature<"config" | "sessions" | "attachmen
     }
     for (const t of all) this.lastSeq = Math.max(this.lastSeq, t.lastSeq);
     const before = this.threads();
-    const mine = all.filter((t) => t.request && t.request.from === me && t.request.conv?.startsWith(prefix));
+    // A 协作's 子会话 (request.coworkId, 2026-11-23) is a request too, sent as the person with the agent's mark: what comes
+    // back there reaches the agent only as the 协作's deliveries (cowork.ts), else it would go in twice.
+    const mine = all.filter((t) => t.request && !t.request.coworkId && t.request.from === me && t.request.conv?.startsWith(prefix));
     const next = new Map(before.map((t) => [t.threadId, t]));
     for (const t of mine) next.set(t.id, this.view(t, t.request!.conv!.slice(prefix.length), before.find((b) => b.threadId === t.id)));
 
@@ -361,6 +390,9 @@ export class TeamRelayFeature extends Feature<"config" | "sessions" | "attachmen
     }
     for (const [sessionId, threads] of bySession) {
       const parts: string[] = [];
+      // Who answered and in which 中转 sessions (2026-11-15): kept on the row as its origin.
+      const who: string[] = [];
+      const threadIds: string[] = [];
       let replies = 0;
       for (const t of threads) {
         const item = await takeSession(client, me, t.id);
@@ -368,12 +400,15 @@ export class TeamRelayFeature extends Feature<"config" | "sessions" | "attachmen
         // With the session's files (2026-11-13): those the other side sent since this session last wrote are 新.
         parts.push(await this.withFiles(client, item.thread.id, newRepliesText(item.thread, item, `用 team_session（threadId ${item.thread.id}）`), (f) => f.by !== me && f.at > item.lastWordAt));
         if (item.thread.request?.state !== "done") replies++;
+        threadIds.push(item.thread.id);
+        const to = item.thread.request?.to;
+        if (to && !who.includes(to)) who.push(to);
         const seen = this.view(item.thread, sessionId, next.get(t.id));
         next.set(t.id, { ...seen, deliveredAt: Date.now() });
       }
       if (!parts.length) continue;
       const how = replies ? "还没问清楚，用 team_followup 追问；已经敲定，用 team_done 标记完成，再按敲定的方案接着做。" : "对方已接手，会话已经结束，不用 team_done，也不用再追问。";
-      this.tell(sessionId, `【中转回复】\n\n${parts.join("\n\n---\n\n")}\n\n（WorkStudio 从中转转回来的，你用的是 ${me} 的身份。${how}）`);
+      this.tell(sessionId, `【中转回复】\n\n${parts.join("\n\n---\n\n")}\n\n（WorkStudio 从中转转回来的，你用的是 ${me} 的身份。${how}）`, { kind: "team", from: who.join("、") || "中转", threadIds });
     }
     this.saveThreads([...next.values()]);
   }
@@ -389,9 +424,9 @@ export class TeamRelayFeature extends Feature<"config" | "sessions" | "attachmen
    * kept across a restart, 没送到 with 重新发送 when it cannot go in. Before, it went as the person's messages do — steered
    * into a Codex turn — and one that failed was only a line in host.log, the reply already taken off the relay.
    */
-  private tell(sessionId: Id, message: string): void {
+  private tell(sessionId: Id, message: string, origin?: MessageOrigin): void {
     if (!readCooperation(this.teamLink.env).relayEnabled) return;
-    this.f.sessions.inbox.put(sessionId, message).catch((err: unknown) => console.log(`teamrelay: ${String(err)}`));
+    this.f.sessions.inbox.put(sessionId, message, origin).catch((err: unknown) => console.log(`teamrelay: ${String(err)}`));
   }
 }
 

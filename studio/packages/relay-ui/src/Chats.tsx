@@ -1,94 +1,112 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { Avatar, preview, timeText, useDisplayName, Who } from "./bits.js";
+import { Avatar, preview, timeText, useChatTitle, useDisplayName, Who } from "./bits.js";
 import { Dialog, Field } from "./Dialog.js";
 import { copyText } from "./env.js";
+import { ListRow, ListSection } from "./Layout.js";
 import { MessageList, errorText, useMessages } from "./Messages.js";
 import { useSession, type Session } from "./session.js";
-import { threadAsText, type Member, type ThreadView as Thread } from "./shared.js";
+import { listedOthers, threadAsText, unlistedNames, type Member, type ThreadView as Thread } from "./shared.js";
+import { messageRef } from "./refs.js";
 
-// Chats (2026-10-27): on the left, one entry per person — under it the plain chat, the topics, and the groups they are
-// in (a group shows under each of its people); a topic starts there too. A chat @-ing someone who is not in it brings
-// them in, and a direct chat or topic becomes a group with its history (asked first). 成员 lists every group.
+// Chats (2026-10-27; layout A's list, 2026-11-23, plans/cowork.md 第 8 条): on the left the groups, then one row per
+// person — their plain chat — with the topics with them under it; a topic starts from the chat's head (＋ 新话题). A chat
+// @-ing someone who is not in it brings them in, and a direct chat or topic becomes a group with its history (asked
+// first). A person's page in 成员 lists the groups you share. 测试 and turned-off accounts (2026-11-23, protocol.ts isListed)
+// are left out of the 私聊 list, of who a group shows, of @ and of 拉人; what they wrote stays in the chats they were in.
 
 const isChat = (t: Thread) => t.kind === "direct" || t.kind === "topic" || t.kind === "group";
 
-/** The left column of 聊天: people, each with their chats and groups. */
-export function ChatTree(props: {
-  session: Session;
-  openId: string | null;
-  onOpen: (id: string) => void;
-  onChatWith: (name: string) => void;
-  onNewTopic: (other: string, title: string) => Promise<void>;
-  onArchive: (t: Thread, archived: boolean) => void;
-}) {
+/** The list column's rows for 聊天: 群聊, then 私聊 (a person, their topics under them), then what I archived. */
+export function ChatList(props: { session: Session; openId: string | null; query: string; onOpen: (id: string) => void; onChatWith: (name: string) => void; onArchive: (t: Thread, archived: boolean) => void }) {
   const { threads, members } = useSession(props.session);
+  const show = useDisplayName();
   const me = props.session.me.name;
+  const titleOf = useChatTitle(me);
+  const q = props.query.trim().toLowerCase();
+  const hit = (...words: string[]) => !q || words.some((w) => w.toLowerCase().includes(q));
   const chats = threads.filter((t) => isChat(t));
   const live = chats.filter((t) => !t.archived);
-  const archived = chats.filter((t) => t.archived);
-  const others = members.filter((m) => m.name !== me);
+  const archived = chats.filter((t) => t.archived && hit(titleOf(t)));
+  const others = listedOthers(members, me);
+  const hidden = unlistedNames(members, me);
+  const shownIn = (t: Thread) => t.members.filter((n) => !hidden.has(n));
+  const groups = live.filter((t) => t.kind === "group" && hit(titleOf(t), ...shownIn(t).map(show))).sort((a, b) => b.updatedAt - a.updatedAt);
   // People with recent chats first.
-  const lastAt = (name: string) => Math.max(0, ...live.filter((t) => t.members.includes(name)).map((t) => t.updatedAt));
-  const people = [...others].sort((a, b) => lastAt(b.name) - lastAt(a.name));
-  const [open, setOpen] = useState<Set<string>>(() => new Set(people.filter((p) => lastAt(p.name) > 0).map((p) => p.name)));
-  const [adding, setAdding] = useState<string | null>(null);
+  const withPerson = (name: string) => live.filter((t) => t.kind !== "group" && t.members.includes(name));
+  const lastAt = (name: string) => Math.max(0, ...withPerson(name).map((t) => t.updatedAt));
+  const people = others.filter((p) => hit(p.name, p.nick, ...withPerson(p.name).map((t) => t.title))).sort((a, b) => lastAt(b.name) - lastAt(a.name));
   const [archOpen, setArchOpen] = useState(false);
-  const current = threads.find((t) => t.id === props.openId);
-  // The open chat's people stay unfolded.
-  useEffect(() => {
-    if (current) setOpen((s) => new Set([...s, ...current.members.filter((n) => n !== me)]));
-  }, [current?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const toggle = (name: string) => setOpen((s) => (s.has(name) ? new Set([...s].filter((x) => x !== name)) : new Set([...s, name])));
+  const archive = (t: Thread, back = false) => (
+    <button type="button" className="small" title={back ? "放回列表" : "归档：从列表收起，只影响你自己；有新消息会回来"} onClick={() => props.onArchive(t, back)}>
+      {back ? "放回" : "归档"}
+    </button>
+  );
+  const groupMark = <span className="avatar sq group">群</span>;
   return (
     <>
-      <div className="nav-label">
-        聊天<span className="count">{others.length}</span>
-        <span className="rule" />
-      </div>
+      {groups.length > 0 && <ListSection title="群聊" count={groups.length} />}
+      {groups.map((t) => (
+        <ListRow
+          key={t.id}
+          className="chat-row group"
+          avatar={groupMark}
+          title={titleOf(t)}
+          time={timeText(t.updatedAt)}
+          sub={t.last ? `${show(t.last.author)}：${preview(t.last)}` : `${shownIn(t).length} 人`}
+          badge={t.unread}
+          unread={t.unread > 0}
+          current={t.id === props.openId}
+          onClick={() => props.onOpen(t.id)}
+          extra={archive(t)}
+        />
+      ))}
+      <ListSection title="私聊" count={people.length} />
       {people.map((p) => {
-        const mine = live.filter((t) => t.members.includes(p.name));
+        const mine = withPerson(p.name);
         const direct = mine.find((t) => t.kind === "direct");
         const topics = mine.filter((t) => t.kind === "topic").sort((a, b) => a.createdAt - b.createdAt);
-        const groups = mine.filter((t) => t.kind === "group");
-        const unread = mine.reduce((n, t) => n + t.unread, 0);
-        const unfolded = open.has(p.name);
         return (
-          <div key={p.name} className="person-node">
-            <button type="button" className="nav-row person-head-row" onClick={() => toggle(p.name)} aria-expanded={unfolded}>
-              <span className="name">
-                <span className="fold">{unfolded ? "▾" : "▸"}</span>
-                <Avatar name={p.name} small />
-                <span className="ellipsis">
-                  <Who name={p.name} />
+          <div key={p.name} className="person-node" data-person={p.name}>
+            <ListRow
+              className="chat-row"
+              avatar={
+                <span className="av-dot">
+                  <Avatar name={p.name} />
+                  <span className={`dot ${p.online ? "on" : ""}`} title={p.online ? "在线" : "不在线"} />
                 </span>
-              </span>
-              {unread > 0 && !unfolded && <span className="badge">{unread}</span>}
-              <span className={`dot ${p.online ? "on" : ""}`} title={p.online ? "在线" : "不在线"} />
-            </button>
-            {unfolded && (
-              <div className="person-kids">
-                <ChatRow label="普通聊天" thread={direct} current={!!direct && direct.id === props.openId} onClick={() => (direct ? props.onOpen(direct.id) : props.onChatWith(p.name))} />
-                {topics.map((t) => (
-                  <ChatRow key={t.id} label={t.title} tag="话题" thread={t} current={t.id === props.openId} onClick={() => props.onOpen(t.id)} onArchive={() => props.onArchive(t, true)} />
-                ))}
-                {adding === p.name ? (
-                  <NewTopic other={p.name} onDone={() => setAdding(null)} onNewTopic={props.onNewTopic} />
-                ) : (
-                  <button type="button" className="kid-add" onClick={() => setAdding(p.name)}>
-                    ＋ 新话题
-                  </button>
-                )}
-                {groups.length > 0 && <div className="kid-label">群聊 · {groups.length}</div>}
-                {groups.map((t) => (
-                  <ChatRow key={t.id} label={t.title} tag={`${t.members.length} 人`} thread={t} current={t.id === props.openId} onClick={() => props.onOpen(t.id)} onArchive={() => props.onArchive(t, true)} group />
-                ))}
-              </div>
-            )}
+              }
+              title={<Who name={p.name} />}
+              time={direct ? timeText(direct.updatedAt) : undefined}
+              sub={direct?.last ? preview(direct.last) : <span className="muted">{p.role || "还没聊过"}</span>}
+              badge={direct?.unread}
+              unread={!!direct?.unread}
+              current={!!direct && direct.id === props.openId}
+              onClick={() => (direct ? props.onOpen(direct.id) : props.onChatWith(p.name))}
+            />
+            {topics.map((t) => (
+              <ListRow
+                key={t.id}
+                className="chat-row kid"
+                title={
+                  <>
+                    <span className="tag">话题</span> {t.title}
+                  </>
+                }
+                time={timeText(t.updatedAt)}
+                sub={t.last ? preview(t.last) : undefined}
+                badge={t.unread}
+                unread={t.unread > 0}
+                current={t.id === props.openId}
+                onClick={() => props.onOpen(t.id)}
+                extra={archive(t)}
+              />
+            ))}
           </div>
         );
       })}
-      {!others.length && <div className="nav-empty">还没有其他人。把服务器的地址发给同事，让他们注册。</div>}
+      {!others.length && <div className="list-empty">还没有其他人。把服务器的地址发给同事，让他们注册。</div>}
+      {!!others.length && !people.length && !groups.length && <div className="list-empty">没有找到「{props.query}」。</div>}
       {archived.length > 0 && (
         <>
           <button type="button" className="nav-fold" onClick={() => setArchOpen(!archOpen)}>
@@ -96,7 +114,20 @@ export function ChatTree(props: {
           </button>
           {archOpen &&
             archived.map((t) => (
-              <ChatRow key={t.id} label={t.title || "普通聊天"} tag={t.kind === "group" ? "群聊" : "话题"} thread={t} current={t.id === props.openId} onClick={() => props.onOpen(t.id)} onArchive={() => props.onArchive(t, false)} archived />
+              <ListRow
+                key={t.id}
+                className="chat-row kid archived"
+                title={
+                  <>
+                    <span className="tag">{t.kind === "group" ? "群聊" : "话题"}</span> {titleOf(t) || "普通聊天"}
+                  </>
+                }
+                time={timeText(t.updatedAt)}
+                sub={t.last ? preview(t.last) : undefined}
+                current={t.id === props.openId}
+                onClick={() => props.onOpen(t.id)}
+                extra={archive(t, true)}
+              />
             ))}
         </>
       )}
@@ -104,34 +135,35 @@ export function ChatTree(props: {
   );
 }
 
-function ChatRow(props: { label: string; tag?: string; thread?: Thread; current: boolean; onClick: () => void; onArchive?: () => void; group?: boolean; archived?: boolean }) {
-  const t = props.thread;
+/** The groups someone and I are both in (a person's page in 成员). */
+export function SharedGroups({ session, name, onOpen }: { session: Session; name: string; onOpen: (id: string) => void }) {
+  const { threads, members } = useSession(session);
+  const show = useDisplayName();
+  const hidden = unlistedNames(members, session.me.name);
+  const titleOf = useChatTitle(session.me.name);
+  const groups = threads.filter((t) => t.kind === "group" && t.members.includes(name)).sort((a, b) => b.updatedAt - a.updatedAt);
   return (
-    <div className="srow-wrap">
-      <button type="button" className={`srow kid ${t?.unread ? "unread" : ""}`} aria-current={props.current ? "true" : undefined} onClick={props.onClick}>
-        <div className="srow-top">
-          {props.group && <span className="group-mark">群</span>}
-          <span className="srow-title">{props.label}</span>
-          {props.tag && <span className="tag">{props.tag}</span>}
-          {t && t.unread > 0 && <span className="badge">{t.unread}</span>}
-          {t && <span className="srow-time">{timeText(t.updatedAt)}</span>}
-        </div>
-        {t?.last && (
-          <div className="srow-meta">
-            <span className="t">{preview(t.last)}</span>
-          </div>
-        )}
-      </button>
-      {props.onArchive && (
-        <button type="button" className="small srow-archive" title={props.archived ? "放回列表" : "归档：从列表收起，只影响你自己；有新消息会回来"} onClick={props.onArchive}>
-          {props.archived ? "放回" : "归档"}
+    <>
+      <h3>一起在的群聊 · {groups.length}</h3>
+      {groups.map((t) => (
+        <button key={t.id} type="button" className="box-row group-box" onClick={() => onOpen(t.id)}>
+          <span className="avatar sq group">群</span>
+          <span className="grow">
+            <b>{titleOf(t)}</b>
+            <span className="muted tiny ellipsis">
+              {t.members.filter((n) => !hidden.has(n)).length} 人 · {t.members.filter((n) => !hidden.has(n)).map(show).join("、")}
+            </span>
+          </span>
+          {t.archived && <span className="chip">已归档</span>}
         </button>
-      )}
-    </div>
+      ))}
+      {!groups.length && <div className="muted tiny">没有。在聊天里 @ 别人，就会把那个对话变成群聊。</div>}
+    </>
   );
 }
 
-function NewTopic({ other, onDone, onNewTopic }: { other: string; onDone: () => void; onNewTopic: (other: string, title: string) => Promise<void> }) {
+function NewTopicDialog({ other, onClose, onNewTopic }: { other: string; onClose: () => void; onNewTopic: (other: string, title: string) => Promise<void> }) {
+  const show = useDisplayName();
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -140,57 +172,49 @@ function NewTopic({ other, onDone, onNewTopic }: { other: string; onDone: () => 
     setBusy(true);
     try {
       await onNewTopic(other, title.trim());
-      onDone();
+      onClose();
     } catch (err) {
       setError(errorText(err));
       setBusy(false);
     }
   };
   return (
-    <form
-      className="kid-new"
-      onSubmit={(e) => {
-        e.preventDefault();
-        void start();
-      }}
+    <Dialog
+      title="新话题"
+      sub={`和 ${show(other)} 单独聊一件事；普通聊天还在`}
+      onClose={onClose}
+      foot={
+        <>
+          <button type="button" onClick={onClose}>
+            取消
+          </button>
+          <button type="button" className="primary" disabled={busy || !title.trim()} onClick={() => void start()}>
+            开始
+          </button>
+        </>
+      }
     >
-      <input value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => e.key === "Escape" && onDone()} placeholder="话题，比如：技能表结构" autoFocus />
-      <button type="submit" className="small primary" disabled={busy || !title.trim()}>
-        开始
-      </button>
-      {error && <span className="error tiny">{error}</span>}
-    </form>
-  );
-}
-
-/** Every group I am in, for 成员. */
-export function GroupRows({ session, onOpen }: { session: Session; onOpen: (id: string) => void }) {
-  const { threads } = useSession(session);
-  const groups = threads.filter((t) => t.kind === "group").sort((a, b) => b.updatedAt - a.updatedAt);
-  return (
-    <>
-      <div className="nav-label">
-        群聊<span className="count">{groups.length}</span>
-        <span className="rule" />
-      </div>
-      {groups.map((t) => (
-        <ChatRow key={t.id} label={t.title} tag={`${t.members.length} 人`} thread={t} current={false} onClick={() => onOpen(t.id)} group archived={t.archived} />
-      ))}
-      {!groups.length && <div className="nav-empty">还没有群聊。在聊天里 @ 别人，就会把这个对话变成群聊。</div>}
-    </>
+      <Field label="话题">
+        <input value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void start()} placeholder="话题，比如：技能表结构" autoFocus />
+      </Field>
+      {error && <div className="notice error">{error}</div>}
+    </Dialog>
   );
 }
 
 /** A chat: the plain one with someone, a topic, or a group. */
-export function ChatView({ session, thread, toast, onArchive }: { session: Session; thread: Thread; toast: (text: string) => void; onArchive: (thread: Thread, archived: boolean) => void }) {
+export function ChatView({ session, thread, toast, onArchive, onNewTopic }: { session: Session; thread: Thread; toast: (text: string) => void; onArchive: (thread: Thread, archived: boolean) => void; onNewTopic: (other: string, title: string) => Promise<void> }) {
   const me = session.me.name;
   const { members } = useSession(session);
   const show = useDisplayName();
   const { messages, error } = useMessages(session, thread.id);
   const other = thread.members.find((n) => n !== me) ?? me;
   const online = members.find((m) => m.name === other)?.online;
-  const [dialog, setDialog] = useState<"add" | "rename" | null>(null);
+  const [dialog, setDialog] = useState<"add" | "rename" | "topic" | null>(null);
   const group = thread.kind === "group";
+  const hidden = unlistedNames(members, me);
+  const shown = thread.members.filter((n) => !hidden.has(n));
+  const title = useChatTitle(me)(thread);
 
   const copyAll = async () => {
     if (!messages) return;
@@ -200,27 +224,27 @@ export function ChatView({ session, thread, toast, onArchive }: { session: Sessi
   const leave = async () => {
     try {
       await session.client.leave(thread.id);
-      toast(`已退出「${thread.title}」`);
+      toast(`已退出「${title}」`);
     } catch (err) {
       toast(errorText(err));
     }
   };
 
   return (
-    <section className="view" aria-label={group ? thread.title : other}>
+    <section className="view" aria-label={group ? title : other}>
       <header className="page-head">
         <div className="head-main">
-          <div className="page-crumb">{group ? "群聊" : thread.kind === "topic" ? <>和 <Who name={other} /> 的话题</> : "普通聊天"}</div>
-          <h1 className="head-title">{group || thread.kind === "topic" ? thread.title : <Who name={other} />}</h1>
+          <h1 className="head-title">{group || thread.kind === "topic" ? title : <Who name={other} />}</h1>
           <div className="head-meta">
+            <span className="page-crumb">{group ? "群聊" : thread.kind === "topic" ? <>和 <Who name={other} /> 的话题</> : "私聊"}</span>
             {group ? (
               <span className="faces">
-                {thread.members.map((n) => (
+                {shown.map((n) => (
                   <span key={n} className="face" title={show(n)}>
                     <Avatar name={n} small />
                   </span>
                 ))}
-                <span className="muted tiny">{thread.members.length} 人</span>
+                <span className="muted tiny">{shown.length} 人</span>
               </span>
             ) : (
               <span className={`conn-chip ${online ? "online" : ""}`}>
@@ -235,6 +259,11 @@ export function ChatView({ session, thread, toast, onArchive }: { session: Sessi
           <button type="button" onClick={() => setDialog("add")} title={group ? "拉更多人进群" : "拉人进来，这个对话会变成群聊（他们能看到之前的内容）"}>
             ＋ 拉人
           </button>
+          {!group && (
+            <button type="button" onClick={() => setDialog("topic")} title={`和 ${show(other)} 另开一个话题，单独聊一件事`}>
+              ＋ 新话题
+            </button>
+          )}
           {thread.kind !== "direct" && (
             <button type="button" onClick={() => setDialog("rename")}>
               改名
@@ -255,10 +284,11 @@ export function ChatView({ session, thread, toast, onArchive }: { session: Sessi
           </button>
         </div>
       </header>
-      <MessageList messages={messages} error={error} me={me} questions={[]} empty={group ? "群聊里还没有消息。" : thread.kind === "topic" ? `新话题「${thread.title}」，说点什么吧。` : "还没有消息，说点什么吧。"} />
-      <MentionComposer session={session} thread={thread} people={members.filter((m) => m.name !== me)} toast={toast} />
+      <MessageList messages={messages} error={error} me={me} questions={[]} refOf={(m) => ({ text: messageRef(m.seq, { name: group || thread.kind === "topic" ? title : show(other) }), what: `这条消息（#${m.seq}）` })} empty={group ? "群聊里还没有消息。" : thread.kind === "topic" ? `新话题「${thread.title}」，说点什么吧。` : "还没有消息，说点什么吧。"} />
+      <MentionComposer session={session} thread={thread} people={listedOthers(members, me)} toast={toast} />
       {dialog === "add" && <AddPeopleDialog session={session} thread={thread} onClose={() => setDialog(null)} toast={toast} />}
       {dialog === "rename" && <RenameDialog session={session} thread={thread} onClose={() => setDialog(null)} toast={toast} />}
+      {dialog === "topic" && <NewTopicDialog other={other} onClose={() => setDialog(null)} onNewTopic={onNewTopic} />}
     </section>
   );
 }
@@ -272,6 +302,7 @@ function MentionComposer({ session, thread, people, toast }: { session: Session;
   const [pick, setPick] = useState<{ from: number; query: string } | null>(null);
   const [confirm, setConfirm] = useState<string[] | null>(null);
   const box = useRef<HTMLTextAreaElement>(null);
+  const title = useChatTitle(session.me.name)(thread);
   useEffect(() => setText(""), [thread.id]);
 
   const mentioned = useMemo(() => people.filter((p) => text.includes(`@${p.name}`)).map((p) => p.name), [text, people]);
@@ -338,7 +369,7 @@ function MentionComposer({ session, thread, people, toast }: { session: Session;
         value={text}
         onChange={(e) => onChange(e.target.value, e.target.selectionStart)}
         onKeyDown={key}
-        placeholder={thread.kind === "group" ? `发到「${thread.title}」…（@ 某人会提醒他）` : `发给 ${show(thread.members.find((n) => n !== session.me.name) ?? "")}…（@ 别人会把他拉进来，变成群聊）`}
+        placeholder={thread.kind === "group" ? `发到「${title}」…（@ 某人会提醒他）` : `发给 ${show(thread.members.find((n) => n !== session.me.name) ?? "")}…（@ 别人会把他拉进来，变成群聊）`}
         rows={2}
       />
       <div className="acts">
@@ -375,7 +406,7 @@ function MentionComposer({ session, thread, people, toast }: { session: Session;
 function AddPeopleDialog({ session, thread, onClose, toast }: { session: Session; thread: Thread; onClose: () => void; toast: (t: string) => void }) {
   const { members } = useSession(session);
   const show = useDisplayName();
-  const outside = members.filter((m) => !thread.members.includes(m.name));
+  const outside = listedOthers(members, session.me.name).filter((m) => !thread.members.includes(m.name));
   const [chosen, setChosen] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const go = async () => {
@@ -422,7 +453,7 @@ function AddPeopleDialog({ session, thread, onClose, toast }: { session: Session
 }
 
 function RenameDialog({ session, thread, onClose, toast }: { session: Session; thread: Thread; onClose: () => void; toast: (t: string) => void }) {
-  const [title, setTitle] = useState(thread.title);
+  const [title, setTitle] = useState(useChatTitle(session.me.name)(thread));
   const go = async () => {
     try {
       await session.client.rename(thread.id, title.trim());

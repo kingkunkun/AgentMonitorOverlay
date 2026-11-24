@@ -75,6 +75,8 @@ export interface NewSessionInput {
   profileId: Id;
   /** Explicit objective for a new local Codex chat. Set on its own thread before the first message. */
   initialGoal?: string;
+  /** 新会话 (2026-11-17): its name; left out (or blank), named as before (from its first message). */
+  title?: string;
   /** Topic sessions only: one of the topic's projects; the common space when omitted. Task sessions use the task's. */
   workspaceId?: Id;
   /** First user message; when present the session starts a turn right away. */
@@ -253,13 +255,26 @@ export const OPTIONAL_FEATURES: readonly { id: OptionalFeature; label: string; h
  * 设置 → 测试功能 (2026-11-01, the user: 设置里加个测试功能页，这个功能加个开关): features still being tried out. The
  * opposite of OPTIONAL_FEATURES: off until the person turns one on, and the settings list the ones turned on.
  */
-export type ExperimentalFeature = "panorama" | "tracks";
+export type ExperimentalFeature = "panorama" | "tracks" | "typing-hold" | "whiteboard" | "review-progress";
 
 /**
  * `dev` (2026-11-09, the user: 给测试功能全景加一个开发中的标记): still being built, shown as 「开发中」 beside its name —
  * what it does now is a first piece, or nothing yet.
  */
-export const EXPERIMENTAL_FEATURES: readonly { id: ExperimentalFeature; label: string; hint: string; stage?: "dev" }[] = [
+export const EXPERIMENTAL_FEATURES: readonly {
+  id: ExperimentalFeature;
+  label: string;
+  hint: string;
+  stage?: "dev";
+  /**
+   * An option of that feature (2026-11-15, the user: 给脉络单独加一个弹窗或者选项卡…我们开发中的有些东西可以先放在里面): listed
+   * on the feature's own page in 设置 → 测试功能 → 详细设置, not in the list; it counts only while the feature is on too
+   * (experimentalEnabled).
+   */
+  parent?: ExperimentalFeature;
+  /** What the feature has once it is on, with no switch of its own: said on its own page. */
+  has?: readonly { label: string; hint: string }[];
+}[] = [
   {
     id: "panorama",
     label: "全景",
@@ -267,14 +282,58 @@ export const EXPERIMENTAL_FEATURES: readonly { id: ExperimentalFeature; label: s
     stage: "dev",
   },
   // 脉络 (2026-11-09, plans/tracks.md): one session carrying several things at once keeps where each line stands outside
-  // its context, so a compaction does not lose the quiet ones. Only the switch so far.
+  // its context, so a compaction does not lose the quiet ones. 2026-11-15 (plans/collab-framework.md): its first piece —
+  // the list of a session's 事项 in the task page's side column.
   {
     id: "tracks",
     label: "脉络",
-    hint: "一个会话里同时推进几件事时，把每条线做到哪、还欠什么、在等谁记在会话外面，上下文压缩了也不丢；会话顶上会多一个「对话 / 脉络」切换。现在打开还没有入口。",
+    hint: "一个会话里同时推进几件事时，把每条线做到哪、还欠什么、在等谁记在会话外面，上下文压缩了也不丢；现在做了两块（事项清单、脉络会话）。里面有什么、还有哪些开发中的选项可以单独打开，点「详细设置」看。",
+    stage: "dev",
+    has: [
+      {
+        label: "事项清单",
+        hint: "任务页右边的侧栏（顶栏「侧栏」）最上面多一栏「还开着的事 / 已结束的事」：眼前这个会话经中转问了谁、等了多久，哪个子会话在跑，哪个审批、提问、决定在等你，还压着几条没送进去的消息；点一条跳到对话里对应的位置，或者去那个子会话。它是从 Studio 已有的记录里算出来的，不花模型的 token；你口头交代 AI 要做的事、谈定的结论不在这一栏，在脉络会话的「要点」里。",
+      },
+      {
+        label: "脉络会话（楼）",
+        hint: "每个会话的对话上方多一行「对话 | 脉络」和一个「脉络会话」勾选框。点「脉络」：这个会话画成一栋楼，一轮一层，最新的在上面；它开的子会话是开出它那一层上的一块区域，回报是收到它那一层上的小卡，还没完的事（等你审批、子会话在跑、中转没回）在楼顶；点楼层右边显示那一轮，点卡片相关的楼层竖起来，「在对话里看这一轮」跳回对话。输入框一直在下面，照常发消息。勾上「脉络会话」：这个会话以后一打开就是楼，并且从你发的下一条消息起，AI 每轮结束时给这一轮写一行标题和一句结果、把你强调的事和谈定的结论记成「要点」（多花一点 token：每轮一次很短的工具调用）；没勾、或者勾之前的轮次，标题用对话里的话顶着。楼是每次打开时从会话记录现算的，旧会话也能看。",
+      },
+    ],
+  },
+  // 白板 (2026-11-16, plans/whiteboard.md; the user: 我觉得可能更需要的是一个 board，给 ai 来做数据临时存储…人只是看这个白板加批注).
+  {
+    id: "whiteboard",
+    label: "白板",
+    hint: "每个会话的对话上方多一项「白板」：AI 把确认下来的任务内容、推进计划、它给的每条建议、子会话查到的结论、定下来的事写成一块白板，有进展就改上面的节点；你不用翻对话，看白板就知道推进到哪了。你不改白板，只在上面写批注：点一个节点写，或者在任意位置右键写；批注攒着，随你的下一条消息一起带给 AI，它逐条回应。上下文压缩之后 AI 也靠它找回前面的事。在一个会话里点「开白板」才开始，开了之后 AI 多花一些 token 来写它。现在只有会话自己的白板，远程任务和手机上还没有。",
+    stage: "dev",
+  },
+  // 打字时不插队 (2026-11-15, plans/collab-framework.md): shipped on in 0.9.69; the same day the user: 「这个可以先去掉，
+  // 等我体验一段时间」 — off unless turned on, on 脉络's own page.
+  {
+    id: "typing-hold",
+    parent: "tracks",
+    stage: "dev",
+    label: "打字时不插队",
+    hint: "你在一个会话的输入框里打字时，别处送来的消息（子会话回报、中转回复、传话、留言）先不送进去：最近 5 分钟按过输入框就压着，等你发出下一条消息时排在它后面一起送；输入框清空了、或者 5 分钟没动，就照常送。关着时和以前一样：会话一空闲，来的消息马上送进去、AI 开始处理。",
+  },
+  // 审阅进度 (2026-11-16, plans/review-progress.md; the user: 我再想更新需要的功能是之前说的那个审核，阅读看到哪然后标记上。我们
+  // 可以在会话里加上): the conversation's piece first, kept by the Host. 第二版 (2026-11-16): read block by block, marked
+  // on a line at each reply's right (reviewprogress.ts).
+  {
+    id: "review-progress",
+    label: "审阅进度",
+    hint: "对话里每一条 AI 回复的右边多一条竖线，用来标你读到哪了。在竖线上某一段的高度左键点一下：这条回复从头读到这一段（下面画一道线，写「读到这里」）；再点别处位置跟着走，在同一处再点一次是取消。右键点一下：这一段标一个「!」，表示有问题；再右键一次取消。什么都不会自动标，滚过去不算读过。对话右上角的「复盘」：打开后没读到的段落带底色，顶上写还有几条回复没读完、几处有问题，可以跳到下一处没读的，或者在某一条回复末尾点「到这里为止都读过」一次标完。你发下一条消息时，新标的「!」和最后一条回复读到哪（只读了一部分时）会随消息告诉 AI。进度记在这台电脑的 Studio 里，换会话、重启都在；脉络的会话弹窗里也一样。现在只做了对话，文档、查看包、Git 改动还不记。",
     stage: "dev",
   },
 ];
+
+/** Whether a feature being tried out is in effect: turned on, and — an option of another feature — that one on too. */
+export function experimentalEnabled(on: readonly ExperimentalFeature[] | undefined, id: ExperimentalFeature): boolean {
+  const list = on ?? [];
+  if (!list.includes(id)) return false;
+  const parent = EXPERIMENTAL_FEATURES.find((f) => f.id === id)?.parent;
+  return !parent || experimentalEnabled(list, parent);
+}
 
 /** Studio-wide settings kept by the Host (the look of the UI is per install, in the UI itself). */
 export interface StudioSettings {
@@ -332,6 +391,11 @@ export interface StudioSettings {
    * conversation by themselves; null leaves it to each CLI (near the model's whole window).
    */
   autoCompactTokens: number | null;
+  /**
+   * The person never chose the value above (2026-11-15): it is DEFAULT_AUTO_COMPACT_TOKENS, and the channels with a
+   * default of their own (AUTO_COMPACT_PROFILE_DEFAULTS) use that instead.
+   */
+  autoCompactUnset?: boolean;
   /** S18: channels (profile ids) with their own 自动压缩点, set on their page in 设置 → 模型; the rest use the above. */
   autoCompactProfiles: Record<string, AutoCompactChoice>;
   /** 项目分组 (2026-10-22): the left column's project groups, in order. */
@@ -369,13 +433,22 @@ export interface TopicGroup {
 export type AutoCompactChoice = number | "cli";
 
 /** The 自动压缩点 a channel's sessions get: its own, else the shared one; null = the CLI decides. */
-export function autoCompactFor(s: Pick<StudioSettings, "autoCompactTokens" | "autoCompactProfiles">, profileId: string): number | null {
+export function autoCompactFor(s: Pick<StudioSettings, "autoCompactTokens" | "autoCompactProfiles" | "autoCompactUnset">, profileId: string): number | null {
   const own = s.autoCompactProfiles?.[profileId];
-  return own === "cli" ? null : (own ?? s.autoCompactTokens);
+  return own === "cli" ? null : (own ?? (s.autoCompactUnset ? autoCompactDefault(profileId) : s.autoCompactTokens));
 }
 
 /** 自动压缩点 by default: the person's choice (2026-10-17), well below the 1M windows the CLIs would otherwise wait for. */
 export const DEFAULT_AUTO_COMPACT_TOKENS = 272_000;
+/**
+ * The channels whose default is their own (the user, 2026-11-15: claude 的默认上下文大小改成 42k，gpt 的改成 50k — 420k and
+ * 500k: 42k is under the smallest value allowed, and their own Claude channel stood at 412k): the Claude login and
+ * Codex's own GPT. The other channels (GLM, DeepSeek, the person's own) keep the default above: their windows differ.
+ * A value set on the channel's page comes first, then a shared value the person chose.
+ */
+export const AUTO_COMPACT_PROFILE_DEFAULTS: Readonly<Record<string, number>> = { "claude-subscription": 420_000, "codex-default": 500_000 };
+/** 自动压缩点 of a channel nobody set anything for. */
+export const autoCompactDefault = (profileId: string): number => AUTO_COMPACT_PROFILE_DEFAULTS[profileId] ?? DEFAULT_AUTO_COMPACT_TOKENS;
 export const AUTO_COMPACT_MIN = 50_000;
 export const AUTO_COMPACT_MAX = 1_000_000;
 
@@ -610,7 +683,7 @@ export interface TokenStatsRange {
   generatedAt: Timestamp;
   ms: number;
   turns: number;
-  rows: Array<Omit<TokenStatsDay, "date">>;
+  rows: Array<Omit<TokenStatsDay, "date" | "source" | "unclassified">>;
   models: TokenStatsModel[];
 }
 
@@ -792,6 +865,12 @@ export interface HostRoutes
   /** A topic session (专题会话): coordinates the topic's tasks; runs in one of its projects or the common space. */
   "POST /api/topics/:id/sessions": { req: NewSessionInput; res: Session };
   "POST /api/tasks/:id/sessions": { req: NewSessionInput; res: Session };
+  /**
+   * 拖拽排序 (2026-11-17): the order of sessions side by side in the task's list — the main sessions, or those under one
+   * session (never across). `order`: their ids as they should stand; the others of that level keep theirs after them.
+   * Returns the sessions whose place changed. A remote task's copy: done on its own computer (rt.order).
+   */
+  "PUT /api/tasks/:id/session-order": { req: { order: Id[] }; res: Session[] };
   /** `?after=<seq>`: only later ones. `?tail=<n>`: only the last n, and pending questions and approvals from before them (Focus shows a session's latest; 2026-10-24). */
   "GET /api/sessions/:id/items": { req: void; res: SessionItem[] };
   /** Starts a turn when idle, steers the running turn otherwise. */
@@ -807,6 +886,40 @@ export interface HostRoutes
    */
   "POST /api/sessions/:id/messages": { req: { text: string; attachments?: Id[]; annotations?: Id[]; now?: boolean; subsessions?: SubsessionSetup[] }; res: { mode: "start" | "steer" | "queue" } };
   "POST /api/sessions/:id/interrupt": { req: void; res: { ok: true } };
+  /**
+   * 打字时不插队 (2026-11-15): the person touched this session's composer (`active`; said at most once a minute while
+   * they type) or emptied it by hand (not `active`). For five minutes after a touch, what agents and Studio send into
+   * the session is held and goes in behind the person's next message. Only with 测试功能 脉络 → 「打字时不插队」 on; else nothing.
+   */
+  "POST /api/sessions/:id/typing": { req: { active: boolean }; res: { ok: true } };
+  /**
+   * 脉络的楼 (2026-11-15, tower.ts): the session as a building, put together from its rows when asked for. PUT turns the
+   * session into a 脉络会话 (it opens as its building, and its AI is asked to title its rounds) or back.
+   */
+  "GET /api/sessions/:id/tracks": { req: void; res: import("./tower.js").TowerData };
+  "PUT /api/sessions/:id/tracks": { req: { on: boolean }; res: import("./tower.js").TowerData };
+  /** The sessions that are 脉络会话. */
+  "GET /api/tracks": { req: void; res: { on: Id[] } };
+  /**
+   * 白板 (2026-11-16, whiteboard.ts): a session's working board — its AI writes it (whiteboard_update, whiteboard_view), the person
+   * looks and pins notes. PUT: `on` tells the session's AI to keep one (with the person's next message) or stops it;
+   * `seen` says the person has looked at it as it is now. The notes are the person's: written, rewritten while not
+   * sent yet, closed (or opened again), taken off; they go to the AI with the person's next message. GET /api/whiteboards:
+   * the sessions whose board is on, each with how far it is and how far the person has looked (the mark on 「白板」).
+   */
+  "GET /api/whiteboards": { req: void; res: { on: Array<{ sessionId: Id; rev: number; seenRev: number }> } };
+  "GET /api/sessions/:id/whiteboard": { req: void; res: import("./whiteboard.js").WhiteboardData };
+  "PUT /api/sessions/:id/whiteboard": { req: { on?: boolean; seen?: true }; res: import("./whiteboard.js").WhiteboardData };
+  "POST /api/sessions/:id/whiteboard/notes": { req: { nodeId?: string; x?: number; y?: number; quote?: string; text: string }; res: import("./whiteboard.js").WhiteboardData };
+  "PUT /api/sessions/:id/whiteboard/notes/:noteId": { req: { text?: string; closed?: boolean }; res: import("./whiteboard.js").WhiteboardData };
+  "DELETE /api/sessions/:id/whiteboard/notes/:noteId": { req: void; res: import("./whiteboard.js").WhiteboardData };
+  /**
+   * 审阅进度 (reviewprogress.ts; 第二版 2026-11-16): how far the person on this computer read each of the session's
+   * replies, block by block, and the blocks they marked 「!」. PUT: one change (ReviewChange: `read`, `flag`, `readUpTo`);
+   * ids that are not replies of the session are refused (`read`, `flag`) or left out (`readUpTo`).
+   */
+  "GET /api/sessions/:id/review-progress": { req: void; res: import("./reviewprogress.js").ReviewProgress };
+  "PUT /api/sessions/:id/review-progress": { req: import("./reviewprogress.js").ReviewChange; res: import("./reviewprogress.js").ReviewProgress };
   /** 立即发送 on a message still waiting (delivery `waiting`): the running turn gives way and the model reads it now. Nothing when it is not waiting any more. */
   "POST /api/sessions/:id/items/:itemId/send-now": { req: void; res: { ok: true } };
   /** 重新发送 a message its process never read (delivery `unsent`): the same item goes again. */
@@ -893,9 +1006,50 @@ export interface HostRoutes
   "GET /api/teamrelay/threads": { req: void; res: import("./entities.js").TeamThread[] };
   /**
    * 在 Studio 里打开 (2026-11-05): show this session in the workbench (a `ui.open` event the main window acts on). AMO 中转
-   * asks it for a session one of this computer's sessions sent; 404 when there is no such session.
+   * asks it for a session one of this computer's sessions sent; 404 when there is no such session. `cowork-to-<threadId>`
+   * (2026-11-23) is 转到我的会话 through a client that only knows this route: as POST /api/cowork/handoff (both ids "").
    */
   "POST /api/ui/open": { req: { sessionId: Id }; res: { taskId: Id; sessionId: Id } };
+  /**
+   * 协作 (2026-11-23, plans/cowork.md): this computer's sessions in 协作 on AMO 中转, as last seen (refreshed about every 30 s,
+   * and at once when one joins or leaves).
+   */
+  "GET /api/cowork/joined": { req: void; res: import("./entities.js").CoworkJoin[] };
+  /** The 协作 the person (`me`, their team account) is in, from the team server: what 拉进协作 offers. */
+  "GET /api/cowork/coworks": { req: void; res: { me: string; coworks: import("./entities.js").CoworkChoice[] } };
+  /** 拉进协作: the session joins it as 「<我> 的 AI · <label>」 (label: 会话名 by default). */
+  "POST /api/cowork/join": { req: { sessionId: Id; coworkId: string; label?: string }; res: import("./entities.js").CoworkJoin };
+  /** 退出协作: the session leaves it; what was queued for it there is dropped. */
+  "POST /api/cowork/leave": { req: { sessionId: Id; coworkId: string }; res: { ok: true } };
+  /**
+   * The composer of a session in a 协作 has text in it (or not any more): its agent is 「等主人」 while it has, and what the
+   * 协作 sends it waits. The workbench says so when it changes and again every minute while it has; unsaid for 3 minutes
+   * counts as empty.
+   */
+  "POST /api/sessions/:id/composer": { req: { hasText: boolean }; res: { ok: true } };
+  /**
+   * 转到我的会话 (2026-11-23): AMO 中转 on this computer hands a 子会话 (threadId) of a 协作 to Studio; the workbench comes forward
+   * and asks which session takes it. The person must be in the 协作.
+   */
+  "POST /api/cowork/handoff": { req: { threadId: string }; res: import("./entities.js").CoworkHandoff };
+  /** The handoffs not taken or put away yet. */
+  "GET /api/cowork/handoffs": { req: void; res: import("./entities.js").CoworkHandoff[] };
+  /**
+   * Takes one: into `sessionId`, or a new task's first session (`newTask`: its project and model). That session joins the
+   * 协作 and gets the 子会话 in full.
+   */
+  "POST /api/cowork/handoff/accept": { req: { threadId: string; sessionId?: Id; newTask?: { workspaceId: Id; profileId: Id } }; res: { taskId: Id; sessionId: Id } };
+  /** Puts one away (不转了). */
+  "POST /api/cowork/handoff/dismiss": { req: { threadId: string }; res: { ok: true } };
+  /**
+   * 复制会话引用 (2026-11-23, refs.ts): `Studio 会话「名」 studio:<设备号>:<会话id>（任务 …）`, the device being this computer's.
+   */
+  "GET /api/sessions/:id/ref": { req: void; res: { text: string } };
+  /**
+   * The 协作 line (2026-11-23): starts the AMO 中转 client on this computer with `--open=<target>` (cowork:<id> or thread:<id>),
+   * found by its running.json, else AMO 平台's programs.json (`from`); 404 when there is none. Test runs only record it (dryRun).
+   */
+  "POST /api/cowork/open-in-relay": { req: { target: string }; res: { exe: string; from: "running.json" | "programs.json"; args: string[]; dryRun: boolean } };
 }
 
 export type HostRoute = keyof HostRoutes;
@@ -921,6 +1075,16 @@ export type HostEvent = { seq: number } & (
   | { type: "teamsend.upserted"; send: import("./entities.js").TeamSend }
   /** The 中转 sessions this computer's sessions sent, all of them, when one changed. */
   | { type: "teamthreads.changed"; threads: import("./entities.js").TeamThread[] }
+  /** 协作 (2026-11-23): this computer's sessions in 协作, all of them, when one joined, left or its state changed. */
+  | { type: "cowork.joined.changed"; joined: import("./entities.js").CoworkJoin[] }
+  /** 转到我的会话: the handoffs waiting, all of them; `added` is the one that just came (the workbench comes forward for it). */
+  | { type: "cowork.handoffs.changed"; handoffs: import("./entities.js").CoworkHandoff[]; added?: string }
+  /** A session became a 脉络会话 or stopped being one, or its AI wrote a round's title or a point (track_note). */
+  | { type: "tracks.changed"; sessionId: Id; on: boolean }
+  /** A session's 白板 changed: turned on or off, its AI wrote it, the person pinned a note, their notes went to the AI. */
+  | { type: "whiteboard.changed"; sessionId: Id; on: boolean; rev: number; seenRev: number }
+  /** A session's 审阅进度 changed (read to a block, a 「!」 on or off, 到这里为止都读过, the 「!」 told to the AI): all of it. */
+  | { type: "reviewprogress.changed"; sessionId: Id; replies: Record<Id, import("./reviewprogress.js").ReviewRead> }
   | { type: "session.upserted"; session: Session }
   /** Transient invalidation for the thread's native goal. Its text stays out of the broadcast. */
   | { type: "codex.goal-changed"; sessionId: Id }

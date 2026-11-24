@@ -13,8 +13,8 @@
     <div class="s-nav-row" data-k="newProject" data-off>▭ MyGame<span class="n">0</span></div>`;
   const draft = `
     <div class="s-draft" data-k="draft" data-off>
-      <div class="s-crumb"><span class="s-btn ghost">‹ 看板</span>/ 新任务<span class="s-sp"></span><span class="s-hide-narrow">草稿自动保存，离开也不会丢</span></div>
-      <div class="s-ask">要推进什么？</div>
+      <div class="s-crumb"><span class="s-btn ghost">‹ 看板</span>/ 新聊天<span class="s-sp"></span><span class="s-hide-narrow">草稿自动保存，离开也不会丢</span></div>
+      <div class="s-ask">今天想做些什么？</div>
       <div class="s-pick"><span class="l">专题</span><span class="s-row"><span class="s-chip sel">不选</span></span></div>
       <div class="s-pick"><span class="l">项目</span><span class="s-row"><span class="s-chip">不选</span><span class="s-chip sel" data-k="chipProject">MyGame</span><span class="s-chip add s-hide-narrow">+ 添加项目</span></span></div>
       <div class="s-composer">
@@ -36,7 +36,7 @@
     title: "登记项目，新建任务",
     height: 380,
     narrowHeight: 430,
-    ui: ["选择文件夹…", "或输入路径", "登记", "取消", "‹ 看板|看板", "/ 新任务|新任务", "草稿自动保存，离开也不会丢", "要推进什么？", "不选", "全部型号", "每次询问", "帮我审批", "自动接受编辑", "放进待办", "开始", "正在启动", "高", "在 MyGame 里运行|里运行"],
+    ui: ["选择文件夹…", "或输入路径", "登记", "取消", "‹ 看板|看板", "/ 新聊天|新聊天", "草稿自动保存，离开也不会丢", "今天想做些什么？", "不选", "全部型号", "每次询问", "帮我审批", "自动接受编辑", "放进待办", "开始", "正在启动", "高", "在 MyGame 里运行|里运行"],
     html: P.studio({
       withNav: true,
       nav: P.nav({ projects: [], extra: form }),
@@ -45,9 +45,9 @@
     steps: [
       { say: "新的 Studio 看板是空的。第一步在左栏登记项目：点 [[项目]] 下面的 [[+ 添加项目]]。", do: [["hl", "addProject"], ["click", "addProject"], ["unhl", "addProject"], ["hide", "addProject"], ["show", "form"]] },
       { say: "点 [[选择文件夹…]]，选项目所在的文件夹（也可以把路径粘进 [[或输入路径]] 下面的框，再点 [[登记]]）。", do: [["click", "pickDir"], ["wait", 400], ["hide", "form"], ["show", "newProject"], ["text", "navProjectCount", "1"], ["off", "navAll", "cur"], ["on", "newProject", "cur"], ["text", "scope", "MyGame"]] },
-      { say: "登记好就进到这个项目的看板。点右上角的 [[+ 新任务]]。", do: [["click", "newBtn"], ["off", "app", "with-nav"], ["hide", "board"], ["show", "draft"]] },
-      { say: "主区域变成一页草稿：[[要推进什么？]] 从项目里点的，[[项目]] 已经选好；[[专题]] 可以 [[不选]]。写下第一句话：", do: [["hl", "chipProject"], ["move", "text", 0.1, 0.4], ["unhl", "chipProject"], ["type", "text", "导入器遇到网络错误直接崩，给 fetch 加上失败重试，最多 3 次。"]] },
-      { say: "下面一排是常用的模型，点一下就换（名字看你在 [[设置]] → [[模型]] 里有哪些渠道）。权限先用默认的 [[每次询问]]：每条命令都先问你。", do: [["hl", "models"], ["move", "tile1"], ["unhl", "models"], ["hl", "perm"], ["move", "perm", 0.2, 0.5]] },
+      { say: "登记好就进到这个项目的看板。点左侧的 [[新聊天]]。", do: [["click", "newBtn"], ["off", "app", "with-nav"], ["hide", "board"], ["show", "draft"]] },
+      { say: "主区域变成一页草稿：[[今天想做些什么？]] 从项目里点的，[[项目]] 已经选好；[[专题]] 可以 [[不选]]。写下第一句话：", do: [["hl", "chipProject"], ["move", "text", 0.1, 0.4], ["unhl", "chipProject"], ["type", "text", "导入器遇到网络错误直接崩，给 fetch 加上失败重试，最多 3 次。"]] },
+      { say: "下面一排是常用的模型，点一下就换（名字看你在 [[设置]] → [[模型]] 里有哪些渠道）。如需逐条确认权限，选 [[每次询问]]，可以在输入框下方手动选择。", do: [["hl", "models"], ["move", "tile1"], ["unhl", "models"], ["hl", "perm"], ["move", "perm", 0.2, 0.5]] },
       { say: "点 [[开始]]（或直接回车），第一段会话就开起来了。只想先记下这件事，就点 [[放进待办]]。", do: [["unhl", "perm"], ["click", "start"], ["show", "cover"]] },
     ],
   });

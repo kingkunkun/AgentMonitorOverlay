@@ -89,7 +89,7 @@ export class PhoneRemote {
   async start(lan: boolean): Promise<void> {
     await this.stop(); this.lan = lan;
     try {
-      this.server = await startRelayServer({ store: this.openDb(), localPhoneOnly: true, host: lan ? "0.0.0.0" : "127.0.0.1", port: this.port, name: "WorkStudio 手机远程", minPasswordLength: 12 });
+      this.server = await startRelayServer({ store: this.openDb(), localPhoneOnly: true, host: lan ? "0.0.0.0" : "127.0.0.1", port: this.port, name: "WorkStudio 手机远程" });
       this.error = null;
       // Older inbox tasks also obey selected-account routing before any phone receives grants.
       try { const mapping = JSON.parse(this.host.store.getKv("cooperation.inbox")?.value ?? "{}"); for (const item of Object.values(mapping) as Array<{ taskId?: string }>) if (item?.taskId) this.markTeamInbox(item.taskId); } catch { /* a malformed legacy map grants nothing extra */ }
@@ -149,6 +149,7 @@ class PhoneConnection {
   constructor(private readonly phone: PhoneRemote, private readonly server: RelayServer, private readonly self: NamedDevice, private readonly key: string) {
     this.link = new DeviceLink({ server: server.url, key, device: { id: self.device, name: self.name } });
     this.ctx = {
+      sessionKinds: new Map(), // Team-only extensions do not run through the isolated phone gateway.
       host: phone.host, store: phone.scopedStore(self.account), link: () => this.stopped ? null : this.link,
       ownAccount: () => self.account, deviceName: () => self.name, inbox: () => this.inbox,
       trustedOwnDevice: (p) => p.account === self.account && phone.active(p.account), activeSessionsOnly: true,

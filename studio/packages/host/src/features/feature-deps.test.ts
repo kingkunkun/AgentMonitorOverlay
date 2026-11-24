@@ -31,15 +31,19 @@ const GRAPH: Record<string, string[]> = {
   planning: ["canvas", "tasks"],
   projects: ["tasks"],
   relays: ["collab", "sessions", "tasks"],
-  remote: ["attachments", "channels", "chatfiles", "gitreview", "openin", "prompttemplates", "sessions", "tasks", "viewpacks"],
+  remote: ["attachments", "channels", "chatfiles", "gitreview", "mcp", "openin", "prompttemplates", "sessions", "tasks", "viewpacks"],
   review: ["sessions"],
   scratchpad: ["attachments"],
   sessions: ["attachments", "collab", "config", "mcp", "remote", "review", "tasks"],
   taskplans: ["canvas", "collab", "sessions", "tasks"],
   tasks: ["canvas", "config", "mcp", "remote", "sessions"],
-  teamrelay: ["attachments", "config", "sessions"],
+  // 协作 (2026-11-23): 转到我的会话 may start a new task's session.
+  teamrelay: ["attachments", "config", "sessions", "tasks"],
   topics: ["tasks"],
+  reviewprogress: ["config"],
+  tracks: ["remote", "teamrelay"],
   viewpacks: ["remote"],
+  whiteboard: [],
 };
 
 /**

@@ -39,6 +39,34 @@ test("the tilde key opens the board without taking text input or switching under
   await expect(board).toBeVisible();
 });
 
+test("the default timeline keeps every folder and can be found again from columns", async () => {
+  studio = await launchStudio({ mockModel: false, boardMode: "default" });
+  const { app, page } = studio;
+  const older = await studio.api<Workspace>("POST", "/api/workspaces", { path: studio.workspace("project_alpha"), name: "project_alpha" });
+  const newer = await studio.api<Workspace>("POST", "/api/workspaces", { path: studio.workspace("project_beta"), name: "project_beta" });
+  await studio.api("POST", "/api/tasks", { workspaceId: older.id, title: "较早的任务" });
+  const { task } = await studio.api<{ task: Task }>("POST", "/api/tasks", { workspaceId: newer.id, title: "最近的任务" });
+  await studio.api("PATCH", `/api/tasks/${task.id}`, { column: "review" });
+  const board = page.getByTestId("board-timeline");
+  const rows = board.getByTestId("timeline-row");
+  const modes = page.getByRole("group", { name: "看板显示方式" });
+  const timeline = modes.getByRole("button", { name: "时间线", exact: true });
+  await expect(timeline).toHaveAttribute("aria-pressed", "true");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.first()).toContainText("最近的任务");
+  await expect(rows.first().getByTestId("card-folder")).toHaveText("project_beta");
+  await expect(rows.last().getByTestId("card-folder")).toHaveText("project_alpha");
+  await expect(rows.first().getByRole("button", { name: "完成", exact: true })).toBeVisible();
+  await page.getByTestId("scope-ws-project_alpha").click();
+  await expect(rows).toHaveCount(2);
+  await modes.getByRole("button", { name: "分列", exact: true }).click();
+  await expect(page.getByTestId("column-review")).toContainText("最近的任务");
+  await expect(timeline).toBeInViewport();
+  await timeline.click();
+  await expect(rows.first()).toContainText("最近的任务");
+  await screenshot(app, "studio", "board-timeline", page);
+});
+
 test("registers a sandbox workspace and shows tasks on the board", async () => {
   studio = await launchStudio();
   const { page } = studio;

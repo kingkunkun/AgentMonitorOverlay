@@ -41,6 +41,9 @@ import { TeamRelayFeature } from "./features/teamrelay/service.js";
 import { IssuesFeature } from "./features/issues/service.js";
 import { DutyFeature } from "./features/duty/service.js";
 import { DeliveryFeature } from "./features/delivery/service.js";
+import { TracksFeature } from "./features/tracks/service.js";
+import { ReviewProgressFeature } from "./features/reviewprogress/service.js";
+import { WhiteboardFeature } from "./features/whiteboard/service.js";
 import { ChatFilesFeature } from "./features/chatfiles/service.js";
 import { CliFeature } from "./features/cli/service.js";
 import { DataFeature } from "./features/datamgmt/service.js";
@@ -112,6 +115,11 @@ export class HostService extends EventEmitter<HostServiceEvents> {
   readonly duty: DutyFeature = new DutyFeature(this);
   /** 交付值守 (2026-11-13): commit, APK and iOS delivery on a timer, registered below as duty jobs. */
   readonly delivery: DeliveryFeature = new DeliveryFeature(this);
+  readonly tracks: TracksFeature = new TracksFeature(this);
+  /** 审阅进度 (2026-11-16): which of a session's replies the person has looked at, and which they marked 审过. */
+  readonly reviewProgress: ReviewProgressFeature = new ReviewProgressFeature(this);
+  /** 白板 (2026-11-16): a session's working board, written by its AI, annotated by the person. */
+  readonly whiteboard: WhiteboardFeature = new WhiteboardFeature(this);
   /** The runtimes of this computer, plus "remote" for copies of tasks paired devices granted it (远程 step 2). */
   readonly runtime: SessionRuntimeApi;
 

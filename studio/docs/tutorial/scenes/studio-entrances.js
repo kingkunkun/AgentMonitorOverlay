@@ -8,7 +8,7 @@
     title: "主窗口上的入口",
     height: 330,
     narrowHeight: 330,
-    intro: "Studio 主窗口：上面一行是顶栏，下面一行是页签和「+ 新任务」，左边是左栏。",
+    intro: "Studio 主窗口：上面一行是顶栏，下面一行是页签和「新聊天」，左边是左栏。",
     html: P.studio({
       needs: true,
       withNav: true,
@@ -19,7 +19,7 @@
       }),
     }),
     steps: [
-      { say: "右上角的 [[+ 新任务]]：写一句话开始一件新的事。在任何页面按 `Ctrl+N` 是一行的快速启动条，作用一样。", do: [["hl", "newBtn"], ["move", "newBtn"]] },
+      { say: "左侧的 [[新聊天]]：写一句话开始一件新的事。在任何页面按 `Ctrl+N` 是一行的快速启动条，作用一样。", do: [["hl", "newBtn"], ["move", "newBtn"]] },
       { say: "[[看板]] 和 [[画布]] 两个页签：看板是四列任务卡片；画布是一个专题的全局图。", do: [["unhl", "newBtn"], ["hl", "tabBoard"], ["hl", "tabCanvas"], ["move", "tabCanvas"]] },
       { say: "顶栏的 [[书签]]：打开书签窗口，里面是按专题收着的文件和对话片段（`Ctrl+Shift+M`）。", do: [["unhl", "tabBoard"], ["unhl", "tabCanvas"], ["hl", "tbMarks"], ["move", "tbMarks"]] },
       { say: "[[远程]]：打开远程对话框，在你自己的另一台电脑上接着用这台的会话。只在局域网里、自己的设备之间用。", do: [["unhl", "tbMarks"], ["hl", "tbRemote"], ["move", "tbRemote"]] },

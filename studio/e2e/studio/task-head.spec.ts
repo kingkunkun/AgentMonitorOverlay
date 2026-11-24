@@ -23,6 +23,11 @@ function git(cwd: string, ...args: string[]): void {
 test("status, topic and project from the line under the title; the right column waits behind 侧栏", async () => {
   studio = await launchStudio({ taskSidebar: false });
   const { page, app } = studio;
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  const settings = page.getByRole("dialog", { name: "设置", exact: true });
+  await settings.getByRole("tab", { name: "界面", exact: true }).click();
+  await settings.getByRole("checkbox", { name: "显示专题与画布" }).check();
+  await page.keyboard.press("Escape");
   const dir = studio.workspace("mining");
   writeFileSync(join(dir, "a.txt"), "a\n");
   git(dir, "init", "-q", "-b", "feature/drops");
@@ -81,18 +86,22 @@ test("status, topic and project from the line under the title; the right column 
   await page.getByTestId("nav-collapse").click();
   await expect(page.getByTestId("scope-all")).toHaveCount(0);
   await openTaskMenu(page);
-  await expect(page.getByTestId("sessions-toggle")).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByTestId("sessions-toggle")).toHaveAttribute("aria-checked", "false");
+  await page.getByTestId("sessions-toggle").click();
+  await expect(page.getByTestId("session-row")).toHaveCount(1);
+  await openTaskMenu(page);
   await page.getByTestId("sessions-toggle").click();
   await expect(page.getByRole("complementary", { name: "会话" })).toHaveCount(0);
   await expect(page.getByTestId("session-row")).toHaveCount(0);
   await screenshot(app, "stage-14", "S14-I-sessions-hidden", page);
   await openTaskMenu(page);
+  // 新会话 is a dialog (2026-11-17): the hidden list stays hidden while it is open.
   await page.getByTestId("new-session-toggle").click();
-  await expect(page.getByRole("button", { name: "开始新会话" })).toBeVisible();
-  await expect(page.getByTestId("session-row")).toHaveCount(1);
-  await openTaskMenu(page);
-  await expect(page.getByTestId("sessions-toggle")).toHaveAttribute("aria-checked", "true");
-  await page.getByTestId("sessions-toggle").click();
+  const newSession = page.getByTestId("new-session-dialog");
+  await expect(newSession.getByRole("button", { name: "开始新会话" })).toBeVisible();
+  await expect(page.getByTestId("session-row")).toHaveCount(0);
+  await newSession.getByRole("button", { name: "取消" }).click();
+  await expect(newSession).toHaveCount(0);
   await page.reload();
   // Back on the same task after the reload (2026-10-15: the place is remembered).
   await expect(page.locator(".page-head")).toContainText("掉落表");
@@ -114,11 +123,10 @@ test("status, topic and project from the line under the title; the right column 
   await expect(page.getByTestId("note-count")).toBeVisible();
   await expect(page.getByLabel("输入消息")).toHaveValue("写到一半的话");
 
-  // The session bar: 追踪 (2026-11-03, 问题 #15), 归档 on a red-tinted face (2026-10-28), ⋯ (分支 since 2026-11-10, the
-  // openers outside Studio since 11-03, 书签); no 仅工作台.
+  // The local Focus button remains; the session menu holds forks and the native openers, with bookmarks disabled.
   await expect(page.getByTestId("writer")).toHaveCount(0);
   const bar = page.getByTestId("thread-head");
-  await expect(bar.getByTestId("session-track")).toHaveText("追踪");
+  await expect(bar.getByTestId("session-track")).toHaveText("Focus");
   await expect(bar.getByRole("button", { name: "在终端打开" })).toHaveCount(0);
   await expect(bar.getByTestId("session-fork")).toHaveCount(0);
   await screenshot(app, "stage-14", "S14-I-session-bar", page);
@@ -137,7 +145,8 @@ test("status, topic and project from the line under the title; the right column 
   // (绑定到待办… follows when 便签 is there to bind to.)
   const items = page.getByTestId("session-menu").getByRole("menuitem");
   await expect(items.first()).toBeVisible();
-  expect((await items.allTextContents()).slice(0, vscode ? 5 : 4)).toEqual(["从最新一轮分支…", ...(vscode ? ["VS Code 打开文件夹"] : []), "在资源管理器中显示", "在终端打开", "书签"]);
+  expect((await items.allTextContents()).slice(0, vscode ? 4 : 3)).toEqual(["从最新一轮分支…", ...(vscode ? ["VS Code 打开文件夹"] : []), "在资源管理器中显示", "在终端打开"]);
+  await expect(page.getByTestId("session-marks")).toHaveCount(0);
   await screenshot(app, "studio", "issue15-session-menu", page);
   await page.keyboard.press("Escape");
   await archive.hover();

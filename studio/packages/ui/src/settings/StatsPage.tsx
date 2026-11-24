@@ -681,7 +681,7 @@ function RangeCard({ link, models }: { link: HostLink; models: StatModel[] }) {
   return (
     <div className="stats-card" data-testid="stats-range">
       <div className="stats-card-head">
-        <span className="stats-card-title">按时间段查</span>
+        <span className="stats-card-title">按时间段查（WorkStudio 回合）</span>
         <span className="stats-card-sub">{span ? `${span} · ${result!.turns.toLocaleString("en")} 轮` : "选一段时间，按模型列出用量"}</span>
       </div>
       <div className="stats-range-bar">

@@ -27,7 +27,10 @@ import { Attention, writeAttention } from "./attention.js";
 import { newShellText, readBuildMode, stableExe } from "./build-mode.js";
 import { ContentStore, fetchManifest, type InstalledContent } from "./content.js";
 import { LOADER_HTML, type LoaderState } from "./loader.js";
+import { openText, parseOpenArg, type OpenRef } from "./open-arg.js";
+import { argvText, KNOCK, knockAction, Knocks, secondStartPlan, WindowLog } from "./second-start.js";
 import { openInStudio, studioHas } from "./studio-link.js";
+import { wireTransfer } from "./transfer-ipc.js";
 
 // Work中转's desktop client (plans/done/relay.md). This shell is fixed; what people see — login, conversations — is content
 // the service hands out (packages/relay-ui), kept in <home>/client and updated without a restart:
@@ -47,6 +50,8 @@ const testMode = process.env.AMO_RELAY_TEST === "1";
 let copied = "";
 if (testMode) Object.assign(globalThis, { __relayCopied: () => copied });
 const home = relayHome();
+/** What brought the window up, and when (second-start.ts): <home>\window.log. */
+const windowLog = new WindowLog(join(home, "window.log"));
 const buildMode = readBuildMode(here);
 const byPlatform = buildMode === "platform";
 const ICON = [join(here, "..", "assets", "icon.png"), join(here, "..", "..", "app", "assets", "icon.png")].find((p) => existsSync(p)) ?? "";
@@ -54,7 +59,9 @@ const SCHEME = "relay-app";
 const CONTENT_URL = `${SCHEME}://content/index.html`;
 // Fork builds carry their reviewed UI with WorkStudio; never replace it with the team's remote JavaScript.
 const bundledDir = join(here, "..", "client");
-const bundledContent: InstalledContent | null = existsSync(join(bundledDir, "index.html")) ? { version: "work-bundled", dir: bundledDir } : null;
+// A normal Studio source build also prepares this directory; the standalone source shell still follows the server.
+const useBundled = app.isPackaged || process.argv.includes("--workstudio-bundled-relay");
+const bundledContent: InstalledContent | null = useBundled && existsSync(join(bundledDir, "index.html")) ? { version: "work-bundled", dir: bundledDir } : null;
 const LOADER_URL = `${SCHEME}://shell/loader.html`;
 const DISABLED_URL = `${SCHEME}://shell/disabled.html`;
 let policyEnabled = readCooperation().relayEnabled;
@@ -119,16 +126,16 @@ const argServer = () => {
   return i >= 0 ? (process.argv[i + 1] ?? null) : null;
 };
 /**
- * 在中转里打开 from AMO Studio (2026-11-05, plans/done/relay-round-2026-11-05.md J2): `--open-thread <id>`, at start or from
- * a second start (single instance). Kept until the content takes it (it may still be loading or signing in), and sent
- * at once to a content already there.
+ * What to open, from AMO Studio (open-arg.ts): `--open=cowork:<id>` / `--open=thread:<id>` (2026-11-23), or the older
+ * `--open-thread <id>` (2026-11-05, J2), at start or from a second start (single instance). Kept until the content takes
+ * it (it may still be loading or signing in), and sent at once to a content already there.
  */
-const argThread = (argv: readonly string[]) => {
-  const i = argv.indexOf("--open-thread");
-  const id = i >= 0 ? argv[i + 1] : undefined;
-  return id && /^[A-Za-z0-9_-]{1,80}$/.test(id) ? id : null;
-};
-let pendingThread: string | null = argThread(process.argv);
+let pendingOpen: OpenRef | null = parseOpenArg(process.argv);
+/** To the content: `relay:open` (`<kind>:<id>`) for one that has onOpen, and a thread on the older channel as well. */
+function sendOpen(ref: OpenRef): void {
+  win?.webContents.send("relay:open", openText(ref));
+  if (ref.kind === "thread") win?.webContents.send("relay:open-thread", ref.id);
+}
 
 // ---- the window and its pages
 
@@ -162,7 +169,7 @@ function createWindow(): BrowserWindow {
     // the traffic lights stay, inset into it.
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "hidden",
     ...(testMode ? { x: -4000, y: 0, skipTaskbar: true } : {}),
-    webPreferences: { preload: join(here, "preload.cjs"), sandbox: true, contextIsolation: true },
+    webPreferences: { preload: join(here, "preload.cjs"), sandbox: true, contextIsolation: true, additionalArguments: bundledContent ? ["--workstudio-bundled-relay"] : [] },
   });
   w.setMenu(null);
   // The taskbar button takes its icon from a Start Menu shortcut with the window's AppUserModelID when there is one, over
@@ -171,12 +178,21 @@ function createWindow(): BrowserWindow {
   // showed that (问题 #11, 2026-11-02). The window gets an id no shortcut has, so its own icon shows; toasts keep
   // AMO.Relay (app.setAppUserModelId above). The portable exe has its own name and icon: left as it was.
   if (process.platform === "win32" && buildMode !== "portable") w.setAppDetails({ appId: "AMO.Relay.Window" });
-  w.once("ready-to-show", () => (testMode ? w.showInactive() : w.show()));
+  w.once("ready-to-show", () => {
+    windowLog.write(`start ${argvText(process.argv)} exe=${process.execPath}`);
+    showing = true;
+    if (testMode) w.showInactive();
+    else w.show();
+    showing = false;
+  });
   w.on("close", (e) => {
     if (quitting) return;
     e.preventDefault();
+    windowLog.write("hidden (×)");
     w.hide();
   });
+  // Shown by anything but showWindow (none known): logged, so a next 「弹出来」 says where it came from.
+  w.on("show", () => !showing && windowLog.write("shown, not by the client itself"));
   // Whether someone is looking at it: the taskbar stops flashing, the tray stops blinking (attention.ts).
   for (const event of ["focus", "blur", "show", "hide", "minimize", "restore"] as const) w.on(event as "focus", () => attention.setInUse(inUse()));
   // A page loaded anew (the loader, the content after an update) counts again from nothing; the content sends its count.
@@ -199,14 +215,20 @@ function createWindow(): BrowserWindow {
   return w;
 }
 
-function showWindow(): void {
+/** Inside showWindow / the first show: a show event then is ours. */
+let showing = false;
+/** Brings the window up; `why` goes into window.log. */
+function showWindow(why: string): void {
+  windowLog.write(`show: ${why}`);
   if (!win) return;
+  showing = true;
   if (win.isMinimized()) win.restore();
   if (testMode) win.showInactive();
   else {
     win.show();
     win.focus();
   }
+  showing = false;
 }
 
 // ---- the loader
@@ -413,6 +435,8 @@ function wire(): void {
     policyEnabled = enabled;
     await boot();
   });
+  // 传文件 (2026-11-23, transfer-ipc.ts): the content's relayShell.transfer.
+  if (!bundledContent) wireTransfer({ home, testMode, win: () => win });
   ipcMain.on("relay:loader-ready", () => (loaderReady?.(), (loaderReady = null)));
   ipcMain.on("relay:loader-server", (_e, value: string) => loaderAnswer?.({ kind: "server", value }));
   ipcMain.on("relay:loader-retry", () => loaderAnswer?.({ kind: "retry" }));
@@ -450,15 +474,24 @@ function wire(): void {
     if (testMode || !Notification.isSupported()) return;
     const note = new Notification({ title: n.title, body: n.body, icon: ICON || undefined, silent: false });
     note.on("click", () => {
-      showWindow();
+      showWindow(`notification clicked (${n.threadId})`);
+      // (a 传文件 one's id is `transfer:<id>`: the content's openThread knows it)
+      win?.webContents.send("relay:open", `thread:${n.threadId}`);
       win?.webContents.send("relay:open-thread", n.threadId);
     });
     note.show();
   });
+  // A content from before --open=cowork: takes only a thread (and a 协作 waits for one that takes it).
   ipcMain.handle("relay:take-open-thread", () => {
-    const id = pendingThread;
-    pendingThread = null;
+    if (pendingOpen?.kind !== "thread") return null;
+    const id = pendingOpen.id;
+    pendingOpen = null;
     return id;
+  });
+  ipcMain.handle("relay:take-open", () => {
+    const ref = pendingOpen;
+    pendingOpen = null;
+    return ref ? openText(ref) : null;
   });
   // 在 Studio 里打开 (J1, studio-link.ts): the content asks yes/no and go; the Host's token stays here.
   ipcMain.handle("relay:studio-has", (_e, conv: unknown) => studioHas(conv));
@@ -728,12 +761,12 @@ function createTray(): void {
   tray.on("right-click", () =>
     trayWindow.open([
       { kind: "title", label: "Work中转" },
-      { kind: "item", label: "显示 Work中转", strong: true, run: showWindow },
+      { kind: "item", label: "显示 Work中转", strong: true, run: () => showWindow("tray menu") },
       { kind: "rule" },
-      { kind: "item", label: "退出中转", run: () => ((quitting = true), app.quit()) },
+      { kind: "item", label: "退出中转", run: () => (windowLog.write("quit: tray menu"), (quitting = true), app.quit()) },
     ]),
   );
-  tray.on("click", showWindow);
+  tray.on("click", () => showWindow("tray click"));
 }
 
 // ---- start
@@ -741,20 +774,41 @@ function createTray(): void {
 // One client per data folder. Starting another copy of the client (a newly unpacked one, say) takes over: the running
 // one is asked to make way and quits, and this one starts once the lock is free. Starting the same copy again just
 // shows its window. (A running client from before this rule only shows its window; quit it from the tray once.)
-const me = { exe: process.execPath };
+// argv (2026-11-23): the second start's own arguments as given. The `argv` of second-instance is Chromium's command line,
+// switches first — `--open-thread <id>` reached the running client as `--open-thread --cors-schemes=… … <id>`, so the
+// thread was never found (window.log showed it); Electron's docs say to pass them as additionalData.
+const me = { exe: process.execPath, argv: process.argv };
 
 /**
  * running.json in its home (2026-11-04, the user: 关闭 on AMO 平台's card was slow): this client's pid and exe, so the
- * platform knows it runs — and when it has quit — without asking Windows for every process. Only the running one
+ * platform knows it runs (and AMO Studio where to send --open) — and when it has quit — without asking Windows for every process. Only the running one
  * writes it; it goes when it quits (a file left by a crash names a pid that no longer lives).
  */
 const runningFile = join(home, "running.json");
 function writeRunning(): void {
   try {
     mkdirSync(home, { recursive: true });
-    writeFileSync(runningFile, JSON.stringify({ pid: process.pid, exe: process.execPath, startedAt: new Date().toISOString() }, null, 2));
+    // version and open (2026-11-23): AMO Studio starts `exe` with --open=<kind>:<id> to show a 协作 here, once it has
+    // seen this shell takes it (an older one has no `open`: Studio says 更新中转客户端). knock: how this one takes a
+    // second start (second-start.ts), for the next start to know.
+    writeFileSync(runningFile, JSON.stringify({ pid: process.pid, exe: process.execPath, startedAt: new Date().toISOString(), version: app.getVersion(), open: ["cowork", "thread"], knock: KNOCK }, null, 2));
   } catch {
     // the platform then asks Windows, as before
+  }
+}
+function readRunning(): unknown {
+  try {
+    return JSON.parse(readFileSync(runningFile, "utf8")) as unknown;
+  } catch {
+    return null;
+  }
+}
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 function removeRunning(): void {
@@ -765,25 +819,41 @@ function removeRunning(): void {
   }
 }
 
+const knocks = new Knocks();
+/** In a run of repeated knocks: logged once. */
+let repeating = false;
+
 function start(): void {
   const policyWatch = setInterval(() => { const next = readCooperation().relayEnabled; if (next !== policyEnabled) { policyEnabled = next; if (win) void boot(); } }, 500);
   policyWatch.unref();
   app.on("will-quit", () => clearInterval(policyWatch));
   writeRunning();
   app.on("will-quit", removeRunning);
-  app.on("second-instance", (_e, argv, _cwd, data) => {
+  app.on("second-instance", (_e, chromiumArgv, _cwd, data) => {
     const other = (data as { exe?: string } | undefined)?.exe;
-    // 退出中转 from AMO 平台's tray or card (2026-10-29), whichever copy asks.
-    if (argv.includes("--amo-quit") || (other && other.toLowerCase() !== process.execPath.toLowerCase())) {
+    // An older client's start sends no argv: Chromium's then (a --open=… switch is whole in it).
+    const sent = (data as { argv?: unknown } | undefined)?.argv;
+    const argv = Array.isArray(sent) && sent.every((a) => typeof a === "string") ? (sent as string[]) : chromiumArgv;
+    const ref = parseOpenArg(argv);
+    // 退出中转 from AMO 平台's tray or card (2026-10-29), whichever copy asks; another program started takes over (a newer
+    // version the platform installed) — not this one by another path, nor one started to open something (2026-11-23:
+    // AMO Studio may find another copy in programs.json than the one open): this one shows itself and stays
+    // (second-start.ts). The same start knocking again (an older client's tries) brings the window up once.
+    if (knockAction(argv, other, process.execPath) === "quit") {
+      windowLog.write(`quit: ${argv.includes("--amo-quit") ? "--amo-quit" : `another program took over (${other})`}`);
       quitting = true;
       tray?.destroy();
       app.quit();
+    } else if (!Array.isArray(sent) && knocks.repeat(argv, other)) {
+      // (only an older start tries again; this one's knocks once, or waits only for one that gives way)
+      if (!repeating) windowLog.write(`second start knocks again, not shown again: ${argvText(argv)} from=${other ?? "?"}`);
+      repeating = true;
     } else {
-      showWindow();
-      const thread = argThread(argv);
-      if (thread) {
-        pendingThread = thread;
-        win?.webContents.send("relay:open-thread", thread);
+      repeating = false;
+      showWindow(`second start ${argvText(argv)} from=${other ?? "?"}`);
+      if (ref) {
+        pendingOpen = ref;
+        sendOpen(ref);
       }
     }
   });
@@ -808,7 +878,16 @@ if (process.argv.includes("--amo-quit")) {
   app.quit();
 } else if (app.requestSingleInstanceLock(me)) start();
 else {
-  // Another copy runs; it quits if it is a different one. Wait for the lock a few seconds, else leave it to it.
+  // Another client runs, and heard this start with the call above. It shows itself (the same program) or opens what was
+  // asked: nothing left here. Only when it gives way (another program) wait for the lock a few seconds, else leave it to
+  // it. (Trying every 500 ms against one that stays brought its window up each time: 2026-11-23, second-start.ts.)
+  const { plan, why } = secondStartPlan(process.argv, process.execPath, readRunning(), pidAlive);
+  windowLog.write(`second start ${argvText(process.argv)} exe=${process.execPath}: ${plan === "done" ? "handed on, quits" : "waits for the lock"} — ${why}`);
+  if (plan === "done") app.quit();
+  else waitForLock();
+}
+
+function waitForLock(): void {
   let tries = 0;
   const retry = setInterval(() => {
     if (app.requestSingleInstanceLock(me)) {
@@ -816,6 +895,7 @@ else {
       start();
     } else if (++tries > 16) {
       clearInterval(retry);
+      windowLog.write("second start: the running one did not give way, quits");
       app.quit();
     }
   }, 500);

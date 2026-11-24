@@ -1,6 +1,10 @@
 /* Task page */
 .taskpage { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .task-title { margin: 0; font-family: var(--font-display); font-size: var(--fs-h2); font-weight: 700; }
+/* 复制编号 (2026-11-23): small, beside the name. */
+.task-title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.task-title-row .task-title { min-width: 0; }
+.task-copy-ref { flex: none; }
 .task-body { flex: 1; display: flex; min-height: 0; }
 .session-list { flex: 0 0 236px; border-right: 1px solid var(--border); padding: 12px 10px; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; background: var(--panel-raised); }
 .session-row { justify-content: flex-start; gap: 10px; }
@@ -284,6 +288,12 @@
 .tree-node { display: flex; flex-direction: column; min-width: 0; }
 .tree-line { display: flex; align-items: center; gap: 2px; min-width: 0; }
 .tree-line > .srow.tree-row { flex: 1; }
+/* 拖拽排序 (2026-11-17): where a dragged session would land — a line above the row, or under the session and all that
+   hangs under it; the dragged one fades. Only rows of its own level take it. */
+.tree-node[data-drop="before"] > .tree-line { box-shadow: 0 -2px 0 var(--primary); }
+.tree-node[data-drop="after"] { box-shadow: 0 2px 0 var(--primary); }
+.tree-node[data-dragging] > .tree-line { opacity: 0.45; }
+.slist-note { margin: 0 4px 6px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--r-m); background: var(--card); color: var(--text-dim); font-size: 12px; line-height: 1.5; }
 .tree-line:has(> .tree-row[aria-current="true"]) { border-radius: var(--r-m); background: var(--selected); }
 /* 「▾ N」: folds a session's subagents and forks (10-22); in the attention colour when something folded waits. */
 .tree-fold { flex: none; height: 20px; padding: 0 6px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--text-dim); font-size: 11px; cursor: pointer; }
@@ -337,6 +347,13 @@
 
 /* 分支 (2026-11-10, ForkDialog.tsx): one column, the settings folded under a summary line. */
 .fork-dialog { width: 600px; gap: 12px; }
+/* 新会话 (2026-11-17): a dialog like 分支's, wide enough for the model tiles; the first message a few lines high. */
+.new-session-dialog { width: 680px; max-width: calc(100vw - 40px); gap: 12px; }
+.new-session-dialog .new-session-text { height: auto; min-height: 64px; padding: 6px 10px; resize: vertical; line-height: 1.5; }
+.new-session-dialog .new-session-model { gap: 6px; }
+.new-session-dialog .new-session-model .cbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.new-session-dialog .presets { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.new-session-empty { margin: 0 0 10px; padding: 10px; border: 1px dashed var(--border); border-radius: var(--r-l); display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
 .fork-head { display: flex; align-items: baseline; gap: 10px; }
 .fork-from { color: var(--text-faint); font-size: var(--fs-cap); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fork-field { display: grid; grid-template-columns: 64px 1fr; gap: 10px; align-items: start; }

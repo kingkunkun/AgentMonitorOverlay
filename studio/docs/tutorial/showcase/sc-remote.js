@@ -30,7 +30,7 @@
         <div class="s-titlebar"><span class="s-logo"></span><span class="s-title">笔记本</span></div>
         <div class="sc-banner"><span class="sc-badge">远程</span>在 台式机 上运行</div>
         ${thread("b")}
-        <div class="s-input" style="margin:0 10px 8px"><div class="s-text" data-k="input" data-ph="继续推进这个会话，回车发送"></div></div>
+        <div class="s-input" style="margin:0 10px 8px"><div class="s-text" data-k="input" data-ph="和 WorkStudio 一起工作"></div></div>
       </div>
     </div>`,
     steps: [

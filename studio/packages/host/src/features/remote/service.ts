@@ -1,5 +1,5 @@
 import { extname, isAbsolute } from "node:path";
-import { PREVIEW_IMAGE_TYPES, REMOTE_KINDS, REMOTE_TASK_FOLDER, type ForkRequest, type ForkTurn, type HostEvent, type Id, type ModelProfile, type NewSessionInput, type PromptTemplate, type RemoteConnection, type RemoteIncomingRequest, type RemoteOutgoingRequest, type RemotePeer, type RemoteAcceptInput, type RemoteCatalog, type RemoteCreateAnswer, type RemoteCreateResult, type RemoteFetchedFile, type RemoteListAnswer, type RemoteOnlineDevices, type RemotePingResult, type RemotePush, type RemoteState, type Session, type Task } from "@amo-studio/protocol";
+import { PREVIEW_IMAGE_TYPES, REMOTE_KINDS, REMOTE_TASK_FOLDER, type ForkRequest, type ForkTurn, type HostEvent, type Id, type ModelProfile, type NewSessionInput, type PromptTemplate, type RemoteConnection, type RemoteIncomingRequest, type RemoteOutgoingRequest, type RemotePeer, type RemoteAcceptInput, type RemoteCatalog, type RemoteCreateAnswer, type RemoteCreateResult, type RemoteFetchedFile, type RemoteListAnswer, type RemoteMcpList, type RemoteOnlineDevices, type RemotePingResult, type RemotePush, type RemoteState, type Session, type Task } from "@amo-studio/protocol";
 import { serverLabel, type Account, type Device } from "@amo-studio/account";
 import type { DeviceEvent, DeviceRef, OnlineDevice, PairRequest, PeerView } from "@amo-studio/relay";
 import { HostError } from "../../core/shared.js";
@@ -8,8 +8,8 @@ import { FileReply, type Route } from "../../http/route.js";
 import { underTaskFolder } from "./files.js";
 import { Feature } from "../../core/feature.js";
 import { Backoff, CommandError, CommandLog, DeviceLink, type RelayFrameIn } from "./link.js";
-import { RemoteGrants, type Answer, type RemoteContext } from "./grants.js";
-import { RemoteCopies } from "./copies.js";
+import { RemoteGrants, type Answer, type RemoteContext, type SessionKind } from "./grants.js";
+import { mcpChoices, RemoteCopies } from "./copies.js";
 import { TaskAsks, TaskRequests } from "./requests.js";
 import { RemoteCreates } from "./create.js";
 import { sendAlong, UploadInbox } from "./uploads.js";
@@ -57,7 +57,7 @@ export interface RemoteOptions extends TeamLinkOptions {
  * The features remote and its parts (the context's host: grants, copies, views, uploads…) use: what A answers about a
  * granted task reads the Review, packs, files and templates there, and starts or sends into its sessions.
  */
-export type RemoteUses = "attachments" | "channels" | "chatFiles" | "gitReview" | "openIn" | "promptTemplates" | "sessions" | "tasks" | "viewPacks";
+export type RemoteUses = "attachments" | "channels" | "chatFiles" | "gitReview" | "mcp" | "openIn" | "promptTemplates" | "sessions" | "tasks" | "viewPacks";
 
 const iso = (ms: number) => new Date(ms).toISOString();
 const same = (a: DeviceRef, b: DeviceRef) => a.account === b.account && a.device === b.device;
@@ -76,8 +76,15 @@ export class RemoteFeature extends Feature<RemoteUses> {
   private readonly answered = new CommandLog<{ kind: string; body: unknown }>();
   /** Commands being answered: the same id again waits for that answer instead of running twice. */
   private readonly inflight = new Map<string, Promise<Answer>>();
+  /**
+   * Session commands other features answer for a paired device (2026-11-15, 脉络: rt.tracks). They register here
+   * instead of this feature calling them: tracks already reaches sessions through 中转, and sessions reach this one, so
+   * a call from here would close a ring (feature-deps.test.ts).
+   */
+  private readonly sessionKinds = new Map<string, SessionKind>();
   private readonly context: RemoteContext = {
     host: this.host,
+    sessionKinds: this.sessionKinds,
     link: () => this.link,
     deviceName: () => this.device?.name ?? "授权的电脑",
     ownAccount: () => this.account?.name ?? null,
@@ -323,6 +330,7 @@ export class RemoteFeature extends Feature<RemoteUses> {
     // 远程创建 (2026-10-29): what the device may pick, and the task made here now.
     if (f.kind === REMOTE_KINDS.catalog) return said(() => this.creates.serveCatalog(f.from));
     if (f.kind === REMOTE_KINDS.createTemplates) return said(() => ({ templates: this.creates.templates(f.from, body.workspaceId) }));
+    if (f.kind === REMOTE_KINDS.createMcp) return said(() => this.creates.mcp(f.from, body));
     if (f.kind === REMOTE_KINDS.upload) return said(() => this.inbox.receive(f.from, body));
     if (f.kind === REMOTE_KINDS.create) return this.creates.create(f.from, body).then((made): Answer => ({ kind: REMOTE_KINDS.ok, body: made }), failed);
     // Step 4: a request for a task, or taking one back.
@@ -723,6 +731,12 @@ export class RemoteFeature extends Feature<RemoteUses> {
     return Array.isArray(answer.templates) ? answer.templates : [];
   }
 
+  /** 远程选 MCP (2026-11-17): the device's MCP servers for a task created there in that project on that model (A's ids). */
+  async catalogMcp(peer: DeviceRef, workspaceId: Id | null, profileId: Id): Promise<RemoteMcpList> {
+    const p = this.creatable(peer);
+    return this.copies.ask<RemoteMcpList>(peer, REMOTE_KINDS.createMcp, { workspaceId, profileId }, 30_000, `${p.name} 不在线`);
+  }
+
   /**
    * Creates a task on the device (granted to this computer, its session started there) and answers once the copy is
    * here — it comes with the grant; asked for directly when it has not come after a while — or says it follows.
@@ -732,7 +746,7 @@ export class RemoteFeature extends Feature<RemoteUses> {
     // Pictures and files go first (2026-10-29 evening); A writes the 引用文件 block again with its own paths.
     const images = Array.isArray(body.attachments) && body.attachments.length ? this.host.sessions.images(body.attachments as Id[]) : [];
     const along = await sendAlong((pr, kind, b, ms, off) => this.copies.ask(pr, kind, b, ms, off), peer, p.name, typeof body.text === "string" ? body.text : "", images);
-    const ask = { title: typeof body.title === "string" ? body.title : "", text: along.text, topicId: body.topicId ?? null, workspaceId: body.workspaceId ?? null, profileId: body.profileId, ...(along.uploads.length ? { uploads: along.uploads } : {}) };
+    const ask = { title: typeof body.title === "string" ? body.title : "", text: along.text, topicId: body.topicId ?? null, workspaceId: body.workspaceId ?? null, profileId: body.profileId, ...(along.uploads.length ? { uploads: along.uploads } : {}), ...(mcpChoices(body.mcp) ? { mcp: mcpChoices(body.mcp) } : {}) };
     // Starting the session takes longest (as rt.start).
     const made = await this.copies.ask<RemoteCreateAnswer>(peer, REMOTE_KINDS.create, ask, 90_000, `${p.name} 不在线，任务没建`);
     // 安全 (2026-10-29): it waits for a yes there — kept with this computer's requests (撤回 there too).
@@ -790,6 +804,20 @@ export class RemoteFeature extends Feature<RemoteUses> {
     return this.copies.start(task, input);
   }
 
+  /**
+   * As A: `kind` (an rt.… name of protocol's REMOTE_KINDS) about a session of a granted task is answered by `handle`,
+   * after the grant is checked; `write` tells the asks that change the session (refused once it is archived). B hears
+   * of it with the task (RemoteTaskSnapshot.kinds).
+   */
+  answerSession(kind: string, handle: SessionKind["handle"], write: SessionKind["write"] = () => false): void {
+    this.sessionKinds.set(kind, { handle, write });
+  }
+
+  /** As B: the same ask about a copy's session, sent to the computer it runs on. `old`: what to say when that one does not answer it. */
+  askCopy<T>(sessionId: Id, kind: string, body: Record<string, unknown>, old: (name: string) => string): Promise<T> {
+    return this.copies.askSession<T>(sessionId, kind, body, old);
+  }
+
   /** 远程分支 (2026-11-12): a copy's session is forked on the computer it runs on. */
   forkCopyTurns(sessionId: Id): Promise<ForkTurn[]> {
     return this.copies.forkTurns(sessionId);
@@ -797,6 +825,11 @@ export class RemoteFeature extends Feature<RemoteUses> {
 
   forkCopy(sessionId: Id, body: ForkRequest): Promise<Session> {
     return this.copies.fork(sessionId, body);
+  }
+
+  /** 拖拽排序 (2026-11-17): a copy's sessions are put in order on the computer the task runs on. */
+  orderCopy(task: Task, order: Id[]): Promise<Session[]> {
+    return this.copies.order(task, order);
   }
 
   renameCopy(task: Task, title: string): Promise<Task> {

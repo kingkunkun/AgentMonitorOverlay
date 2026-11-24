@@ -6,6 +6,7 @@ import type { ApprovalDecision } from "./api.js";
 import type { AccountUsage, Id, Session, SessionItem, SessionRuntime, TaskColumn, Timestamp } from "./entities.js";
 import type { ChannelBalance } from "./channels.js";
 import type { QuestionReply } from "./questions.js";
+import type { McpChoices, McpOffer, McpOfferEntry } from "./mcp.js";
 import { composeGitReviewMessage } from "./gitreview.js";
 
 /**
@@ -206,10 +207,20 @@ export interface TaskRemote {
   fork?: boolean;
   /** A takes 立即发送 from this computer (rt.send-now, 2026-11-12); absent: an older A, which never heard it. */
   sendNow?: boolean;
+  /** The session commands A answers besides the first ones (RemoteTaskSnapshot.kinds, 2026-11-15: rt.tracks); absent: an older A. */
+  kinds?: string[];
   /** A's name of the task's project; null: A's common folder; absent: an older A, which does not say (RemoteTaskView.project). */
   project?: string | null;
   /** Each session's project as A names it (by session id), where A said: a session can work in another project than its task's. */
   sessionProjects?: Record<Id, string | null>;
+  /** A gives the files sent along in the conversation and says when a file is gone there (RemoteTaskSnapshot.attachedFiles, 2026-11-17); absent: an older A. */
+  attachedFiles?: boolean;
+  /** A lists its MCP servers and takes this computer's choice of them (rt.mcp, 2026-11-17); absent: an older A. */
+  mcp?: boolean;
+  /** A takes a new session's name with rt.start (新会话 dialog, 2026-11-17); absent: an older A, which names it itself. */
+  sessionTitle?: boolean;
+  /** A reorders the task's sessions for this computer (rt.order, 2026-11-17); absent: an older A — the list cannot be dragged here. */
+  order?: boolean;
 }
 
 /** On A: a task granted to a paired device. */
@@ -238,6 +249,11 @@ export interface RemoteAllowed {
   defaultProfile: Id | null;
   /** The permissions those sessions get (also sessions agents start in a granted task); null: the model's own default. */
   permission: RemotePermission | null;
+  /**
+   * 允许控制端选 MCP (2026-11-17, the user: 允许被控端在远程设置里设置…是否支持 mcp 选择): false — devices see this
+   * computer's MCP but cannot pick (their sessions get its defaults), and a choice they send is refused. Absent: allowed.
+   */
+  mcp?: boolean;
 }
 
 export const NO_REMOTE_ALLOWED: RemoteAllowed = { profiles: [], defaultProfile: null, permission: null };
@@ -310,6 +326,13 @@ export const REMOTE_KINDS = {
   /** B → A (2026-11-12): the 分支 dialog's list of a session's turns, as A tells which can be forked. {sessionId} → {turns: ForkTurn[]} */
   forkTurns: "rt.fork-turns",
   /**
+   * B → A (远程也能看脉络, 2026-11-15, the user: 我是远端操控好像看不到): a session as its building, put together on A where
+   * its rows, its AI's titles and its 中转 are; with `on`, 脉络会话 turned on or off there first. {sessionId, on?} →
+   * {tower: TowerData}. Answered by the tracks feature (RemoteFeature.answerSession); A says it has it in
+   * RemoteTaskSnapshot.kinds.
+   */
+  tracks: "rt.tracks",
+  /**
    * Step 3, B → A: a file of a granted task (HTML, Markdown or an image, under the task's folder or among its
    * attachments), one piece at a time. RemoteFileAsk → RemoteFileAnswer
    */
@@ -351,6 +374,23 @@ export const REMOTE_KINDS = {
    * the grant and the task's folder. RemoteViewAsk → RemoteViewAnswer
    */
   view: "rt.view",
+  /**
+   * B → A (远程选 MCP, 2026-11-17, the user: 控制端开任务、开会话时能选被控端的 MCP): A's MCP servers as a session would
+   * have them — `{sessionId}` a session's own (the composer's MCP, 分支), `{taskId, profileId}` a new session's in the
+   * task. Names, where they come from, A's note and whether they are on: never a command, address, env or header.
+   * → RemoteMcpList. A says it answers in RemoteTaskSnapshot.mcp.
+   */
+  mcp: "rt.mcp",
+  /** B → A (2026-11-17): a session's MCP choices changed from B, as the composer's MCP changes them here. {sessionId, choices: McpChoices} → RemoteMcpList */
+  mcpSet: "rt.mcp-set",
+  /** B → A (2026-11-17): the MCP servers a task created there (the catalog's) would have. {workspaceId (A's; null: the common folder), profileId} → RemoteMcpList. A says it in RemoteCatalog.mcp. */
+  createMcp: "rt.create-mcp",
+  /**
+   * B → A (拖拽排序, 2026-11-17, the user: 远端也做): the order of a task's sessions side by side, as PUT
+   * /api/tasks/:id/session-order takes it; the sessions whose place changed come back with their own pushes. {taskId,
+   * order} → {ok}. A says it answers in RemoteTaskSnapshot.order.
+   */
+  order: "rt.order",
   /** A → B: the answer to a command (`re` is its id). */
   ok: "rt.ok",
   /** A → B: something about a granted task changed (RemotePush). */
@@ -387,6 +427,22 @@ export interface RemoteTaskSnapshot {
   fork?: true;
   /** A answers rt.send-now (2026-11-12; before, the relay refused rt.sendNow); an older A leaves it out. */
   sendNow?: true;
+  /**
+   * The session commands A's other features answer (RemoteFeature.answerSession, 2026-11-15; the first: rt.tracks), so
+   * B shows what needs one only when A has it. An older A leaves it out.
+   */
+  kinds?: string[];
+  /**
+   * A gives the files sent along in its conversations (their 引用文件, kept in its attachments folder) and a picture by
+   * where its own attachments are now, and says plainly when a file is gone there (2026-11-17). An older A leaves it out.
+   */
+  attachedFiles?: true;
+  /** A answers rt.mcp and rt.mcp-set and takes `mcp` with rt.start and rt.fork (2026-11-17). An older A leaves it out. */
+  mcp?: true;
+  /** A takes `title` with rt.start (2026-11-17). An older A leaves it out. */
+  sessionTitle?: true;
+  /** A answers rt.order and its sessions carry their rank (2026-11-17). An older A leaves it out. */
+  order?: true;
 }
 
 export interface RemoteListAnswer {
@@ -418,13 +474,32 @@ export interface RemoteProfileView {
 export const REMOTE_FORK_SINCE = "0.9.66";
 /** The same for 立即发送 (rt.send-now, 2026-11-12): the first version whose 立即发送 reaches A at all. */
 export const REMOTE_SEND_NOW_SINCE = "0.9.66";
+/** The same for 脉络 of a remote task (rt.tracks, 2026-11-15). */
+export const REMOTE_TRACKS_SINCE = "0.9.72";
+/** The same for the files sent along in a conversation, fetched on a device that came later (RemoteTaskSnapshot.attachedFiles, 2026-11-17). */
+export const REMOTE_FILES_SINCE = "0.9.76";
+/** The same for picking A's MCP servers from a device (rt.mcp, 2026-11-17). */
+export const REMOTE_MCP_SINCE = "0.9.76";
+/** The same for naming a new session started from a device (rt.start `title`, 2026-11-17). */
+export const REMOTE_SESSION_TITLE_SINCE = "0.9.76";
+/** The same for dragging a remote task's sessions into another order (rt.order, 2026-11-17). */
+export const REMOTE_ORDER_SINCE = "0.9.76";
 
-/** rt.fork: ForkRequest without the options (a copy has no choices of A's models to pick from). */
+/**
+ * 远程选 MCP (2026-11-17): one of A's MCP servers as a device sees it — what the person picks by, nothing to run it with
+ * (no command, address, env or header: those, and any key in them, never leave A). The same shape as this computer's
+ * own offer (McpOffer, 2026-11-17: one picker for here and there).
+ */
+export type RemoteMcpEntry = McpOfferEntry;
+export type RemoteMcpList = McpOffer;
+
+/** rt.fork: ForkRequest without the model options (a copy has no choices of A's models to pick from); `mcp` since 2026-11-17. */
 export interface RemoteForkAsk {
   sessionId: Id;
   turnId?: string;
   as?: "sub" | "peer";
   title?: string;
+  mcp?: Record<string, boolean>;
 }
 
 /** What each command carries. */
@@ -436,9 +511,15 @@ export interface RemoteCommandBodies {
   "rt.approve": { sessionId: Id; approvalId: string; decision: ApprovalDecision };
   "rt.answer": { sessionId: Id; itemId: Id; reply: QuestionReply };
   "rt.interrupt": { sessionId: Id };
-  "rt.start": { taskId: Id; profileId: Id; text?: string; uploads?: RemoteUpload[] };
+  /** `mcp` (2026-11-17): the new session's MCP choices, names of A's list only. */
+  "rt.start": { taskId: Id; profileId: Id; text?: string; uploads?: RemoteUpload[]; mcp?: Record<string, boolean>; /** The session's name (2026-11-17, RemoteTaskSnapshot.sessionTitle). */ title?: string };
   "rt.fork": RemoteForkAsk;
+  "rt.mcp": { sessionId: Id } | { taskId: Id; profileId: Id };
+  "rt.mcp-set": { sessionId: Id; choices: McpChoices };
+  "rt.create-mcp": { workspaceId: Id | null; profileId: Id };
+  "rt.order": { taskId: Id; order: Id[] };
   "rt.fork-turns": { sessionId: Id };
+  "rt.tracks": { sessionId: Id; on?: boolean };
   "rt.file": RemoteFileAsk;
   "rt.request": RemoteTaskRequestAsk;
   "rt.withdraw": { requestId: string };
@@ -454,7 +535,7 @@ export type RemotePush =
   | { type: "granted"; taskId: Id; grantedAt: Timestamp }
   | { type: "revoked"; taskId: Id; reason: string }
   /** The task's title, description or column changed, or what new sessions may run on. */
-  | { type: "task"; task: RemoteTaskView; profiles: RemoteTaskSnapshot["profiles"]; allowed: Id[]; fork?: true; sendNow?: true }
+  | { type: "task"; task: RemoteTaskView; profiles: RemoteTaskSnapshot["profiles"]; allowed: Id[]; fork?: true; sendNow?: true; attachedFiles?: true; mcp?: true; sessionTitle?: true; order?: true }
   /** `project`: the session's project name on A (null: the common folder; 2026-11-09, an older A leaves it out). */
   | { type: "session"; session: Session; project?: string | null }
   /** Phone policy: remove the archived session's cached copy without sending its contents. */
@@ -686,7 +767,7 @@ export interface RemoteTaskRequest {
    * 安全 (2026-10-29): a task the device created from its new-task page that waits for a yes here — where it goes and the
    * model, as picked there (the accept dialog starts from them). Absent: a request (the device only wrote what to do).
    */
-  preset?: { workspaceId: Id | null; topicId: Id | null; profileId: Id };
+  preset?: { workspaceId: Id | null; topicId: Id | null; profileId: Id; /** The MCP choices picked there (2026-11-17). */ mcp?: Record<string, boolean> };
   /** What B sent along with it (kept on A until it is allowed or refused): pictures by A's attachment id, files by A's path. */
   attached?: { images: Array<{ id: Id; name: string }>; files: Array<{ id: Id; path: string; name: string; startLine?: number | null; endLine?: number | null; note?: string }> };
 }
@@ -731,6 +812,8 @@ export interface RemoteCatalog {
   models: Array<{ id: Id; label: string }>;
   /** 安全 (2026-10-29): what B creates waits for a yes on A (absent from an older A: it starts at once). */
   confirm?: boolean;
+  /** A answers rt.create-mcp and takes `mcp` with rt.create (2026-11-17); absent from an older A. */
+  mcp?: true;
 }
 
 /** B → A: the task to create (rt.create). */
@@ -746,6 +829,8 @@ export interface RemoteCreateAsk {
   profileId: Id;
   /** Pictures and files sent before it (rt.upload). */
   uploads?: RemoteUpload[];
+  /** The session's MCP choices (2026-11-17), names of A's list for that project only; an older A ignores it (B does not send it then). */
+  mcp?: Record<string, boolean>;
 }
 
 /**
@@ -888,6 +973,15 @@ export interface RemoteRoutes {
    * Markdown and HTML a 查看包 of it shows rendered.
    */
   "GET /api/remote/tasks/:id/files-key": { req: void; res: { key: string } };
+  /**
+   * 补取 (2026-11-17, the user: 后来连上的控制端读不到以前对话里的文件): the pictures of a copy's item that are not here
+   * (fetching them when the item came did not work), asked of the task's computer now. Fails with its reason (gone there too).
+   */
+  "POST /api/remote/tasks/:id/images": { req: { itemId: Id }; res: { ok: true } };
+  /** 远程选 MCP (2026-11-17): the MCP servers a new session of a copy would have on its computer. `?profile=` (this computer's id of the model) */
+  "GET /api/remote/tasks/:id/mcp": { req: void; res: RemoteMcpList };
+  /** 远程选 MCP (2026-11-17): those of a task created there (rt.create-mcp). `?account=&device=&workspace=&profile=` (no workspace: the common folder; A's ids) */
+  "GET /api/remote/catalog/mcp": { req: void; res: RemoteMcpList };
   /** 远程创建, on B: creates a task on that device, granted to this computer and running; answers once the copy is here (or after a while). */
   "POST /api/remote/create": { req: RemoteCreateAsk & { account: string; device: string; /** Pictures uploaded here (POST /api/attachments); files go in the text's 引用文件 block. */ attachments?: Id[] }; res: RemoteCreateResult };
 }

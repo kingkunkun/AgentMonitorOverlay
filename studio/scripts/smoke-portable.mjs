@@ -89,7 +89,7 @@ try {
   mkdirSync(join(root, "workspace"), { recursive: true });
   app = await _electron.launch({ executablePath: exe, args: [], env: env(mockEnv) });
   page = await app.firstWindow();
-  await page.getByRole("button", { name: "+ 新任务" }).waitFor({ timeout: 60_000 });
+  await page.getByTestId("nav-new-chat").waitFor({ timeout: 60_000 });
   const dataDir = join(root, "WorkStudio", "data");
   const info = JSON.parse(readFileSync(join(dataDir, "host.json"), "utf8"));
   const token = readFileSync(join(dataDir, "host-token"), "utf8").trim();
@@ -101,10 +101,10 @@ try {
   const claudeCode = await api("GET", "/api/claude-code");
   step("studio Claude Code", { shipsClaudeCode: shipped, runsOn: claudeCode.source, version: claudeCode.version });
   if (shipped || !claudeCode.path) throw new Error("the Studio zip must not ship Claude Code, and must find the person's");
-  await page.getByRole("button", { name: "+ 新任务" }).click();
+  await page.getByTestId("nav-new-chat").click();
   await page.getByRole("group", { name: "模型" }).getByTestId("model-tile").filter({ hasText: "Mock Claude" }).click();
   await page.getByLabel("第一句话").fill("你好，便携版");
-  await page.getByRole("button", { name: "开始" }).click();
+  await page.getByTestId("draft-start").click();
   await page.getByTestId("msg-agent").last().filter({ hasText: "MOCK: 你好，便携版" }).waitFor({ timeout: 60_000 });
   const png = await app.evaluate(async ({ BrowserWindow }) => (await BrowserWindow.getAllWindows()[0].webContents.capturePage()).toPNG().toString("base64"));
   const shot = join(studio, "screenshots", "stage-8", "S8-03-portable.png");

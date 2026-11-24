@@ -4,16 +4,18 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { get as httpGet, type IncomingHttpHeaders } from "node:http";
+import { Server as NetServer } from "node:net";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { basename, dirname, join } from "node:path";
 import { crc32, deflateRawSync, gunzipSync, gzipSync, inflateRawSync } from "node:zlib";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { RelayClient, RelayClientError, type RelaySettings } from "./client.js";
 import { createRelayMcp } from "./mcp.js";
 import { downloadFile, downloadsDir, safeFileName } from "./download.js";
-import type { RelayEvent } from "./protocol.js";
-import { acceptsGzip, startRelayServer, type RelayServer } from "./server.js";
+import { chatTitleFor, isListed, listedOthers, unlistedNames, type RelayEvent } from "./protocol.js";
+import { acceptsGzip, adminOrder, FETCH_BAD_PORTS, startRelayServer, type RelayServer } from "./server.js";
 import { RelayStore } from "./store.js";
 import { newRepliesText, usagePrompt } from "./usage.js";
 import { takeInbox } from "./inbox.js";
@@ -129,6 +131,133 @@ describe("relay service", () => {
     expect(await admin("POST", "/api/admin/admin-password", { password: "new-admin-pw" })).toMatchObject({ status: 200, body: { ok: true } });
     expect((await admin("GET", "/api/admin/members")).status).toBe(401);
     expect((await admin("GET", "/api/admin/members", undefined, "new-admin-pw")).status).toBe(200);
+  });
+
+  it("账号类型 (2026-11-23): set on the admin page and sent (and pushed) with the members; 测试 and turned-off accounts are left out of what the others are offered; the admin list goes 正常 → 测试 → 停用", async () => {
+    const { url, planner } = await service();
+    store!.setAdminPassword("admin-pw");
+    const admin = (method: string, path: string, body?: unknown) =>
+      fetch(`${url}${path}`, { method, headers: { "content-type": "application/json", "x-amo-admin": "admin-pw" }, ...(body ? { body: JSON.stringify(body) } : {}) }).then(async (r) => ({ status: r.status, body: (await r.json()) as Record<string, any> }));
+    const anon = new RelayClient(url);
+    const t1 = new RelayClient(url, (await anon.register("测试一", "pw-t1", { passphrase: "芝麻开门" })).key);
+    await anon.register("测试二", "pw-t2", { passphrase: "芝麻开门" });
+    await anon.register("离职的", "pw-gone", { passphrase: "芝麻开门" });
+    // Everyone is 正式 until set.
+    expect((await planner.members()).map((m) => [m.name, m.kind, m.disabled])).toEqual([["策划小王", "normal", false], ["程序老李", "normal", false], ["测试一", "normal", false], ["测试二", "normal", false], ["离职的", "normal", false]]);
+
+    const live = await events(url, planner.key!);
+    expect((await live.next()).type).toBe("hello");
+    for (const name of ["测试一", "测试二"]) expect(await admin("POST", "/api/admin/kind", { name, kind: "test" })).toMatchObject({ status: 200, body: { ok: true } });
+    expect((await admin("POST", "/api/admin/kind", { name: "测试一", kind: "vip" })).body.message).toContain("normal（正式）、test（测试）");
+    expect((await admin("POST", "/api/admin/kind", { name: "没这个人", kind: "test" })).status).toBe(404);
+    // The others' clients hear of it at once.
+    for (;;) {
+      const e = await live.next();
+      if (e.type === "members" && e.members.filter((m) => m.kind === "test").length === 2) break;
+    }
+    // A message from a test account stays in the chat it was written in.
+    const chat = await t1.direct("策划小王");
+    await t1.send(chat.id, { body: "测一下" });
+    await admin("POST", "/api/admin/disable", { name: "离职的", disabled: true });
+    const members = await planner.members();
+    expect(members.find((m) => m.name === "离职的")).toMatchObject({ kind: "normal", disabled: true });
+    expect(listedOthers(members, "策划小王").map((m) => m.name)).toEqual(["程序老李"]);
+    expect([...unlistedNames(members, "策划小王")]).toEqual(["测试一", "测试二", "离职的"]);
+    // Test accounts see each other (to test with); nobody is offered a turned-off one.
+    expect(listedOthers(members, "测试一").map((m) => m.name)).toEqual(["策划小王", "程序老李", "测试二"]);
+    expect((await planner.messages(chat.id)).messages.map((m) => [m.author, m.body])).toContainEqual(["测试一", "测一下"]);
+
+    // The admin list: 正常 (the one online first), then 测试, then 停用; each with its kind; the kinds for the page.
+    const list = (await admin("GET", "/api/admin/members")).body;
+    expect(list.kinds).toEqual({ normal: { label: "正式", listed: true }, test: { label: "测试", listed: false } });
+    expect(list.members.map((m: any) => [m.name, m.kind, m.disabled, m.online])).toEqual([
+      ["策划小王", "normal", false, true],
+      ["程序老李", "normal", false, false],
+      ["测试一", "test", false, false],
+      ["测试二", "test", false, false],
+      ["离职的", "normal", true, false],
+    ]);
+    // Back to 正式: offered again.
+    await admin("POST", "/api/admin/kind", { name: "测试二", kind: "normal" });
+    expect(listedOthers(await planner.members(), "策划小王").map((m) => m.name)).toEqual(["程序老李", "测试二"]);
+  });
+
+  it("orders the admin list: the part (正常, 测试, 停用), then online, then the latest seen or spoken, then as registered", () => {
+    const m = (name: string, kind: "normal" | "test", disabled: boolean, online: boolean, lastSeen: number, lastMessageAt: number | null) => ({ name, kind, disabled, online, lastSeen, lastMessageAt });
+    const list = [
+      m("停用的", "normal", true, false, 0, 900),
+      m("测试旧", "test", false, false, 0, 100),
+      m("老的", "normal", false, false, 0, null),
+      m("说过话", "normal", false, false, 0, 500),
+      m("刚走", "normal", false, false, 700, 200),
+      m("在线", "normal", false, true, 0, null),
+      m("测试新", "test", false, true, 0, null),
+      m("也很老", "normal", false, false, 0, null),
+    ];
+    expect(adminOrder(list).map((x) => x.name)).toEqual(["在线", "刚走", "说过话", "老的", "也很老", "测试新", "测试旧", "停用的"]);
+  });
+
+  it("账号类型 in what an AI is told: the usage text leaves out 测试 and turned-off accounts (relay_people and `amo-relay people` use the same listedOthers)", () => {
+    const people = [
+      { name: "小王", role: "策划", kind: "normal" as const, disabled: false },
+      { name: "老李", role: "程序", kind: "normal" as const, disabled: false },
+      { name: "测试号", role: "", kind: "test" as const, disabled: false },
+      { name: "走了的", role: "美术", kind: "normal" as const, disabled: true },
+    ];
+    const p = usagePrompt({ me: "小王", members: people, cli: "amo-relay" });
+    expect(p).toContain("- 老李（程序）");
+    expect(p).not.toContain("测试号");
+    expect(p).not.toContain("走了的");
+    // A member from a service before 账号类型 (no kind, no disabled) is shown; so is a kind this build does not know.
+    expect(isListed({})).toBe(true);
+    expect(isListed({ kind: "later" as never })).toBe(true);
+    expect(isListed({ kind: "test" })).toBe(false);
+    expect(isListed({ kind: "test" }, { kind: "test" })).toBe(true);
+    expect(isListed({ kind: "test", disabled: true }, { kind: "test" })).toBe(false);
+  });
+
+  it("a group never renamed (its people's names joined by 、) is shown without the 测试 and turned-off ones — to a test account, without the turned-off ones; all gone, as it is", async () => {
+    const { url, planner } = await service();
+    const anon = new RelayClient(url);
+    await anon.register("测试小赵", "pw-zhao", { passphrase: "芝麻开门" });
+    await anon.register("离职老周", "pw-zhou", { passphrase: "芝麻开门" });
+    store!.setKind("测试小赵", "test");
+    store!.setDisabled("离职老周", true);
+    // The title the service makes when a chat becomes a group.
+    const g = await planner.addMembers((await planner.direct("程序老李")).id, ["测试小赵", "离职老周"]);
+    expect(g.title).toBe("策划小王、程序老李、测试小赵、离职老周");
+    const members = await planner.members();
+    expect(chatTitleFor(g, members, "策划小王")).toBe("策划小王、程序老李");
+    expect(chatTitleFor(g, members, "测试小赵")).toBe("策划小王、程序老李、测试小赵");
+    // Every name would go: the title as it is.
+    expect(chatTitleFor({ kind: "group", title: "测试小赵、离职老周" }, members, "策划小王")).toBe("测试小赵、离职老周");
+    // A title someone wrote, a name that is no account, a topic: as they are.
+    expect(chatTitleFor({ kind: "group", title: "数值、测试小赵" }, members, "策划小王")).toBe("数值、测试小赵");
+    expect(chatTitleFor({ kind: "group", title: "射速改版" }, members, "策划小王")).toBe("射速改版");
+    expect(chatTitleFor({ kind: "topic", title: "程序老李、测试小赵" }, members, "策划小王")).toBe("程序老李、测试小赵");
+    // Renamed by someone: kept.
+    const renamed = await planner.rename(g.id, "射速讨论");
+    expect(chatTitleFor(renamed, members, "策划小王")).toBe("射速讨论");
+  });
+
+  it("opens a members table from before 账号类型: everyone in it is 正式", () => {
+    const dir = mkdtempSync(join(tmpdir(), "relay-kind-"));
+    closers.push(() => rmSync(dir, { recursive: true, force: true }));
+    const file = join(dir, "relay.db");
+    const old = new RelayStore(file);
+    old.register("老员工", "pw-old-1");
+    old.close();
+    const db = new DatabaseSync(file);
+    db.exec("ALTER TABLE members DROP COLUMN kind;");
+    db.close();
+    const again = new RelayStore(file);
+    try {
+      expect(again.members().map((m) => [m.name, m.kind, m.disabled])).toEqual([["老员工", "normal", false]]);
+      again.setKind("老员工", "test");
+      expect(again.adminMembers()[0]).toMatchObject({ name: "老员工", kind: "test" });
+    } finally {
+      again.close();
+    }
   });
 
   it("the admin page sets the registration passphrase: needed once set, open again once cleared; the page's one wins over --passphrase", async () => {
@@ -469,6 +598,34 @@ describe("relay service", () => {
     expect(acceptsGzip("*")).toBe(true);
     expect(acceptsGzip("*, gzip;q=0")).toBe(false);
     expect(acceptsGzip("identity")).toBe(false);
+  });
+
+  it("knows the ports fetch refuses, which a server on port 0 does not keep (2026-11-16: todo.test.ts got 5060)", async () => {
+    // The list is the Fetch standard's; this checks it against the fetch the tests and the clients use (refused before
+    // any connection, so nothing needs to listen there).
+    for (const port of FETCH_BAD_PORTS) {
+      const err = await fetch(`http://127.0.0.1:${port}/`).then(() => null, (e: Error) => e);
+      expect(String((err?.cause as Error | undefined)?.message ?? err?.cause), `port ${port}`).toMatch(/bad port/);
+    }
+    // The system handing out 5060 first: the server listens again and answers on the next one.
+    const real = NetServer.prototype.address;
+    let first = true;
+    const spy = vi.spyOn(NetServer.prototype, "address").mockImplementation(function (this: NetServer) {
+      const at = real.call(this);
+      if (first && at && typeof at === "object") {
+        first = false;
+        return { ...at, port: 5060 };
+      }
+      return at;
+    });
+    try {
+      server = await startRelayServer({ store: (store = new RelayStore(":memory:")), host: "127.0.0.1", port: 0 });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(first).toBe(false);
+    expect(server.port).not.toBe(5060);
+    expect((await fetch(`${server.url}/api/health`)).ok).toBe(true);
   });
 
   it("says when it has no platform dir", async () => {

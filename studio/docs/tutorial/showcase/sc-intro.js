@@ -27,7 +27,7 @@
   const frowState = (k, word, sub, tone) => [["text", `${k}-w`, word], ["text", `${k}-sub`, sub], ["off", k, "att"], ["off", k, "done"], ...(tone ? [["on", k, tone]] : [])];
   const tiles = ORDER.flatMap((_, n) => [["on", `cw${n + 1}`, "lit"], ["off", `t${n + 1}`, "pend"], ["on", `t${n + 1}`, "pop"], ["wait", 280]]);
 
-  T.uses("WorkStudio", "书签", "便签", "Focus", "远程", "看板", "画布", "搜索任务或会话", "+ 新任务", "全部任务", "专题", "项目", "Host 运行中", "设置", "要推进什么？", "放进待办", "开始", "待办", "进行中", "待审阅", "完成", "运行中", "待批准", "完成待审核", "批准", "在工作台打开", "我知道了", "置顶", "回到本轮回复开始", "新会话", "Review", "归档");
+  T.uses("WorkStudio", "书签", "便签", "Focus", "远程", "看板", "画布", "搜索聊天记录", "新聊天", "全部任务", "专题", "项目", "Host 运行中", "设置", "今天想做些什么？", "放进待办", "开始", "待办", "进行中", "待审阅", "完成", "运行中", "待批准", "完成待审核", "批准", "在工作台打开", "我知道了", "置顶", "回到本轮回复开始", "新会话", "Review", "归档");
   T.scene({
     id: "sc-intro",
     title: "WorkStudio：所有 AI，一个工作台",
@@ -53,7 +53,7 @@
 
       <section class="pg pg-new" data-k="p1">
         <div class="nt-crumb">‹ 看板 <span class="s-faint">/ 新任务</span><span class="s-sp"></span><span class="s-faint">草稿自动保存，离开也不会丢</span></div>
-        <div class="nt-q">要推进什么？</div>
+        <div class="nt-q">今天想做些什么？</div>
         <div class="nt-hint">写下第一句话就能开始。项目、模型和思考强度都在下面，点一下就换。</div>
         <div class="nt-row"><span class="lab">专题</span><span class="iw-pill">不选</span><span class="iw-pill on">掉落表重构</span></div>
         <div class="nt-row"><span class="lab">项目</span><span class="iw-pill">不选</span><span class="iw-pill on">MyGame</span><span class="iw-pill">ToolKit</span></div>
@@ -111,7 +111,7 @@
             </div>
           </div>
           <div class="tk-hint" data-k="hint" data-off>按 <kbd>↑</kbd> 回到本轮回复开始</div></div>
-          <div class="tk-input">继续推进这个会话，回车发送，Shift+回车换行，输入 / 看命令</div>`,
+          <div class="tk-input">和 WorkStudio 一起工作</div>`,
           { view: false, nav: S.nav(5) },
         )}
       </section>
