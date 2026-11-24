@@ -117,7 +117,9 @@ test("a running Claude keeps its model chooser visible below the send hint in a 
     await studio.api("POST", "/api/tasks", { title: "运行中的模型选择", workspaceId: ws.id, firstSession: { profileId: "claude-mock", text: "开始" } });
     await page.getByTestId("task-card").filter({ hasText: "运行中的模型选择" }).click();
     await expect(page.getByTestId("msg-agent").last()).toContainText("MOCK: 开始", { timeout: 30_000 });
-    await page.setViewportSize({ width: 940, height: 760 });
+    await page.setViewportSize({ width: 960, height: 760 });
+    await expect(page.getByTestId("topbar-relay")).toBeInViewport({ ratio: 1 });
+    await expect(page.getByTestId("win-controls")).toBeInViewport({ ratio: 1 });
     const composer = page.getByRole("textbox", { name: "输入消息" });
     await composer.fill("[[slow]]");
     await composer.press("Enter");

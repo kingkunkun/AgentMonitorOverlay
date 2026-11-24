@@ -58,7 +58,11 @@ export function CooperationMenu({ link, onRemote }: { link: HostLink; onRemote()
   }
   const attention = state?.relayEnabled ? state.relayAttention : null;
   const unread = attention?.unread ?? 0;
-  const relayTitle = !state ? "打开 Work中转" : !state.account ? "先在合作模式中登录团队账号" : !state.relayEnabled ? "打开 Work中转，可在窗口内开启中转" : attention?.connection === "offline" ? "暂时连不上中转服务器，未读数可能未更新" : attention?.connection === "connecting" ? "正在同步中转未读消息" : unread ? `${unread} 条未读消息，点击打开最近一条` : "打开 Work中转";
+  const relayTitle = state && !state.account ? "先在合作模式中登录团队账号"
+    : state && !state.relayEnabled ? "打开 Work中转，可在窗口内开启中转"
+    : attention?.connection === "offline" ? "暂时连不上中转服务器，未读数可能未更新"
+    : attention?.connection === "connecting" ? "正在同步中转未读消息"
+    : unread ? `${unread} 条未读消息，点击打开最近未读的会话` : "打开 Work中转";
   const loginMissing = !server.trim() ? "请先填写或选择服务器地址" : !name.trim() ? "请输入账号" : !password ? "请输入密码" : "";
   return <>
     <button type="button" className="tb-btn relay-shortcut" data-testid="topbar-relay" title={relayTitle} aria-label={unread ? `中转合作，${unread} 条未读消息` : "中转合作"} disabled={launching} onClick={() => void openRelay()}>

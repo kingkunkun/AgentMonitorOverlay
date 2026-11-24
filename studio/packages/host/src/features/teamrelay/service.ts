@@ -43,7 +43,7 @@ function unreadAttention(threads: readonly ThreadView[]): RelayAttention {
   return { connection: "online", unread, target: latest ? `${latest.kind === "cowork" ? "cowork" : "thread"}:${latest.id}` : null };
 }
 
-export class TeamRelayFeature extends Feature<"config" | "sessions" | "attachments" | "tasks"> {
+export class TeamRelayFeature extends Feature<"sessions" | "attachments" | "tasks"> {
   /** 协作 (2026-11-23, cowork.ts): this computer's sessions in coworks, their state, what comes for them, cowork_*. */
   readonly cowork: TeamCowork = new TeamCowork(this.host, this);
   private receiver: AbortController | null = null;

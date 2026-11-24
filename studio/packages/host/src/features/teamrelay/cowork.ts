@@ -39,9 +39,9 @@ const THREAD_PAGE = 200;
 const BACK_MAX = 80;
 const BACK_CALLS = 12;
 
-export class TeamCowork extends Feature<"config" | "sessions" | "attachments" | "tasks"> {
+export class TeamCowork extends Feature<"sessions" | "attachments" | "tasks"> {
   constructor(
-    host: FeatureHost<"config" | "sessions" | "attachments" | "tasks">,
+    host: FeatureHost<"sessions" | "attachments" | "tasks">,
     /** The feature this is part of: its 中转 client as the person, and its sends waiting for the person. */
     private readonly team: TeamRelayFeature,
   ) {
@@ -50,6 +50,8 @@ export class TeamCowork extends Feature<"config" | "sessions" | "attachments" | 
 
   private running = false;
   private generation = 0;
+  /** A refresh that started before an explicit join/leave must not bring back old membership. */
+  private membershipRevision = 0;
   private abort: AbortController | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   /** Wakes the inbox loop's pause early: a session got free, a composer emptied. */
@@ -127,6 +129,7 @@ export class TeamCowork extends Feature<"config" | "sessions" | "attachments" | 
     const { client, me, prefix } = this.relay();
     const mark = `${prefix}${s.id}`;
     const out = await this.call(() => client.joinCoworkAgent(coworkId, mark, label));
+    this.membershipRevision++;
     setCoworkTell(this.store, s.id, `joined:${coworkId}`, joinedLine(out.cowork, out.agent.name, me));
     await this.refresh().catch(() => undefined);
     this.scheduleReport();
@@ -140,6 +143,7 @@ export class TeamCowork extends Feature<"config" | "sessions" | "attachments" | 
     const coworkId = text(coworkIdValue, "coworkId");
     const { client, prefix } = this.relay();
     await this.call(() => client.leaveCoworkAgent(coworkId, `${prefix}${sessionId}`));
+    this.membershipRevision++;
     setCoworkTell(this.store, sessionId, `joined:${coworkId}`, null);
     setCoworkTell(this.store, sessionId, `unread:${coworkId}`, null);
     this.saveJoined(this.joined().filter((j) => !(j.sessionId === sessionId && j.coworkId === coworkId)));
@@ -154,6 +158,7 @@ export class TeamCowork extends Feature<"config" | "sessions" | "attachments" | 
 
   /** Reads which of this computer's sessions are in which 协作 again, from the service. */
   async refresh(): Promise<CoworkJoin[]> {
+    const revision = this.membershipRevision;
     const { client, me, prefix } = this.relay();
     const list = await client.coworks();
     const next: CoworkJoin[] = [];
@@ -171,6 +176,7 @@ export class TeamCowork extends Feature<"config" | "sessions" | "attachments" | 
         next.push(this.joinOf(c, a.mark, prefix, drafts.filter((d) => d.agent === a.mark && d.state === "pending").length));
       }
     }
+    if (revision !== this.membershipRevision) return this.joined();
     this.saveJoined(next);
     return next;
   }
@@ -224,10 +230,12 @@ export class TeamCowork extends Feature<"config" | "sessions" | "attachments" | 
     const byMark = new Map<string, CoworkJoin["state"]>();
     for (const j of list) byMark.set(j.mark, this.stateOf(j.sessionId, j.mark));
     const agents: AgentReport[] = [...byMark].map(([mark, state]) => ({ mark, state }));
+    const revision = this.membershipRevision;
     const back = await client.reportCoworkAgents(agents);
+    if (revision !== this.membershipRevision) return;
     for (const [mark, state] of byMark) this.lastState.set(mark, state);
     const queued = new Map(back.map((b) => [`${b.coworkId} ${b.agent.mark}`, b.agent.queued]));
-    this.saveJoined(list.map((j) => ({ ...j, state: byMark.get(j.mark) ?? j.state, queued: queued.get(`${j.coworkId} ${j.mark}`) ?? j.queued })));
+    this.saveJoined(this.joined().map((j) => ({ ...j, state: byMark.get(j.mark) ?? j.state, queued: queued.get(`${j.coworkId} ${j.mark}`) ?? j.queued })));
   }
 
   /** A state may have changed: report once things settle (a turn starting moves several fields at once). */

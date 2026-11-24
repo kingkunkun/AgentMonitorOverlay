@@ -55,7 +55,7 @@ function ZoneClock() {
         <polygon className="sand sand-bottom" points="7.75,8.95 8.25,8.95 9.8,12.05 6.2,12.05" />
         <path className="sand-stream" d="M8 7.05v1.9" />
       </svg>
-      北京 <strong>{short}</strong>
+      北京 <strong className="zone-clock-full">{short}</strong><strong className="zone-clock-compact">{parts.get("hour")}:{parts.get("minute")}</strong>
     </span>
   );
 }
@@ -113,7 +113,7 @@ export function TopBar({
         {scopeName && (
           <>
             <span className="brand-sep">/</span>
-            <span style={{ fontWeight: 500 }}>{scopeName}</span>
+            <span className="brand-scope" title={scopeName}>{scopeName}</span>
           </>
         )}
       </div>

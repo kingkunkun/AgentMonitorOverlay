@@ -38,7 +38,7 @@ const GRAPH: Record<string, string[]> = {
   taskplans: ["canvas", "collab", "sessions", "tasks"],
   tasks: ["canvas", "config", "mcp", "remote", "sessions"],
   // 协作 (2026-11-23): 转到我的会话 may start a new task's session.
-  teamrelay: ["attachments", "config", "sessions", "tasks"],
+  teamrelay: ["attachments", "sessions", "tasks"],
   topics: ["tasks"],
   reviewprogress: ["config"],
   tracks: ["remote", "teamrelay"],
