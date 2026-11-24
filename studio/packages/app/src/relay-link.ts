@@ -34,7 +34,7 @@ export function findRelayExe(env: Env = process.env, localExe?: string): string 
 }
 
 /** Starts (or wakes) the client on the thread; false when there is none. Tests only record it. */
-export function openInRelay(threadId?: string, opts: { env?: Env; testMode?: boolean; localExe?: string; localArgs?: string[]; localOnly?: boolean } = {}): Promise<boolean> {
+export function openInRelay(threadId?: string, opts: { env?: Env; testMode?: boolean; localExe?: string; localArgs?: string[]; localEnv?: Env; localOnly?: boolean } = {}): Promise<boolean> {
   if (threadId !== undefined && !/^(?:(?:cowork|thread):)?[A-Za-z0-9_-]{1,80}$/.test(threadId)) return Promise.resolve(false);
   const exe = opts.localExe && existsSync(opts.localExe) ? opts.localExe : opts.localOnly ? null : findRelayExe(opts.env);
   if (opts.testMode) {
@@ -45,7 +45,8 @@ export function openInRelay(threadId?: string, opts: { env?: Env; testMode?: boo
   if (!exe) return Promise.resolve(false);
   return new Promise((resolve, reject) => {
     const args = [...(exe === opts.localExe ? opts.localArgs ?? [] : []), ...(threadId ? (threadId.includes(":") ? [`--open=${threadId}`] : ["--open-thread", threadId]) : [])];
-    const child = spawn(exe, args, { detached: true, stdio: "ignore", windowsHide: true });
+    const env = exe === opts.localExe && opts.localEnv ? { ...process.env, ...opts.localEnv } : undefined;
+    const child = spawn(exe, args, { detached: true, stdio: "ignore", windowsHide: true, env });
     child.once("error", reject);
     child.once("spawn", () => { child.unref(); resolve(true); });
   });

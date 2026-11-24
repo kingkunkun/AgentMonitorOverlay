@@ -17,6 +17,7 @@ export function applyTheme(pref: ThemePref = themePref()): void {
   else delete document.documentElement.dataset.appearance;
   if (pref === "system") delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = pref === "codex" ? "light" : pref;
+  window.amo?.setRelayTheme?.(pref);
 }
 
 export function setThemePref(pref: ThemePref): void {

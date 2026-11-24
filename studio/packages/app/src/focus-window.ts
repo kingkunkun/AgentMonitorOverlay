@@ -128,6 +128,7 @@ interface PrefsData {
   /** 拖拽调整大小 (2026-11-06): Focus's size, at 界面大小 100%. */
   focusSize?: Size;
   breakReminder?: boolean;
+  relayTheme?: "codex" | "system" | "light" | "dark";
   /** 崩溃转储 (2026-11-10, 设置 → 维护): on or off; absent, the platform's channel decides (@amo-studio/account). */
   crashDumps?: boolean;
   /** 会话弹窗 (2026-11-16): where the last one was left and how big. */
@@ -158,6 +159,11 @@ export class ShellPrefs {
 
   breakReminder(): boolean { return this.data.breakReminder !== false; }
   setBreakReminder(on: boolean): void { this.save({ breakReminder: on }); }
+
+  /** Mirror the workbench's theme for the separately running, bundled Work中转 window. */
+  setRelayTheme(theme: NonNullable<PrefsData["relayTheme"]>): void {
+    if (theme !== this.data.relayTheme) this.save({ relayTheme: theme });
+  }
 
   focusPos(): Point | null {
     return this.data.focusPos ?? null;

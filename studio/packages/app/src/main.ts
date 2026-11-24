@@ -41,7 +41,6 @@ const studioRoot = resolve(here, "..", "..", "..");
 // Use this build's own relay shell and content. An exe from an older running.json may open Studio instead.
 const relayDir = join(studioRoot, "packages", "relay-app");
 const relayReady = () => existsSync(join(relayDir, "dist", "main.js")) && existsSync(join(relayDir, "client", "index.html"));
-const relayLaunch = () => ({ localExe: relayReady() ? process.execPath : undefined, localArgs: app.isPackaged ? ["--amo-app=relay"] : [relayDir, "--workstudio-bundled-relay"], localOnly: true });
 const testMode = process.env.AMO_STUDIO_TEST === "1";
 /** Window and taskbar icon (the exe's own icon is set when packaging). */
 const APP_ICON = join(here, "..", "assets", "icon.png");
@@ -51,6 +50,12 @@ const STUDIO_VERSION = app.isPackaged ? app.getVersion() : "dev";
 const portableDir = process.env.AMO_STUDIO_PORTABLE_DIR ?? (app.isPackaged ? dirname(process.execPath) : null);
 const dataChoice = resolveDataDir({ env: process.env, portableDir, studioRoot, platformDataDir: app.isPackaged ? platformDataDir(app.getAppPath(), process.env) : null });
 const dataDir = dataChoice.dataDir;
+const relayLaunch = () => ({
+  localExe: relayReady() ? process.execPath : undefined,
+  localArgs: app.isPackaged ? ["--amo-app=relay"] : [relayDir, "--workstudio-bundled-relay"],
+  localEnv: { AMO_STUDIO_DATA_DIR: dataDir, ...(testMode ? { AMO_RELAY_TEST: "1" } : {}) },
+  localOnly: true,
+});
 
 // Experiments for the resize flicker (2026-10-15; off unless set when starting the app): use the GPU even when
 // Chromium's blocklist says not to, and the system title bar instead of the page-drawn one.
@@ -538,6 +543,10 @@ if (!app.requestSingleInstanceLock() || quitAsked(process.argv)) {
   // 在中转里打开 (2026-11-05, relay-link.ts): the AMO 中转 client shows a thread a session sent. Tests only record it.
   ipcMain.handle("amo:relay-available", () => testMode || relayReady());
   ipcMain.handle("amo:relay-open", (_event, threadId: unknown) => (threadId === undefined || typeof threadId === "string") && openInRelay(threadId, { testMode, ...relayLaunch() }));
+  ipcMain.on("amo:relay-theme", (event, theme: unknown) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) return;
+    if (theme === "codex" || theme === "system" || theme === "light" || theme === "dark") prefs.setRelayTheme(theme);
+  });
   // "在工作台打开" from Focus: the workbench shows that task and session (and comes forward, except in tests).
   ipcMain.handle("amo:open-in-workbench", (_event, target: unknown) => {
     const t = target as { taskId?: unknown; sessionId?: unknown; show?: unknown; passage?: unknown; topicId?: unknown; calloutId?: unknown; settings?: unknown } | null;

@@ -104,6 +104,7 @@ declare global {
       /** 在中转里打开 (2026-11-05): an AMO 中转 client Studio can find; showing a thread in it (false: none found). */
       relayAvailable?(): Promise<boolean>;
       openInRelay?(threadId?: string): Promise<boolean>;
+      setRelayTheme?(theme: "codex" | "system" | "light" | "dark"): void;
       /** 画布小窗 (2026-10-27): a topic's canvas in the small window on top. */
       openCanvasMini?(target: { topicId?: string }): Promise<void>;
       /** In the 画布小窗: keep it on top of other windows (or not); without a value, whether it is. */
